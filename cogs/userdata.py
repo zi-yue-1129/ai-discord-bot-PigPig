@@ -1034,6 +1034,15 @@ class UserDataCog(commands.Cog):
 
             success = await self.user_manager.delete_user_data(user_id)
             if success:
+                # Also delete episodic memory vectors for the user
+                try:
+                    vector_manager = getattr(self.bot, "vector_manager", None)
+                    if vector_manager and hasattr(vector_manager, "store") and hasattr(vector_manager.store, "delete_vectors_by_user"):
+                        deleted_count = await vector_manager.store.delete_vectors_by_user(user_id)
+                        self.logger.info(f"Deleted {deleted_count} episodic memory vectors for user {user_id}.")
+                except Exception as vm_err:
+                    self.logger.warning(f"Failed to delete episodic memory vectors for user {user_id}: {vm_err}")
+
                 # Invalidate ProceduralMemoryProvider cache
                 try:
                     orchestrator = getattr(self.bot, "orchestrator", None)
