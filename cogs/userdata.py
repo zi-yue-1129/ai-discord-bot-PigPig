@@ -1048,6 +1048,16 @@ class UserDataCog(commands.Cog):
                 except Exception as cache_err:
                     self.logger.warning(f"Failed to invalidate procedural cache for {user_id}: {cache_err}")
 
+                # Delete episodic memory vectors for the user
+                try:
+                    vector_manager = getattr(self.bot, "vector_manager", None)
+                    if vector_manager and hasattr(vector_manager, "store"):
+                        store = vector_manager.store
+                        if hasattr(store, "delete_vectors_by_user"):
+                            await store.delete_vectors_by_user(str(user_id))
+                            self.logger.info(f"Deleted episodic memory vectors for user {user_id}")
+                except Exception as vector_err:
+                    self.logger.warning(f"Failed to delete episodic memory vectors for {user_id}: {vector_err}")
 
                 return self._translate(
                     guild_id,
