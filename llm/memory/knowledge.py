@@ -45,11 +45,16 @@ class KnowledgeMemoryProvider:
         Returns:
             KnowledgeMemory object containing both levels of knowledge.
         """
-        guild_knowledge = None
+        tasks = []
         if guild_id:
-            guild_knowledge = await self._get_single("guild", guild_id)
+            tasks.append(self._get_single("guild", guild_id))
+        else:
+            async def _none_task(): return None
+            tasks.append(_none_task())
             
-        channel_knowledge = await self._get_single("channel", channel_id)
+        tasks.append(self._get_single("channel", channel_id))
+
+        guild_knowledge, channel_knowledge = await asyncio.gather(*tasks)
         
         return KnowledgeMemory(
             guild_knowledge=guild_knowledge,

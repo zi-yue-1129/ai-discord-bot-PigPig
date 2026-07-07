@@ -114,13 +114,13 @@ class ContextManager:
             except Exception:
                 pass
 
-            # 2. Fetch short-term and author procedural in parallel
-            short_term_msgs, author_procedural = await asyncio.gather(
-                _fetch_short_term(),
-                _fetch_procedural(author_ids),
-            )
+            # 2. Start author procedural fetch in the background
+            author_procedural_task = asyncio.create_task(_fetch_procedural(author_ids))
 
-            # 3. Extract any additional user IDs from the fetched short-term messages
+            # 3. Await the slow short-term memory fetch
+            short_term_msgs = await _fetch_short_term()
+
+            # 4. Extract any additional user IDs from the fetched short-term messages
             try:
                 extracted_ids = self._extract_user_ids_from_messages(short_term_msgs, message)
             except Exception as e:
@@ -130,10 +130,17 @@ class ContextManager:
                 _LOGGER.error("extract_user_ids failed", exception=e)
                 extracted_ids = []
 
-            # 4. Fetch procedural memory for any additional users
+            # 5. Fetch procedural memory for any additional users
             additional_ids = [uid for uid in extracted_ids if uid not in author_ids]
+            additional_procedural_task = None
             if additional_ids:
-                additional_procedural = await _fetch_procedural(additional_ids)
+                additional_procedural_task = asyncio.create_task(_fetch_procedural(additional_ids))
+
+            # 6. Await procedural memory tasks and merge
+            author_procedural = await author_procedural_task
+
+            if additional_procedural_task:
+                additional_procedural = await additional_procedural_task
                 # Merge procedural memories
                 merged_info = dict(getattr(author_procedural, "user_info", {}))
                 merged_info.update(getattr(additional_procedural, "user_info", {}))
