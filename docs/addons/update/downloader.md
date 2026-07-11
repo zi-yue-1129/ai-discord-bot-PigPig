@@ -1,3 +1,30 @@
+# File: `addons/update/downloader.py`
+
+## Overview
+This file belongs to the Addons Subsystem. Its core responsibility is to handle logic related to `downloader.py`, providing vital integrations within the PigPig bot ecosystem.
+更新下載管理器模組
+
+負責安全地下載更新檔案，包括進度追蹤、檔案驗證和錯誤處理。
+
+## Classes
+
+### `UpdateDownloader`
+更新下載管理器
+
+- **Attributes**:
+  - `download_dir` (`Any`): Internal instance state.
+  - `logger` (`Any`): Internal instance state.
+
+- **Methods**:
+  - `__init__(download_dir: str) -> Any`: 初始化下載管理器
+  - `download_update(download_url: str, progress_callback: Optional[Callable[Tuple]], chunk_size: int) -> str`: 下載更新檔案
+  - `_verify_download(filepath: str, expected_size: int) -> bool`: 驗證下載的檔案
+  - `calculate_file_hash(filepath: str, algorithm: str) -> str`: 計算檔案雜湊值
+  - `cleanup_downloads(keep_latest: int) -> None`: 清理下載目錄中的舊檔案
+  - `get_download_dir() -> str`: 獲取下載目錄路徑
+
+
+## Handwritten Context
 # Downloader Module
 
 **File:** [`addons/update/downloader.py`](addons/update/downloader.py)

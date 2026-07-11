@@ -1,3 +1,34 @@
+# File: `cogs/music_lib/state_manager.py`
+
+## Overview
+This file belongs to the Discord Cogs Subsystem. Its core responsibility is to handle logic related to `state_manager.py`, providing vital integrations within the PigPig bot ecosystem.
+
+## Classes
+
+### `PlayerState`
+Class managing PlayerState state and behavior.
+
+- **Attributes**:
+  - `current_song` (`Optional[Dict[Tuple]]`): Property holding the current_song state.
+  - `last_played_song` (`Optional[Dict[Tuple]]`): Property holding the last_played_song state.
+  - `current_message` (`Optional[discord.Message]`): Property holding the current_message state.
+  - `current_view` (`Optional[Any]`): Property holding the current_view state.
+  - `ui_messages` (`list`): Property holding the ui_messages state.
+  - `autoplay` (`bool`): Property holding the autoplay state.
+  - `player_loop_task` (`Optional[asyncio.Task]`): Property holding the player_loop_task state.
+
+### `StateManager`
+Class managing StateManager state and behavior.
+
+- **Methods**:
+  - `__init__() -> Any`: Performs internal processing logic.
+  - `get_state(guild_id: int) -> PlayerState`: Get or create state for a guild.
+  - `update_state(guild_id: int) -> Any`: Update state attributes for a guild.
+  - `cancel_player_loop(guild_id: int) -> Any`: Cancel any running player loop task for a guild.
+  - `clear_state(guild_id: int) -> Any`: Clear state for a guild.
+
+
+## Handwritten Context
 # Music Library - State Manager
 
 **File:** [`cogs/music_lib/state_manager.py`](cogs/music_lib/state_manager.py)

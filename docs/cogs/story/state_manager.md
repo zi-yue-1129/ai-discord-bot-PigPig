@@ -1,3 +1,24 @@
+# File: `cogs/story/state_manager.py`
+
+## Overview
+This file belongs to the Discord Cogs Subsystem. Its core responsibility is to handle logic related to `state_manager.py`, providing vital integrations within the PigPig bot ecosystem.
+
+## Classes
+
+### `StoryStateManager`
+Manages story state updates based on structured GM Action Plans.
+
+- **Attributes**:
+  - `bot` (`Any`): Internal instance state.
+  - `logger` (`Any`): Internal instance state.
+
+- **Methods**:
+  - `__init__(bot: Any) -> Any`: Performs internal processing logic.
+  - `update_state_from_gm_plan(instance: StoryInstance, gm_plan: GMActionPlan) -> StoryInstance`: Updates the story state based on a structured GMActionPlan.
+  - `initialize_default_state(instance: StoryInstance) -> StoryInstance`: Initialize default state for a new story instance.
+
+
+## Handwritten Context
 # Story System - State Manager
 
 **File:** [`cogs/story/state_manager.py`](cogs/story/state_manager.py)

@@ -1,57 +1,108 @@
-# Settings Manager
+# File: `addons/settings.py`
 
 ## Overview
-
 The `addons/settings.py` module is the central configuration engine for the PigPig Bot. It handles loading YAML configuration files, managing environment variables via `.env`, and providing a structured API for other modules to access settings.
 
-## Configuration Hierarchy
+This file belongs to the Addons Subsystem. Its core responsibility is to handle logic related to `settings.py`, providing vital integrations within the PigPig bot ecosystem.
 
-The bot uses a "Config Root" pattern for flexibility:
-1. **`CONFIG_ROOT`**: Defined by the `CONFIG_ROOT` environment variable. Defaults to `./base_configs`.
-2. **YAML Files**: Settings are split into logical files within the config root (e.g., `base.yaml`, `llm.yaml`, `memory.yaml`).
-3. **Environment Variables**: Sensitive data (tokens, keys) are loaded from `.env` via `tokens.py`.
+## Classes
 
-## Core Configuration Objects
+### `BaseConfig`
+Configuration object mapped from config/base.yaml
 
-The module exposes several specialized config classes:
+- **Attributes**:
+  - `path` (`Any`): Internal instance state.
 
-### `BaseConfig` (`base.yaml`)
-- **Prefix**: The default command prefix.
-- **Activity**: Discord "Watching/Playing" status rotation.
-- **Logging**: Detailed console and file logging settings (colors, levels, retention).
+- **Methods**:
+  - `__init__(path: str) -> None`: Performs internal processing logic.
 
-### `LLMConfig` (`llm.yaml`)
-- **Model Priorities**: Ordered list of LLM models to try.
-- **Ollama URL**: Connection string for local models.
-- **Timeouts**: Global LLM call timeout settings.
+### `LLMConfig`
+Configuration object mapped from config/llm.yaml
 
-### `MemoryConfig` (`memory.yaml`)
-- **Enabled**: Toggle for the entire memory subsystem.
-- **Vector Store**: Qdrant connection details and collection names.
-- **Embeddings**: Provider (Google/OpenAI) and model selection.
-- **Thresholds**: Message/Time limits for triggering memory processing.
+- **Attributes**:
+  - `path` (`Any`): Internal instance state.
 
-### `PromptConfig` (`prompt/*.yaml`)
-- **Dynamic Prompts**: Manages agent-specific system prompts.
-- **Variable Injection**: Automatically replaces placeholders like `{bot_name}`, `{creator}`, and `{environment}`.
+- **Methods**:
+  - `__init__(path: str) -> None`: Performs internal processing logic.
 
-## Technical Details
+### `UpdateConfig`
+Configuration object mapped from config/update.yaml
 
-- **Safe Loading**: YAML files are loaded with error handling that reports failures via `func.report_error`.
-- **Async Initialization**: Configuration is evaluated at module import time but can interact with the async event loop for error reporting.
-- **Logging Integration**: The settings module explicitly reloads the logging configuration once `BaseConfig` is loaded to ensure that `CONFIG_ROOT` settings are respected.
+- **Attributes**:
+  - `path` (`Any`): Internal instance state.
 
-## Usage
+- **Methods**:
+  - `__init__(path: str) -> None`: Performs internal processing logic.
 
-Modules should import the pre-instantiated config objects:
+### `MusicConfig`
+Configuration object mapped from config/music.yaml
 
-```python
-from addons.settings import llm_config, memory_config
+- **Attributes**:
+  - `path` (`Any`): Internal instance state.
 
-print(llm_config.ollama_url)
-if memory_config.enabled:
-    # Do something
-```
+- **Methods**:
+  - `__init__(path: str) -> None`: Performs internal processing logic.
 
----
-*By centralizing settings, PigPig Bot remains highly portable and easy to configure for different Discord environments.*
+### `PromptConfig`
+Configuration object mapped from config/prompt/*.yaml
+
+- **Attributes**:
+  - `path` (`Any`): Internal instance state.
+
+- **Methods**:
+  - `__init__(path: str) -> None`: Performs internal processing logic.
+  - `get_system_prompt(agent_name: str, bot_id: Any, message: Any) -> str`: Retrieve system_prompt from agent config and apply dynamic variable replacement.
+
+### `MemoryConfig`
+Memory subsystem configuration object mapped from config/memory.yaml
+
+- **Attributes**:
+  - `path` (`Any`): Internal instance state.
+
+- **Methods**:
+  - `__init__(path: str) -> None`: Performs internal processing logic.
+
+### `_AttachmentImageConfig`
+Class managing _AttachmentImageConfig state and behavior.
+
+- **Methods**:
+  - `__init__(data: dict) -> None`: Performs internal processing logic.
+
+### `_AttachmentPdfConfig`
+Class managing _AttachmentPdfConfig state and behavior.
+
+- **Methods**:
+  - `__init__(data: dict) -> None`: Performs internal processing logic.
+
+### `_AttachmentVideoConfig`
+Class managing _AttachmentVideoConfig state and behavior.
+
+- **Methods**:
+  - `__init__(data: dict) -> None`: Performs internal processing logic.
+
+### `_AttachmentEmbedsConfig`
+Class managing _AttachmentEmbedsConfig state and behavior.
+
+- **Methods**:
+  - `__init__(data: dict) -> None`: Performs internal processing logic.
+
+### `AttachmentConfig`
+Configuration for attachment and embed processing (base_configs/attachments.yaml).
+
+- **Attributes**:
+  - `path` (`Any`): Internal instance state.
+  - `image` (`Any`): Internal instance state.
+  - `pdf` (`Any`): Internal instance state.
+  - `video` (`Any`): Internal instance state.
+  - `embeds` (`Any`): Internal instance state.
+
+- **Methods**:
+  - `__init__(path: str) -> None`: Performs internal processing logic.
+
+## Functions
+
+### `_load_yaml_file(path: str) -> dict`
+Safely load a YAML file; report errors via func.report_error and return an empty dict on failure.
+
+### `_get_config_root() -> str`
+Read CONFIG_ROOT environment variable.

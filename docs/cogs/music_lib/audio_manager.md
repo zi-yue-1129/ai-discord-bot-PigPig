@@ -1,3 +1,21 @@
+# File: `cogs/music_lib/audio_manager.py`
+
+## Overview
+This file belongs to the Discord Cogs Subsystem. Its core responsibility is to handle logic related to `audio_manager.py`, providing vital integrations within the PigPig bot ecosystem.
+
+## Classes
+
+### `AudioManager`
+Class managing AudioManager state and behavior.
+
+- **Methods**:
+  - `__init__() -> Any`: Performs internal processing logic.
+  - `create_audio_source(song: Dict[Tuple]) -> FFmpegPCMAudio`: Create an FFmpeg audio source based on song information.
+  - `delete_file(guild_id: int, file_path: str) -> Any`: Non-blocking file deletion using asyncio.to_thread.
+  - `cleanup_guild_files(guild_id: int, folder: str) -> Any`: Clean up all audio files for a guild.
+
+
+## Handwritten Context
 # Music Library - Audio Manager
 
 **File:** [`cogs/music_lib/audio_manager.py`](cogs/music_lib/audio_manager.py)

@@ -1,3 +1,44 @@
+# File: `cogs/music_lib/queue_manager.py`
+
+## Overview
+This file belongs to the Discord Cogs Subsystem. Its core responsibility is to handle logic related to `queue_manager.py`, providing vital integrations within the PigPig bot ecosystem.
+
+## Classes
+
+### `PlayMode`
+Class managing PlayMode state and behavior.
+
+### `QueueManager`
+Class managing QueueManager state and behavior.
+
+- **Attributes**:
+  - `bot` (`Any`): Internal instance state.
+
+- **Methods**:
+  - `__init__(bot: Any) -> Any`: Performs internal processing logic.
+  - `get_guild_settings(guild_id: int) -> Dict[Tuple]`: Get server playback settings.
+  - `get_guild_queue_and_folder(guild_id: int) -> Tuple[Tuple]`: Ensure the server has a unique folder and playlist.
+  - `get_queue(guild_id: int) -> asyncio.Queue`: Get the queue for the guild.
+  - `clear_guild_data(guild_id: int) -> Any`: Clear the playlist for the specified server.
+  - `set_playlist(guild_id: int, video_infos: List[Dict[Tuple]]) -> Any`: Set the server's playlist.
+  - `get_next_playlist_songs(guild_id: int, count: int, youtube_manager: Any, folder: Optional[str], interaction: Any) -> List[Dict[Tuple]]`: Get the next song from the playlist.
+  - `has_playlist_songs(guild_id: int) -> bool`: Check if there are more songs in the playlist.
+  - `toggle_shuffle(guild_id: int) -> bool`: Toggle shuffle playback state.
+  - `set_play_mode(guild_id: int, mode: PlayMode) -> Any`: Set the playback mode.
+  - `get_play_mode(guild_id: int) -> PlayMode`: Get the playback mode.
+  - `is_shuffle_enabled(guild_id: int) -> bool`: Check if shuffle playback is enabled.
+  - `copy_queue(guild_id: int, shuffle: bool) -> Tuple[Tuple]`: Copy queue contents without consuming the original queue.
+  - `get_queue_snapshot(guild_id: int) -> List[Dict[Tuple]]`: Get a snapshot of the current playback queue.
+  - `is_queue_empty(guild_id: int) -> bool`: Check if the queue is empty.
+  - `clear_queue(guild_id: int) -> Any`: Clear the playback queue for the specified server.
+  - `set_queue(guild_id: int, q: asyncio.Queue) -> Any`: Set the queue for a specific guild.
+  - `add_to_queue(guild_id: int, item: Dict[Tuple], force: bool) -> bool`: Add an item to the queue and apply different priority logic based on the adder (user or bot).
+  - `add_to_front_of_queue(guild_id: int, item: Dict[Tuple]) -> bool`: Add item to the front of the queue and handle overflow. Returns True on success, False on failure.
+  - `get_next_item(guild_id: int) -> Optional[Dict[Tuple]]`: Get the next item from the queue.
+  - `enforce_autoplay_limit(guild_id: int, limit: int) -> Any`: Ensure the number of autoplayed songs in the queue does not exceed the specified limit.
+
+
+## Handwritten Context
 # Music Library - Queue Manager
 
 **File:** [`cogs/music_lib/queue_manager.py`](cogs/music_lib/queue_manager.py)

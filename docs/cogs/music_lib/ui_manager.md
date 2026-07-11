@@ -1,3 +1,28 @@
+# File: `cogs/music_lib/ui_manager.py`
+
+## Overview
+This file belongs to the Discord Cogs Subsystem. Its core responsibility is to handle logic related to `ui_manager.py`, providing vital integrations within the PigPig bot ecosystem.
+
+## Classes
+
+### `UIManager`
+Class managing UIManager state and behavior.
+
+- **Attributes**:
+  - `bot` (`Any`): Internal instance state.
+
+- **Methods**:
+  - `__init__(bot: Any) -> Any`: Performs internal processing logic.
+  - `_get_lang_manager() -> Any`: Get language manager instance
+  - `_translate_music(guild_id: str) -> str`: Music module specific translation method.
+  - `_get_fallback_text(key: str) -> str`: Fallback text for when translation fails.
+  - `get_current_view(guild_id: int) -> Optional[MusicControlView]`: Performs internal processing logic.
+  - `update_player_ui(interaction: discord.Interaction, item: Dict[Tuple], current_message: Optional[discord.Message], youtube_manager: Any, music_cog: Any) -> Optional[discord.Message]`: Update or create the music player UI.
+  - `_create_player_embed(item: Dict[Tuple], youtube_manager: Any, guild_id: str) -> discord.Embed`: Create the player embed with song information
+  - `cleanup_view(guild_id: int) -> Any`: Clean up the view for a specific guild.
+
+
+## Handwritten Context
 # Music Library - UI Manager
 
 **File:** [`cogs/music_lib/ui_manager.py`](cogs/music_lib/ui_manager.py)

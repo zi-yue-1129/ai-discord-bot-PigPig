@@ -1,3 +1,35 @@
+# File: `cogs/music_lib/youtube.py`
+
+## Overview
+This file belongs to the Discord Cogs Subsystem. Its core responsibility is to handle logic related to `youtube.py`, providing vital integrations within the PigPig bot ecosystem.
+
+## Classes
+
+### `YouTubeManager`
+Class managing YouTubeManager state and behavior.
+
+- **Attributes**:
+  - `time_limit` (`Any`): Internal instance state.
+
+- **Methods**:
+  - `__init__(time_limit: Any) -> Any`: Performs internal processing logic.
+  - `_get_default_ffmpeg_config() -> dict`: Performs internal processing logic.
+  - `_build_postprocessor_args() -> list`: Performs internal processing logic.
+  - `create(cls: Any, time_limit: Any) -> Any`: Performs internal processing logic.
+  - `search_videos(query: Any, max_results: Any) -> Any`: Performs internal processing logic.
+  - `download_playlist(url: str, folder: str, interaction: discord.Interaction) -> tuple[Tuple]`: Download a YouTube playlist.
+  - `get_video_info_without_download(url: str, interaction: discord.Interaction) -> tuple[Tuple]`: Get video information without downloading.
+  - `download_audio(url: str, folder: str, interaction: discord.Interaction) -> tuple[Tuple]`: Download audio from YouTube.
+  - `get_thumbnail_url(video_id: Any) -> Any`: Performs internal processing logic.
+  - `get_related_videos(video_id: str, title: str, author: str, interaction: discord.Interaction, limit: int, exclude_ids: Optional[Set[str]]) -> tuple[Tuple]`: Get related videos for a YouTube video.
+
+## Functions
+
+### `check_ffmpeg(ffmpeg_path: Any) -> Any`
+Performs internal processing logic.
+
+
+## Handwritten Context
 # Music Library - YouTube Manager
 
 **File:** [`cogs/music_lib/youtube.py`](cogs/music_lib/youtube.py)

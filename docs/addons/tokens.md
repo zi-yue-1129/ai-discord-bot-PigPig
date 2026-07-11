@@ -1,47 +1,27 @@
-# Token & Secret Management
+# File: `addons/tokens.py`
 
 ## Overview
-
 The `addons/tokens.py` module manages sensitive credentials and API keys. It serves as the single source of truth for all secrets required by the PigPig Bot.
 
-## Secret Loading
+This file belongs to the Addons Subsystem. Its core responsibility is to handle logic related to `tokens.py`, providing vital integrations within the PigPig bot ecosystem.
 
-Secrets are loaded from two primary sources:
-1. **`.env` File**: A local file containing `KEY=VALUE` pairs.
-2. **Environment Variables**: System-level variables that override `.env`.
+## Classes
 
-The module uses `python-dotenv` to ensure that local development is seamless.
+### `TOKENS`
+Class managing TOKENS state and behavior.
 
-## Managed Secrets
+- **Attributes**:
+  - `token` (`Any`): Internal instance state.
+  - `client_id` (`Any`): Internal instance state.
+  - `client_secret_id` (`Any`): Internal instance state.
+  - `secret_key` (`Any`): Internal instance state.
+  - `bug_report_channel_id` (`Any`): Internal instance state.
+  - `anthropic_api_key` (`Any`): Internal instance state.
+  - `openai_api_key` (`Any`): Internal instance state.
+  - `google_api_key` (`Any`): Internal instance state.
+  - `tenor_api_key` (`Any`): Internal instance state.
+  - `vector_store_api_key` (`Any`): Internal instance state.
 
-| Variable | Description | Requirement |
-|----------|-------------|-------------|
-| `TOKEN` | Discord Bot Token. | **Required** |
-| `CLIENT_ID` | Discord Application ID. | **Required** |
-| `BUG_REPORT_CHANNEL_ID` | Discord ID for centralized error logs. | **Required** |
-| `GOOGLE_API_KEY` | Key for Gemini and Google Search. | Optional |
-| `OPENAI_API_KEY` | Key for GPT-4 or OpenAI Embeddings. | Optional |
-| `ANTHROPIC_API_KEY` | Key for Claude models. | Optional |
-| `TENOR_API_KEY` | Key for searching GIFs. | Optional |
-
-## Validation Logic
-
-On startup, the `TOKENS` class performs a strict validation check:
-- **Missing Required Vars**: If any critical tokens (Discord, Client ID, etc.) are missing, the bot will log a critical error and **terminate immediately** (`SystemExit(1)`).
-- **Format Validation**: Ensures that IDs (like `BUG_REPORT_CHANNEL_ID`) are valid integers.
-- **Optional Warnings**: If optional API keys (Gemini, OpenAI) are missing, it schedules an asynchronous warning via `func.report_error` to alert the admin.
-
-## Usage
-
-Access tokens globally via the `tokens` instance:
-
-```python
-from addons.tokens import tokens
-
-if tokens.google_api_key:
-    # Initialize Google client
-```
-
----
-> [!CAUTION]
-> Never commit your `.env` file to version control. The repository includes a `.gitignore` entry to prevent accidental exposure of your secrets.
+- **Methods**:
+  - `__init__() -> None`: Performs internal processing logic.
+  - `_validate_environment_variables() -> None`: Verify all required environment variables exist and are valid; terminate if validation fails.

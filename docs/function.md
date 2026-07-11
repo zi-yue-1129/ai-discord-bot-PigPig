@@ -1,38 +1,49 @@
-# Utility Singleton (function.py)
+# File: `function.py`
 
 ## Overview
-
 The `function.py` module provides a global utility singleton (`func`) and error management tools used throughout the entire bot ecosystem.
 
-## Core Components
+This file belongs to the Core System. Its core responsibility is to handle logic related to `function.py`, providing vital integrations within the PigPig bot ecosystem.
 
-### `Function` Class
-The main utility class, exposed as the `func` singleton.
-- **`set_bot(bot)`**: Links the Discord bot instance to the utility system.
-- **`report_error(error, details)`**: The centralized error reporting engine.
-- **`open_json(path)` / `update_json(path, data)`**: Safe JSON file I/O utilities.
+## Classes
 
 ### `ErrorDeduplicator`
-Prevents the bot from spamming error reports to Discord.
-- **Deduplication Logic**: Hashes error types, messages, and details.
-- **Cooldown**: Suppresses identical reports for a configurable period (default: 12 hours).
-- **Quota Awareness**: Detects API quota/rate-limit errors and logs them as Warnings rather than Errors.
+Tracks recently reported errors to avoid sending duplicates to Discord.
 
-## Error Reporting System
+Uses a hash of error type + message + details to identify unique errors.
+Errors within the cooldown period are suppressed.
 
-When `func.report_error` is called, the system:
-1. Validates if the error is a duplicate via `ErrorDeduplicator`.
-2. Categorizes the error (Quota vs. General Error).
-3. Generates a rich Discord Embed containing:
-    - **Title**: Error Report or Quota Warning.
-    - **Error Details**: Truncated error message.
-    - **Traceback**: Python stack trace formatted as a code block.
-    - **Metadata**: Context details and UTC timestamp.
-4. Sends the report to the configured bug report channel.
+Attributes:
+    _recent_errors: Dict mapping error keys to (timestamp, count).
+    _cooldown_seconds: Minimum seconds between reports of the same error.
+    _lock: Threading lock for thread-safe operations.
 
-## Constants & Paths
+- **Attributes**:
+  - `_cooldown_seconds` (`Any`): Internal instance state.
+  - `_lock` (`Any`): Internal instance state.
+  - `_cleanup_threshold` (`Any`): Internal instance state.
 
-- **`ROOT_DIR`**: The absolute path to the bot's root directory, used for reliable file access across different deployment environments.
+- **Methods**:
+  - `__init__(cooldown_seconds: float) -> None`: Initialize the error deduplicator.
+  - `_make_key(error: Exception, details: Optional[str]) -> str`: Create a unique key for the error.
+  - `should_report(error: Exception, details: Optional[str]) -> bool`: Check if this error should be reported or suppressed as duplicate.
+  - `get_suppressed_count(error: Exception, details: Optional[str]) -> int`: Get the number of times this error was suppressed since last report.
+  - `_cleanup(current_time: float) -> None`: Remove expired entries from the cache.
 
----
-*This module ensures system stability by providing robust error handling and prevents administrative fatigue by deduplicating redundant alerts.*
+### `Function`
+Class managing Function state and behavior.
+
+- **Attributes**:
+  - `bot` (`Any`): Internal instance state.
+
+- **Methods**:
+  - `__init__() -> Any`: Performs internal processing logic.
+  - `set_bot(bot: Any) -> Any`: Performs internal processing logic.
+  - `report_error(error: Exception, details: str) -> Any`: Report an error to Discord with deduplication.
+  - `open_json(path: str) -> dict`: Performs internal processing logic.
+  - `update_json(path: str, new_data: dict) -> None`: Performs internal processing logic.
+
+## Functions
+
+### `get_error_deduplicator() -> ErrorDeduplicator`
+Get the global ErrorDeduplicator singleton.

@@ -1,3 +1,28 @@
+# File: `cogs/story/prompt_engine.py`
+
+## Overview
+This file belongs to the Discord Cogs Subsystem. Its core responsibility is to handle logic related to `prompt_engine.py`, providing vital integrations within the PigPig bot ecosystem.
+
+## Classes
+
+### `StoryPromptEngine`
+Builds high-quality prompts for the layered AI agents in the story.
+
+- **Attributes**:
+  - `bot` (`Any`): Internal instance state.
+  - `logger` (`Any`): Internal instance state.
+  - `system_prompt_manager` (`Any`): Internal instance state.
+  - `language_map` (`Any`): Internal instance state.
+
+- **Methods**:
+  - `__init__(bot: commands.Bot, system_prompt_manager: SystemPromptManager) -> Any`: Performs internal processing logic.
+  - `build_gm_prompt(instance: StoryInstance, world: StoryWorld, characters: List[StoryCharacter], user_input: str, story_outlines: List[str], language: str, intervention_text: Optional[str]) -> str`: Constructs the prompt for the Game Master (GM) Agent.
+  - `build_story_start_prompt(instance: StoryInstance, world: StoryWorld, characters: List[StoryCharacter]) -> str`: Constructs the prompt for the GM to generate the very first scene.
+  - `_get_fallback_gm_prompt() -> str`: 提供回退的 GM 系統提示詞，當沒有頻道特定的系統提示詞時使用。
+  - `build_character_prompt(character: StoryCharacter, gm_context: DialogueContext, guild_id: int, location: str, date: str, time: str) -> Tuple[Tuple]`: Constructs the prompts for the Character Agent.
+
+
+## Handwritten Context
 # Story System - Prompt Engine
 
 **File:** [`cogs/story/prompt_engine.py`](cogs/story/prompt_engine.py)

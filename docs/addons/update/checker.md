@@ -1,3 +1,31 @@
+# File: `addons/update/checker.py`
+
+## Overview
+This file belongs to the Addons Subsystem. Its core responsibility is to handle logic related to `checker.py`, providing vital integrations within the PigPig bot ecosystem.
+版本檢查器模組
+
+負責檢查 GitHub 上的最新版本並與當前版本進行比較。
+
+## Classes
+
+### `VersionChecker`
+版本檢查器
+
+- **Attributes**:
+  - `github_api_url` (`Any`): Internal instance state.
+  - `current_version` (`Any`): Internal instance state.
+  - `logger` (`Any`): Internal instance state.
+
+- **Methods**:
+  - `__init__(github_config: Dict[Tuple]) -> Any`: 初始化版本檢查器
+  - `_get_current_version() -> str`: 獲取當前版本
+  - `check_for_updates() -> Dict[Tuple]`: 檢查是否有可用更新
+  - `_compare_versions(current: str, latest: str) -> bool`: 比較版本號
+  - `_get_error_result(error_message: str) -> Dict[Tuple]`: 獲取錯誤結果
+  - `get_current_version() -> str`: 獲取當前版本
+
+
+## Handwritten Context
 # Checker Module
 
 **File:** [`addons/update/checker.py`](addons/update/checker.py)
