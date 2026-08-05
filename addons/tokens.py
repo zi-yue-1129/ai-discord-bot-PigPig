@@ -25,6 +25,7 @@ class TOKENS:
         self.google_api_key = os.getenv("GOOGLE_API_KEY", None)
         os.environ["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API_KEY", "")
         self.tenor_api_key = os.getenv("TENOR_API_KEY", None)
+        self.vllm_api_key = os.getenv("VLLM_API_KEY", "EMPTY")
         self.vector_store_api_key = os.getenv("VECTOR_STORE_API_KEY", None)
         bot_owner_raw = os.getenv("BOT_OWNER_ID")
         try:

@@ -6,6 +6,7 @@ from langchain_openai import OpenAIEmbeddings  # type: ignore
 
 from ..vector.manager import register_embedding_provider
 from addons.settings import MemoryConfig
+from addons.tokens import tokens
 from function import func
 
 logger = logging.getLogger(__name__)
@@ -17,7 +18,9 @@ def vllm_provider(settings: MemoryConfig) -> Embeddings:
     vLLM embedding provider factory.
 
     vLLM exposes an OpenAI-compatible /v1/embeddings endpoint, so this routes
-    through OpenAIEmbeddings with a custom base_url and a placeholder api_key.
+    through OpenAIEmbeddings with a custom base_url and the api_key vLLM was
+    launched with (VLLM_API_KEY in .env; falls back to the "EMPTY" placeholder
+    vLLM accepts when --api-key is not set).
 
     Expects settings to provide:
       - embedding_model_name (the --served-model-name vLLM was launched with)
@@ -35,7 +38,7 @@ def vllm_provider(settings: MemoryConfig) -> Embeddings:
         return OpenAIEmbeddings(
             model=model_name,
             openai_api_base=f"{vllm_url}/v1",
-            openai_api_key="EMPTY",
+            openai_api_key=tokens.vllm_api_key,
             check_embedding_ctx_length=False,
         )  # type: ignore
 
