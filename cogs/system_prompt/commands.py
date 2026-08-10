@@ -217,13 +217,21 @@ class SystemPromptCommands(commands.Cog):
         user_id = str(interaction.user.id)
         scope_value = scope.value
 
-        # Permission check for server scope
+        # Permission check for server and channel scope
+        from .permissions import PermissionValidator
+        validator = PermissionValidator(self.bot)
+
         if scope_value == "server":
-            from .permissions import PermissionValidator
-            validator = PermissionValidator(self.bot)
             if not validator.can_modify_server_prompt(interaction.user, interaction.guild):
                 await interaction.followup.send(
                     "❌ You need administrator permissions to modify the server-level personality.",
+                    ephemeral=True,
+                )
+                return
+        else:
+            if not validator.can_modify_channel_prompt(interaction.user, interaction.channel):
+                await interaction.followup.send(
+                    "❌ You do not have permission to modify the channel-level personality.",
                     ephemeral=True,
                 )
                 return
