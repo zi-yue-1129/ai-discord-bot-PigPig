@@ -1,46 +1,38 @@
-# Update System
+# File: `update.py`
 
 ## Overview
+Lightweight CLI wrapper for update system
 
-The PigPig Bot features a sophisticated update system divided into two parts: a Command-Line Interface (CLI) for manual management and an integrated background service for automatic checks.
+This script provides a lightweight CLI interface that delegates core functionality
+to the new update architecture in addons.update.* modules.
 
-## Update CLI (`update.py`)
+Usage:
+    python update.py -c           # Check version
+    python update.py -l           # Install latest version
+    python update.py -v <version> # Install specific version
+    python update.py -b           # Install beta version
 
-A lightweight wrapper for the update architecture, allowing administrators to manage versions from the terminal.
+## Classes
 
-### Usage
+### `UpdateCLI`
+Lightweight CLI wrapper for update operations
 
-| Command | Action |
-|---------|--------|
-| `python update.py -c` | Check the current version against GitHub. |
-| `python update.py -l` | Download and install the latest stable version. |
-| `python update.py -b` | Install the latest beta version. |
-| `python update.py -v <version>` | Install a specific version/tag. |
+- **Attributes**:
+  - `config` (`Any`): Instance attribute managing config.
+  - `bot_owner_id` (`Any`): Instance attribute managing bot_owner_id.
+  - `github_config` (`Any`): Instance attribute managing github_config.
+  - `version_checker` (`Any`): Instance attribute managing version_checker.
+  - `permission_checker` (`Any`): Instance attribute managing permission_checker.
+  - `logger` (`Any`): Instance attribute managing logger.
 
-## Internal Architecture (`addons/update/`)
+- **Methods**:
+  - `check_version(with_message) -> str`: Check current version status  Args:     with_message: Whether to print message      Returns:     Latest version string
+  - `install_version(version, is_latest, is_beta) -> bool`: Install specified version  Args:     version: Version to install     is_latest: Whether to install latest version     is_beta: Whether to install beta version      Returns:     Installation success status
+  - `parse_args() -> argparse.Namespace`: Parse command line arguments
+  - `run() -> int`: Main execution method
 
-The system is built on several specialized modules:
+## Functions
 
-- **`manager.py`**: Coordinates the update process and interacts with the bot instance.
-- **`checker.py`**: Queries the GitHub API to compare local and remote versions.
-- **`downloader.py`**: Handles secure downloading and extraction of update packages.
-- **`security.py`**: Validates `BOT_OWNER_ID` permissions before allowing updates.
-- **`notifier.py`**: Provides interactive Discord UI (buttons) for initiating updates.
+### `main() -> Any`
+Main entry point
 
-## Update Process Flow
-
-1. **Detection**: `VersionChecker` identifies a new release on GitHub.
-2. **Permission Check**: `UpdatePermissionChecker` ensures the user has administrative rights.
-3. **Download**: `UpdateDownloader` fetches the ZIP archive to a temporary directory.
-4. **Installation**: `UpdateManager` extracts the files, preserving the `.env` and `data/` folders.
-5. **Completion**: The bot logs the success and requires a restart to apply changes.
-
-## Configuration
-
-Settings for the update system are managed in `base_configs/update.yaml`:
-- **Repository**: `starpig1129/ai-discord-bot-PigPig`
-- **Branch**: `main` (default) or `beta`.
-- **Auto-check**: Enable/disable background checks on startup.
-
----
-*Always ensure you have a backup of your data before performing a major version update.*

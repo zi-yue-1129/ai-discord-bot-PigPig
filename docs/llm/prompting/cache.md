@@ -1,199 +1,27 @@
-# Prompt Cache System
+# File: `llm/prompting/cache.py`
 
 ## Overview
-
 The `PromptCache` class provides a sophisticated caching system for prompt templates and generated content. It implements TTL (Time-To-Live) management, precompilation features, thread-safe operations, and comprehensive statistics tracking.
 
-## Class: PromptCache
+## Classes
 
-### Constructor
+### `PromptCache`
+Intelligent caching system for prompt components and combinations.
 
-```python
-def __init__(self):
-```
+- **Attributes**:
+  - `_lock` (`Any`): Instance attribute managing _lock.
+  - `logger` (`Any`): Instance attribute managing logger.
 
-**Description:**
-Initializes the cache system with multiple storage layers and thread safety mechanisms.
+- **Methods**:
+  - `get(key) -> Optional[Any]`: Retrieve a cached item if it exists and has not expired.  Args:     key: The unique identifier for the cached item.      Returns:     The cached value if available and valid, otherwise None.
+  - `set(key, value, ttl) -> None`: Set a value in the cache with a specific time-to-live.  Args:     key: The unique identifier for the cached item.     value: The data to be cached.     ttl: Time-to-live in seconds (default is 3600).
+  - `invalidate(key) -> None`: Explicitly remove an item from the cache.  Args:     key: The unique identifier of the item to invalidate.
+  - `clear_all() -> None`: Clear all cached items and metadata.
+  - `is_expired(key) -> bool`: Check if a cached item has passed its expiration time.  Args:     key: The cache key to check.      Returns:     True if the item is expired or does not exist, False otherwise.
+  - `precompile_templates(config) -> None`: Precompile common prompt module combinations to reduce runtime overhead.  Args:     config: The prompting configuration dictionary.
+  - `get_precompiled(key) -> Optional[str]`: Retrieve a precompiled template combination.  Args:     key: The key of the precompiled template.      Returns:     The combination key if found, otherwise None.
+  - `cleanup_expired() -> int`: Iterate through the cache and remove all expired items.  Returns:     The number of items successfully removed.
+  - `get_cache_stats() -> Dict[Tuple[str, Any]]`: Retrieve usage and performance statistics for the cache.  Returns:     A dictionary containing cache performance metrics.
+  - `get_cache_keys(prefix) -> Set[str]`: Retrieve all keys currently in the cache.  Args:     prefix: Optional filter to only return keys starting with this string.      Returns:     A set of matching cache keys.
+  - `extend_ttl(key, additional_seconds) -> bool`: Extend the life of a cached item by adding more time to its expiration.  Args:     key: The unique identifier for the cached item.     additional_seconds: Seconds to add to the existing TTL.      Returns:     True if the TTL was successfully extended, False otherwise.
 
-**Storage Components:**
-- `cache_storage`: Main cache for prompt data
-- `ttl_storage`: Timestamp tracking for expiration
-- `precompiled_cache`: Precompiled template combinations
-- `access_count`: Usage statistics tracking
-- `_lock`: Thread lock for concurrent access safety
-
-### Core Methods
-
-#### `get(self, key: str) -> Optional[Any]`
-
-**Parameters:**
-- `key`: Cache key to retrieve
-
-**Returns:**
-- `Optional[Any]`: Cached value, or None if not found/expired
-
-**Process:**
-1. **Access Validation**: Checks if key exists
-2. **Expiration Check**: Validates TTL using `is_expired()`
-3. **Cleanup**: Automatically removes expired items
-4. **Statistics**: Records access count
-5. **Thread Safety**: Uses RLock for concurrent access
-
-#### `set(self, key: str, value: Any, ttl: int = 3600) -> None`
-
-**Parameters:**
-- `key`: Cache key
-- `value`: Value to cache
-- `ttl`: Time-to-live in seconds (default: 3600)
-
-**Description:**
-Stores a value in the cache with expiration tracking and usage statistics initialization.
-
-#### `invalidate(self, key: str) -> None`
-
-**Parameters:**
-- `key`: Cache key to remove
-
-**Description:**
-Completely removes a cache entry from all storage layers including main cache, TTL tracking, access statistics, and precompiled cache.
-
-### Cache Management
-
-#### `clear_all(self) -> None`
-
-**Description:**
-Clears all cache data across all storage layers. Logs the number of cleared items for monitoring purposes.
-
-#### `cleanup_expired(self) -> int`
-
-**Returns:**
-- `int`: Number of expired items cleaned up
-
-**Process:**
-1. **Expiration Detection**: Scans all cached items for expiration
-2. **Batch Invalidation**: Removes all expired items
-3. **Statistics**: Returns count of cleaned items
-
-#### `extend_ttl(self, key: str, additional_seconds: int) -> bool`
-
-**Parameters:**
-- `key`: Cache key to extend
-- `additional_seconds`: Seconds to extend TTL
-
-**Returns:**
-- `bool`: Success status
-
-**Description:**
-Extends the TTL of an existing cache entry. Only works if the key exists and is not expired.
-
-### Precompilation System
-
-#### `precompile_templates(self, config: dict) -> None`
-
-**Parameters:**
-- `config`: Prompt configuration dictionary
-
-**Description:**
-Precompiles common template combinations for performance optimization:
-
-**Precompiled Combinations:**
-1. **Progressive Combinations**: All prefix combinations of default modules
-   - Example: If default_modules = [base, identity, language]
-   - Generates: base, base+identity, base+identity+language
-
-2. **Individual Modules**: Each default module separately
-
-**Precompilation Process:**
-```python
-# Progressive combinations
-for i in range(1, len(default_modules) + 1):
-    module_combo = [mod for mod in module_order if mod in default_modules[:i]]
-    combo_key = '_'.join(module_combo)
-    precompiled_cache[f"combo_{combo_key}"] = combo_key
-
-# Individual modules
-for module in default_modules:
-    precompiled_cache[f"module_{module}"] = module
-```
-
-#### `get_precompiled(self, key: str) -> Optional[str]`
-
-**Parameters:**
-- `key`: Precompiled template key
-
-**Returns:**
-- `Optional[str]`: Precompiled template content
-
-**Description:**
-Retrieves precompiled template combinations for faster prompt generation.
-
-### Expiration Management
-
-#### `is_expired(self, key: str) -> bool`
-
-**Parameters:**
-- `key`: Cache key to check
-
-**Returns:**
-- `bool`: True if expired or missing
-
-**Logic:**
-- Returns True if key is missing from TTL storage
-- Compares current time with stored expiration timestamp
-- Used for automatic cleanup in `get()` method
-
-### Statistics and Monitoring
-
-#### `get_cache_stats(self) -> Dict[str, Any]`
-
-**Returns:**
-- `Dict[str, Any]`: Comprehensive cache statistics
-
-**Statistics Include:**
-- `total_items`: Total number of cached items
-- `expired_items`: Count of expired items
-- `active_items`: Count of non-expired items
-- `precompiled_items`: Number of precompiled templates
-- `total_access_count`: Sum of all access counts
-- `most_accessed`: Tuple of (key, count) for most accessed item
-
-#### `get_cache_keys(self, prefix: str = '') -> Set[str]`
-
-**Parameters:**
-- `prefix`: Optional prefix filter
-
-**Returns:**
-- `Set[str]`: Set of cache keys matching the prefix
-
-**Description:**
-Provides visibility into cached content for debugging and monitoring purposes.
-
-## Thread Safety
-
-The cache implementation uses `threading.RLock()` (reentrant lock) to ensure thread-safe operations:
-
-- **Read Operations**: Multiple threads can read simultaneously
-- **Write Operations**: Exclusive lock during modifications
-- **Nested Calls**: Supports recursive locking within the same thread
-
-## Performance Optimizations
-
-1. **Precompilation**: Reduces template processing time for common combinations
-2. **Lazy Expiration**: Only checks expiration during access attempts
-3. **Batch Cleanup**: Efficient removal of multiple expired items
-4. **Access Tracking**: Enables optimization decisions based on usage patterns
-
-## Integration
-
-The PromptCache is used by:
-- **PromptManager** for template caching
-- **Builder system** for precompiled combinations
-- **Orchestrator** for prompt performance optimization
-
-## Error Handling
-
-All methods include comprehensive error handling:
-- **Thread Safety**: All operations are protected by locks
-- **Graceful Degradation**: Operations continue even if individual items fail
-- **Logging**: Detailed logging for monitoring and debugging
-- **Async Error Reporting**: Uses `func.report_error()` for critical issues

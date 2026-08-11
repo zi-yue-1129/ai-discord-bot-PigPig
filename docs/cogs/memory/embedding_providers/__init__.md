@@ -6,7 +6,8 @@ Core logic and functionalities for __init__.py. This file is part of the cogs su
 ## Functions
 
 ### `list_providers() -> List[str]`
-Return registered embedding provider names. Plays a key role in the system logic.
+Return registered embedding provider names.
 
-### `get_provider_factory(name: str) -> Optional[Callable]`
-Return the factory callable for a given provider name, or None if not found. Plays a key role in the system logic.
+### `get_provider_factory(name) -> Optional[Callable]`
+Return the factory callable for a given provider name, or None if not found.
+

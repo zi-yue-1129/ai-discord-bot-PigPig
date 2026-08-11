@@ -9,17 +9,16 @@ Core logic and functionalities for train.py. This file is part of the cogs subsy
 Represents Train.
 
 - **Attributes**:
-  - `db` (`Any`): Instance attribute.
-  - `embedding_dim` (`Any`): Instance attribute.
-  - `hidden_dim` (`Any`): Instance attribute.
-  - `dropout` (`Any`): Instance attribute.
-  - `learn_rate` (`Any`): Instance attribute.
-  - `epochs` (`Any`): Instance attribute.
-  - `save_interval` (`Any`): Instance attribute.
-  - `log_interval` (`Any`): Instance attribute.
-  - `logger` (`Any`): Instance attribute.
+  - `db` (`Any`): Instance attribute managing db.
+  - `embedding_dim` (`Any`): Instance attribute managing embedding_dim.
+  - `hidden_dim` (`Any`): Instance attribute managing hidden_dim.
+  - `dropout` (`Any`): Instance attribute managing dropout.
+  - `learn_rate` (`Any`): Instance attribute managing learn_rate.
+  - `epochs` (`Any`): Instance attribute managing epochs.
+  - `save_interval` (`Any`): Instance attribute managing save_interval.
+  - `log_interval` (`Any`): Instance attribute managing log_interval.
+  - `logger` (`Any`): Instance attribute managing logger.
 
 - **Methods**:
-  - `__init__(db: DB, embedding_dim: Any, hidden_dim: Any, dropout: Any, learn_rate: Any, epochs: Any, save_interval: Any, log_interval: Any) -> None`: Executes __init__ operation.
-  - `genModel(discord_id: str) -> Any`: Executes genModel operation.
-  - `predict(discord_id: str) -> Any`: Executes predict operation.
+  - `genModel(discord_id) -> Any`: Executes genModel operation.
+  - `predict(discord_id) -> Any`: Executes predict operation.

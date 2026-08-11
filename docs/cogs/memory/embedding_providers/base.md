@@ -5,5 +5,6 @@ Core logic and functionalities for base.py. This file is part of the cogs subsys
 
 ## Functions
 
-### `base_provider(settings: MemoryConfig) -> Embeddings`
-Base dummy embedding provider returning zero vectors. Plays a key role in the system logic.
+### `base_provider(settings) -> Embeddings`
+Base dummy embedding provider returning zero vectors.
+Useful for tests and local development when no real model is available.

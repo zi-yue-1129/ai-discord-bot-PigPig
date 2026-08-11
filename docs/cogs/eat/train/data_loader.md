@@ -9,11 +9,10 @@ Core logic and functionalities for data_loader.py. This file is part of the cogs
 Represents DataLoader.
 
 - **Attributes**:
-  - `db` (`Any`): Instance attribute.
+  - `db` (`Any`): Instance attribute managing db.
 
 - **Methods**:
-  - `__init__(db: DB) -> None`: Executes __init__ operation.
-  - `loadingData(discord_id: str) -> Any`: Executes loadingData operation.
-  - `procressData(data: Any) -> Any`: Executes procressData operation.
-  - `genVocabularyList(data: Any) -> Any`: Executes genVocabularyList operation.
-  - `transform(data: Any, voc_length: Any, batch_size: Any) -> Any`: Executes transform operation.
+  - `loadingData(discord_id) -> Any`: Executes loadingData operation.
+  - `procressData(data) -> Any`: Executes procressData operation.
+  - `genVocabularyList(data) -> Any`: Executes genVocabularyList operation.
+  - `transform(data, voc_length, batch_size) -> Any`: Executes transform operation.

@@ -1,71 +1,33 @@
-# Notifier Module
+# File: `addons/update/notifier.py`
 
-**File:** [`addons/update/notifier.py`](addons/update/notifier.py)
+## Overview
+Discord 通知系統模組
 
-This module is responsible for sending notifications related to the update process via Discord. It primarily communicates with the bot owner through DMs.
+負責發送更新相關的通知給 Bot 擁有者和管理員。
 
-## `DiscordNotifier` Class
+## Classes
 
-This class handles the sending of various notifications.
+### `DiscordNotifier`
+Discord 通知系統
 
-### `__init__(self, bot)`
+- **Attributes**:
+  - `bot` (`Any`): Instance attribute managing bot.
+  - `logger` (`Any`): Instance attribute managing logger.
+  - `owner_id` (`Any`): Instance attribute managing owner_id.
 
-Initializes the notifier.
+- **Methods**:
+  - `notify_update_available(version_info) -> bool`: 通知有新版本可用  Args:     version_info: 版本資訊字典      Returns:     通知是否發送成功
+  - `notify_update_progress(stage, progress, details) -> bool`: 通知更新進度  Args:     stage: 當前階段     progress: 進度百分比     details: 詳細資訊      Returns:     通知是否發送成功
+  - `notify_update_complete(result) -> bool`: 通知更新完成  Args:     result: 更新結果字典      Returns:     通知是否發送成功
+  - `notify_update_error(error, context) -> bool`: 通知更新錯誤  Args:     error: 錯誤物件     context: 錯誤上下文      Returns:     通知是否發送成功
+  - `notify_restart_success(restart_info) -> bool`: 通知重啟成功  Args:     restart_info: 重啟資訊      Returns:     通知是否發送成功
+  - `send_channel_notification(channel_id, embed) -> bool`: 發送頻道通知  Args:     channel_id: 頻道 ID     embed: 嵌入訊息      Returns:     通知是否發送成功
 
-*   **Parameters:**
-    *   `bot`: The instance of the Discord bot.
+### `QuickUpdateView`
+快速更新視圖
 
-### Methods
+- **Methods**:
+  - `quick_update(interaction, button) -> Any`: 快速更新按鈕
+  - `remind_later(interaction, button) -> Any`: 稍後提醒按鈕
+  - `ignore_update(interaction, button) -> Any`: 忽略更新按鈕
 
-#### `async notify_update_available(self, version_info: Dict[str, Any]) -> bool`
-
-Sends a notification that a new version is available, including release notes and an option to start the update.
-
-*   **Parameters:**
-    *   `version_info` (Dict[str, Any]): A dictionary containing details about the new version.
-*   **Returns:** `True` if the notification was sent successfully, `False` otherwise.
-
-#### `async notify_update_progress(self, stage: str, progress: int, details: str = "") -> bool`
-
-Sends a notification about the current progress of an ongoing update.
-
-*   **Parameters:**
-    *   `stage` (str): The current stage of the update (e.g., "downloading", "installing").
-    *   `progress` (int): The progress percentage (0-100).
-    *   `details` (str): Optional additional details about the current step.
-*   **Returns:** `True` if the notification was sent successfully.
-
-#### `async notify_update_complete(self, result: Dict[str, Any]) -> bool`
-
-Sends a notification when the update process is complete, indicating success or failure.
-
-*   **Parameters:**
-    *   `result` (Dict[str, Any]): A dictionary containing the results of the update.
-*   **Returns:** `True` if the notification was sent successfully.
-
-#### `async notify_update_error(self, error: Exception, context: str = "") -> bool`
-
-Sends a notification when an error occurs during the update process.
-
-*   **Parameters:**
-    *   `error` (Exception): The exception object that was raised.
-    *   `context` (str): The context in which the error occurred.
-*   **Returns:** `True` if the notification was sent successfully.
-
-#### `async notify_restart_success(self, restart_info: Dict[str, Any]) -> bool`
-
-Sends a notification after the bot has successfully restarted.
-
-*   **Parameters:**
-    *   `restart_info` (Dict[str, Any]): Information about the restart.
-*   **Returns:** `True` if the notification was sent successfully.
-
-## `QuickUpdateView` Class
-
-This `discord.ui.View` provides buttons for the user to interact with an update notification.
-
-### Buttons
-
-*   **Update Now:** Starts the update process. Can only be used by the bot owner.
-*   **Remind Later:** Dismisses the current notification, which will reappear at the next update check.
-*   **Ignore:** Ignores the current update notification.

@@ -5,5 +5,11 @@ Core logic and functionalities for google.py. This file is part of the cogs subs
 
 ## Functions
 
-### `google_genai_provider(settings: MemoryConfig) -> Embeddings`
-Google Generative AI embeddings provider using langchain_google_genai. Plays a key role in the system logic.
+### `google_genai_provider(settings) -> Embeddings`
+Google Generative AI embeddings provider using langchain_google_genai.
+
+Expects settings to provide:
+  - google_api_key
+  - embedding_model_name
+
+Returns a langchain_core compatible Embeddings instance.

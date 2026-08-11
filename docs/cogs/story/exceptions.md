@@ -1,7 +1,7 @@
 # File: `cogs/story/exceptions.py`
 
 ## Overview
-Custom exceptions for the story module. This file is part of the cogs subsystem and handles the primary operations for its respective domain.
+Custom exceptions for the story module.
 
 ## Classes
 

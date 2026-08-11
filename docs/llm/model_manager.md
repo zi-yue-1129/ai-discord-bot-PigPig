@@ -1,76 +1,14 @@
-# Model Manager
+# File: `llm/model_manager.py`
 
 ## Overview
+ModelManager: Loads config/llm.yaml and returns ModelFallbackMiddleware or priority lists based on agent_type.
 
-The `ModelManager` class manages Large Language Model (LLM) priorities and configurations. It provides a centralized way to handle model selection, fallback logic, and priority lists for different agent types (`info_model`, `message_model`, etc.).
+## Classes
 
-## Architecture
+### `ModelManager`
+Manages LLM model priority by loading configuration and creating ModelFallbackMiddleware.
 
-### Core Components
+- **Methods**:
+  - `get_model_priority_list(agent_type) -> List[str]`: Returns the full list of models for a given agent_type.  This method is useful for streaming fallback scenarios where ModelFallbackMiddleware doesn't work (streaming mode).  Args:     agent_type: The agent type to get models for (e.g., 'info_model').  Returns:     List of model strings in priority order (e.g., ['google_genai:gemini-2.5-flash', 'ollama:gpt-oss:20b']).  Raises:     ValueError: If no model priorities are configured for the agent_type.
+  - `get_model(agent_type) -> Tuple[Tuple[str, ModelFallbackMiddleware]]`: 公開方法，回傳 (primary_model, ModelFallbackMiddleware)。  若找不到對應的 model_priorities，會丟出 ValueError 以避免呼叫端誤解包 None。 同時在發生錯誤時會使用 func.report_error 上報錯誤以便集中化日誌管理。
 
-- **ModelManager**: Main class for model configuration and middleware creation.
-- **ModelFallbackMiddleware**: LangChain middleware for handling model fallbacks in non-streaming scenarios.
-- **Priority Resolver**: Converts configuration settings into `provider:model` strings.
-
-### Data Flow
-
-```mermaid
-graph TD
-    A[Configuration File] --> B[ModelManager]
-    B --> C[Parse Agent Type]
-    C --> D[Resolve Priority List]
-    D --> E[Create ModelFallbackMiddleware]
-    D --> G[Return Priority List]
-    E --> F[Return Model + Middleware]
-```
-
-## Class Reference
-
-### ModelManager
-
-#### Methods
-
-##### get_model()
-`def get_model(self, agent_type: str) -> Tuple[str, ModelFallbackMiddleware]`
-Returns the primary model and a standard LangChain fallback middleware. Use this for standard agent invocations (non-streaming).
-
-##### get_model_priority_list()
-`def get_model_priority_list(self, agent_type: str) -> List[str]`
-Returns the full list of models in priority order (e.g., `['google:gemini-pro', 'anthropic:claude-3']`). This is essential for **streaming fallback** scenarios where the standard middleware cannot be used.
-
-## streaming Fallback and Circuit Breaker
-
-The `ModelManager` works in tandem with the `CircuitBreaker` (managed in `llm/model_circuit_breaker.py`) to provide high availability:
-
-1.  **Priority Fetching**: The Orchestrator fetches the full priority list from `ModelManager`.
-2.  **Circuit Breaker Check**: For each model, it checks the `CircuitBreaker` to see if the model is currently "Open" (recently failed).
-3.  **Manual Execution**: The Orchestrator manually iterates through available models to handle streaming data, ensuring that if one fails, the next is tried immediately.
-
-## Configuration
-
-Model priorities are configured in `config/llm.yaml`:
-
-```yaml
-model_priorities:
-  info_model:
-    - google: [gemini-pro, gemini-flash]
-    - openai: [gpt-4-turbo]
-  message_model:
-    - anthropic: [claude-3-sonnet]
-    - google: [gemini-pro]
-```
-
-### Supported Providers
-- **google**: Gemini models (Flash, Pro).
-- **openai**: GPT-4, GPT-3.5 series.
-- **anthropic**: Claude 3 series.
-- **ollama**: Locally hosted models.
-
-## Design Philosophy
-
-- **Centralized Control**: All model selections are managed in one place to avoid hardcoding across cogs.
-- **Fail-Fast Fallback**: Priorities are ordered from most capable/expensive to fastest/cheapest.
-- **Quota Resilience**: The system is designed to seamlessly transition between providers (e.g., from Google to OpenAI) when API quotas are reached.
-
----
-*For fault tolerance implementation details, see the [Model Circuit Breaker](model_circuit_breaker.md) documentation.*

@@ -5,5 +5,10 @@ Core logic and functionalities for huggingface.py. This file is part of the cogs
 
 ## Functions
 
-### `huggingface_provider(settings: MemoryConfig) -> Embeddings`
-Provider factory using langchain_huggingface.HuggingFaceEmbeddings. Plays a key role in the system logic.
+### `huggingface_provider(settings) -> Embeddings`
+Provider factory using langchain_huggingface.HuggingFaceEmbeddings.
+
+Expects settings to provide:
+  - embedding_model_name
+
+Returns a langchain_core compatible Embeddings instance.

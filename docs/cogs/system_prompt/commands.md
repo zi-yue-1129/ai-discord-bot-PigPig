@@ -1,34 +1,31 @@
-# System Prompt System - Commands
+# File: `cogs/system_prompt/commands.py`
 
-**File:** [`cogs/system_prompt/commands.py`](cogs/system_prompt/commands.py)
+## Overview
+頻道系統提示管理模組的 Discord 斜線命令
 
-The `SystemPromptCommands` cog provides the user-facing interface for the entire system prompt feature. It is designed around a single, unified slash command that uses Discord UI components for all interactions.
+提供完整的 Discord 斜線命令介面，包含所有系統提示管理功能。
 
-## `SystemPromptCommands` Class
+## Classes
 
-### `__init__(self, bot)`
+### `SystemPromptCommands`
+系統提示管理命令類別
 
-Initializes the command cog, creating instances of the `SystemPromptManager` and `PermissionValidator` to handle the backend logic and security.
+- **Attributes**:
+  - `bot` (`Any`): Instance attribute managing bot.
+  - `logger` (`Any`): Instance attribute managing logger.
+  - `manager` (`Any`): Instance attribute managing manager.
+  - `permission_validator` (`Any`): Instance attribute managing permission_validator.
 
-### Main Command: `/system_prompt`
+- **Methods**:
+  - `get_system_prompt_manager() -> SystemPromptManager`: 取得系統提示管理器實例
+  - `system_prompt(interaction) -> Any`: 統一的系統提示管理命令 - 主選單介面
+  - `set_personality(interaction, scope, description) -> None`: Slash command to adjust bot personality via natural language description.  Args:     interaction: The Discord interaction object.     scope: Choice of "channel" or "server".     description: Natural language description of the desired personality change.
 
-This is the sole entry point for users. Instead of having multiple commands for different actions, this command opens a main menu from which all other actions are launched.
+## Functions
 
-*   **Behavior:** When executed, it creates and displays a `SystemPromptMainView` and a descriptive embed. All subsequent interactions happen through the buttons on this view. This approach simplifies the user experience and reduces the number of slash commands needed.
+### `handle_system_prompt_error(func) -> Any`
+系統提示錯誤處理裝飾器
 
-### UI-Driven Workflow
+### `setup(bot) -> Any`
+設定函式，用於載入 Cog
 
-All functionality is handled through views and modals defined in `cogs/system_prompt/ui/`.
-
-*   **`SystemPromptMainView`:** The main menu that appears when `/system_prompt` is run. It has buttons for:
-    *   **Set Prompt:** Leads to a choice between setting the server or channel prompt, which then opens the `SystemPromptModal`.
-    *   **View Config:** Shows the current effective prompt for the channel.
-    *   **Edit Modules:** Opens a `ModuleSelectView` to allow editing specific YAML modules.
-    *   **Copy Prompt:** Opens a `ChannelSelectView` to copy a prompt to another channel.
-    *   **Remove Prompt:** Opens a confirmation view to delete a server or channel prompt.
-*   **`SystemPromptModal`:** A popup form where users can type in the main prompt content and select modules to include.
-*   **`ConfirmationView`:** A generic view with "Confirm" and "Cancel" buttons used for destructive actions like removing a prompt.
-
-### Error Handling
-
-The cog uses a decorator, `@handle_system_prompt_error`, on its main command. This wrapper catches all custom exceptions defined in `exceptions.py` (like `PermissionError`, `ValidationError`, `PromptNotFoundError`) and provides a consistent, user-friendly error message in an ephemeral response, preventing crashes and improving user feedback.

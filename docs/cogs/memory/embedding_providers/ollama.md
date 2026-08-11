@@ -5,5 +5,11 @@ Core logic and functionalities for ollama.py. This file is part of the cogs subs
 
 ## Functions
 
-### `ollama_provider(settings: MemoryConfig) -> Embeddings`
-Ollama embedding provider factory using langchain_ollama.OllamaEmbeddings. Plays a key role in the system logic.
+### `ollama_provider(settings) -> Embeddings`
+Ollama embedding provider factory using langchain_ollama.OllamaEmbeddings.
+
+Expects settings to provide:
+  - embedding_model_name
+  - ollama_url (optional, if the client needs a custom endpoint)
+
+Returns a langchain_core compatible Embeddings instance.

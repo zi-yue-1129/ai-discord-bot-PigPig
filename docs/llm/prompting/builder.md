@@ -1,186 +1,23 @@
-# Prompt Builder
+# File: `llm/prompting/builder.py`
 
 ## Overview
-
 The `PromptBuilder` class is responsible for constructing dynamic system prompts for the LLM system. It processes YAML configuration files, handles language localization, manages variable substitutions, and provides flexible prompt generation capabilities.
 
-## Class: PromptBuilder
+## Classes
 
-### Constructor
+### `PromptBuilder`
+提示建構器
 
-```python
-def __init__(self):
-```
+- **Attributes**:
+  - `logger` (`Any`): Instance attribute managing logger.
+  - `module_titles` (`Any`): Instance attribute managing module_titles.
 
-**Description:**
-Initializes the prompt builder with logging configuration and module title mappings for formatting different types of prompt modules.
+- **Methods**:
+  - `build_system_prompt(config, modules) -> str`: 建構完整的系統提示  追加診斷日誌：記錄 module_order、requested modules，以及每個模組是否存在於配置中。  Args:     config: 配置字典     modules: 要包含的模組列表      Returns:     組合後的完整系統提示
+  - `apply_language_replacements(prompt, lang, lang_manager, mappings) -> str`: Resolve explicit language placeholders and apply language mappings.  Strategy: - Resolve placeholders of the form {{lang.<path>}} using LanguageManager translations. - Also handle single-brace forms {lang.<path>} which may appear after Python .format processing. - If mappings (YAML) are provided, apply them deterministically (exact replace) after placeholder resolution. - Keep behavior safe: any resolution error is reported via func.report_error and the original prompt is returned.  Args:     prompt: original prompt text     lang: language code (e.g., "zh_TW")     lang_manager: LanguageManager instance     mappings: optional dict mapping source strings to translation paths               (e.g. {"Always answer in Traditional Chinese": "system.chat_bot.language.answer_in"})  Returns:     prompt with replacements applied
+  - `format_with_variables(prompt, variables, lang_manager, guild_id) -> str`: 格式化變數替換  Args:     prompt: 包含變數的提示模板     variables: 變數字典     lang_manager: LanguageManager instance for language replacements     guild_id: Server ID for language-specific translations      Returns:     替換變數後的提示
+  - `compose_modules(config, module_list) -> str`: 組合指定模組的提示內容  Args:     config: 配置字典     module_list: 要組合的模組列表      Returns:     組合後的提示內容
+  - `validate_module_references(config, modules) -> List[str]`: 驗證模組引用，返回缺失的模組列表  Args:     config: 配置字典     modules: 要驗證的模組列表      Returns:     缺失的模組名稱列表
+  - `get_module_summary(config, module_name) -> Optional[str]`: 取得模組的摘要描述  Args:     config: 配置字典     module_name: 模組名稱      Returns:     模組摘要，如果模組不存在則返回 None
+  - `build_partial_prompt(config, modules, max_length) -> str`: 建構部分提示（用於預覽或測試）  Args:     config: 配置字典     modules: 模組列表     max_length: 最大長度限制      Returns:     部分提示內容
 
-**Module Title Mapping:**
-The builder maintains predefined titles for different module types:
-- `base`: Core instruction (no title)
-- `identity`: "Identity and Role"
-- `response_principles`: "Response Principles" 
-- `language`: "Language Requirements"
-- `output_format`: "Output Format Rules"
-- `input_parsing`: "Input Parsing"
-- `memory_system`: "Memory System"
-- `information_handling`: "Information Handling"
-- `error_handling`: "Error Handling"
-- `interaction`: "Interaction"
-- `professional_personality`: "Professional Personality"
-
-### Core Methods
-
-#### `build_system_prompt(self, config: dict, modules: List[str]) -> str`
-
-**Parameters:**
-- `config`: Configuration dictionary containing module definitions
-- `modules`: List of module names to include in the prompt
-
-**Returns:**
-- `str`: Complete assembled system prompt
-
-**Description:**
-Builds a complete system prompt by combining modules in a specified order. Uses the `composition.module_order` from config to determine the sequence of modules.
-
-**Process:**
-1. Retrieves module order from config
-2. Iterates through modules in order
-3. Formats each module using `_format_module_content()`
-4. Combines all parts with double newlines
-
-#### `format_with_variables(self, prompt: str, variables: dict, lang_manager=None, guild_id: Union[str, None] = None) -> str`
-
-**Parameters:**
-- `prompt`: Prompt template containing variables
-- `variables`: Dictionary of variables for substitution
-- `lang_manager`: LanguageManager instance for localization
-- `guild_id`: Discord server ID for language-specific translations
-
-**Returns:**
-- `str`: Formatted prompt with variables replaced
-
-**Description:**
-Handles comprehensive variable substitution including:
-1. **Language Placeholder Resolution**: Processes `{{lang.xxx}}` and `{lang.xxx}` patterns
-2. **Variable Substitution**: Replaces `{variable_name}` placeholders
-3. **Fallback Processing**: Uses `.format()` method as fallback for complex cases
-
-**Language Replacement Strategy:**
-```python
-# Supports both double and single brace patterns
-{{lang.system.chat_bot.language.answer_in}} -> "Traditional Chinese"
-{lang.system.chat_bot.language.answer_in} -> "Traditional Chinese"
-
-# Deterministic YAML mappings
-mappings = {
-    "Always answer in Traditional Chinese": "system.chat_bot.language.answer_in"
-}
-```
-
-### Module Processing Methods
-
-#### `_format_module_content(self, module_config: dict, module_name: str) -> str`
-
-**Parameters:**
-- `module_config`: Module configuration dictionary
-- `module_name`: Name of the module
-
-**Returns:**
-- `str`: Formatted module content with title
-
-**Processing Logic:**
-- **Base Module**: Returns core instruction directly
-- **List Values**: Converts to bullet points (`- item`)
-- **String Values**: Appends directly
-- **Dictionary Values**: Processes nested content recursively
-- **Title Addition**: Adds appropriate module title if defined
-
-#### `_process_nested_content(self, nested_config: dict, content_parts: List[str]) -> None`
-
-**Parameters:**
-- `nested_config`: Nested configuration dictionary
-- `content_parts`: List to accumulate formatted content
-
-**Description:**
-Recursively processes nested configuration structures, handling lists, strings, and dictionaries at any depth level.
-
-### Utility Methods
-
-#### `apply_language_replacements(self, prompt: str, lang: str, lang_manager, mappings: Optional[dict] = None) -> str`
-
-**Parameters:**
-- `prompt`: Original prompt text
-- `lang`: Language code (e.g., "zh_TW")
-- `lang_manager`: LanguageManager instance
-- `mappings`: Optional deterministic replacement mappings
-
-**Returns:**
-- `str`: Prompt with language placeholders resolved
-
-**Features:**
-- Supports both `{{lang.xxx}}` and `{lang.xxx}` patterns
-- Automatic fallback path resolution (adds `system.` prefix)
-- Handles complex language paths like `system.chat_bot.language.xxx`
-- Deterministic YAML mapping replacements
-- Safe error handling with original prompt fallback
-
-#### `validate_module_references(self, config: dict, modules: List[str]) -> List[str]`
-
-**Parameters:**
-- `config`: Configuration dictionary
-- `modules`: List of modules to validate
-
-**Returns:**
-- `List[str]`: List of missing module names
-
-**Description:**
-Validates that all requested modules exist in the configuration and returns any missing ones for debugging purposes.
-
-#### `get_module_summary(self, config: dict, module_name: str) -> Optional[str]`
-
-**Parameters:**
-- `config`: Configuration dictionary
-- `module_name`: Name of the module
-
-**Returns:**
-- `Optional[str]` Summary description or None if module doesn't exist
-
-**Description:**
-Provides debugging information about module configuration including item count and structure analysis.
-
-#### `build_partial_prompt(self, config: dict, modules: List[str], max_length: Optional[int] = None) -> str`
-
-**Parameters:**
-- `config`: Configuration dictionary
-- `modules`: List of modules
-- `max_length`: Optional maximum length limit
-
-**Returns:**
-- `str`: Partial prompt content (truncated if necessary)
-
-**Description:**
-Creates a preview version of the prompt with optional length truncation for testing and debugging purposes.
-
-## Integration
-
-The PromptBuilder is the central component of the prompting system, used by:
-- **PromptManager** for coordinated prompt operations
-- **Orchestrator** for system prompt generation
-- **Cache system** for precompiled template creation
-
-## Dependencies
-
-- `logging`: For debugging and monitoring
-- `typing`: For type annotations
-- `asyncio`: For async error reporting
-- `function.func`: For error handling and reporting
-- `re`: For regex pattern matching in language replacements
-
-## Error Handling
-
-All methods include comprehensive error handling:
-- Errors are reported using `func.report_error()`
-- Methods return safe fallback values on failure
-- Detailed logging at debug and warning levels
-- Graceful degradation for missing modules or variables

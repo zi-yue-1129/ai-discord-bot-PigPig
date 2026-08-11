@@ -1,102 +1,47 @@
-# Security Module
+# File: `addons/update/security.py`
 
-**File:** [`addons/update/security.py`](addons/update/security.py)
+## Overview
+安全控制模組
 
-This module provides security features for the update process, including permission checking, file backups, and configuration protection.
+負責權限驗證、備份管理和回滾機制。
 
-## `UpdatePermissionChecker` Class
+## Classes
 
-This class is used to verify if a user has the necessary permissions to perform update-related actions.
+### `UpdatePermissionChecker`
+更新權限檢查器
 
-### `__init__(self)`
+- **Attributes**:
+  - `bot_owner_id` (`Any`): Instance attribute managing bot_owner_id.
+  - `logger` (`Any`): Instance attribute managing logger.
 
-Initializes the permission checker by loading the bot owner's ID from the environment variables.
+- **Methods**:
+  - `check_update_permission(user_id) -> bool`: 檢查更新權限 - 僅限 Bot 擁有者  Args:     user_id: 使用者 ID      Returns:     是否有更新權限
+  - `check_status_permission(interaction) -> bool`: 檢查狀態查看權限 - 管理員或擁有者  Args:     interaction: Discord 互動物件      Returns:     是否有查看狀態權限
+  - `get_bot_owner_id() -> int`: 獲取 Bot 擁有者 ID  Returns:     Bot 擁有者 ID
 
-### Methods
+### `BackupManager`
+備份管理器
 
-#### `check_update_permission(self, user_id: int) -> bool`
+- **Attributes**:
+  - `backup_dir` (`Any`): Instance attribute managing backup_dir.
+  - `logger` (`Any`): Instance attribute managing logger.
 
-Checks if a user has permission to execute an update. Only the bot owner is permitted.
+- **Methods**:
+  - `create_backup(protected_files) -> str`: 創建當前版本備份  Args:     protected_files: 需要保護的檔案列表      Returns:     備份 ID      Raises:     Exception: 備份過程中的錯誤
+  - `rollback_to_backup(backup_id) -> bool`: 回滾到指定備份  Args:     backup_id: 備份 ID      Returns:     回滾是否成功
+  - `list_backups() -> List[dict]`: 列出所有可用的備份  Returns:     備份資訊列表
+  - `cleanup_old_backups(max_backups) -> None`: 清理過期備份  Args:     max_backups: 最大保留備份數量
+  - `get_backup_size(backup_id) -> int`: 獲取備份大小  Args:     backup_id: 備份 ID      Returns:     備份大小（bytes）
 
-*   **Parameters:**
-    *   `user_id` (int): The Discord ID of the user.
-*   **Returns:** `True` if the user is the bot owner, `False` otherwise.
+### `ConfigProtector`
+配置檔案保護器
 
-#### `check_status_permission(self, interaction: discord.Interaction) -> bool`
+- **Attributes**:
+  - `logger` (`Any`): Instance attribute managing logger.
+  - `protected_files` (`Any`): Instance attribute managing protected_files.
 
-Checks if a user has permission to view the update system's status. Permitted for server administrators and the bot owner.
+- **Methods**:
+  - `backup_configs(backup_path) -> bool`: 備份配置檔案  Args:     backup_path: 備份路徑      Returns:     備份是否成功
+  - `restore_configs(backup_path) -> bool`: 恢復配置檔案  Args:     backup_path: 備份路徑      Returns:     恢復是否成功
+  - `verify_configs() -> bool`: 驗證配置檔案完整性  Returns:     驗證是否通過
 
-*   **Parameters:**
-    *   `interaction` (discord.Interaction): The interaction object from a command.
-*   **Returns:** `True` if the user has permission, `False` otherwise.
-
-## `BackupManager` Class
-
-This class manages the creation, restoration, and cleanup of backups.
-
-### `__init__(self, backup_dir: str = "data/backups")`
-
-Initializes the backup manager.
-
-*   **Parameters:**
-    *   `backup_dir` (str): The directory where backups are stored. Defaults to `"data/backups"`.
-
-### Methods
-
-#### `create_backup(self, protected_files: Optional[List[str]] = None) -> str`
-
-Creates a backup of the current bot state, including specified protected files and directories.
-
-*   **Parameters:**
-    *   `protected_files` (Optional[List[str]]): A list of files and directories to include in the backup.
-*   **Returns:** The unique ID of the created backup.
-*   **Raises:** `Exception` if the backup process fails.
-
-#### `rollback_to_backup(self, backup_id: str) -> bool`
-
-Restores the bot's files from a specified backup.
-
-*   **Parameters:**
-    *   `backup_id` (str): The ID of the backup to restore.
-*   **Returns:** `True` if the rollback is successful, `False` otherwise.
-
-#### `list_backups(self) -> List[dict]`
-
-Lists all available backups.
-
-*   **Returns:** A list of dictionaries, where each dictionary contains information about a backup.
-
-#### `cleanup_old_backups(self, max_backups: int = 5) -> None`
-
-Deletes the oldest backups, keeping a specified number of recent backups.
-
-*   **Parameters:**
-    *   `max_backups` (int): The maximum number of backups to retain.
-
-## `ConfigProtector` Class
-
-This class is dedicated to backing up and restoring critical configuration files during the update process.
-
-### Methods
-
-#### `backup_configs(self, backup_path: str) -> bool`
-
-Backs up critical configuration files to a specified path.
-
-*   **Parameters:**
-    *   `backup_path` (str): The path where the configuration backup will be stored.
-*   **Returns:** `True` if successful, `False` otherwise.
-
-#### `restore_configs(self, backup_path: str) -> bool`
-
-Restores configuration files from a backup.
-
-*   **Parameters:**
-    *   `backup_path` (str): The path of the configuration backup.
-*   **Returns:** `True` if successful, `False` otherwise.
-
-#### `verify_configs(self) -> bool`
-
-Verifies the integrity of critical configuration files (e.g., checks if JSON files are valid).
-
-*   **Returns:** `True` if all configurations are valid, `False` otherwise.

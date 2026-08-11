@@ -1,31 +1,28 @@
-# Knowledge Memory Provider
+# File: `llm/memory/knowledge.py`
 
 ## Overview
+KnowledgeMemoryProvider: provides guild and channel level knowledge with caching.
 
-The `KnowledgeMemoryProvider` handles "Shared Knowledge" at the server (Guild) or Channel level. This is used for storing community-specific information such as:
-- **Server Rules**: Custom instructions for the bot within a specific guild.
-- **Inside Jokes/Memes**: Information that applies to everyone in a channel.
-- **Local Facts**: Information about a specific community or project.
+This provider handles retrieval of shared interaction knowledge (memes, facts, etc.)
+and implements a TTL cache to optimize performance during message orchestration.
 
-## Levels of Knowledge
+## Classes
 
-The provider fetches knowledge in a hierarchical manner:
+### `KnowledgeMemory`
+Represents the fetched knowledge for a specific context.
 
-1. **Guild Knowledge**: Broad instructions or facts applicable to the entire server.
-2. **Channel Knowledge**: Specific context applicable only to the current channel.
+- **Attributes**:
+  - `guild_knowledge` (`Any`): Instance attribute managing guild_knowledge.
+  - `channel_knowledge` (`Any`): Instance attribute managing channel_knowledge.
 
-## Implementation Details
+### `KnowledgeMemoryProvider`
+Provides guild/channel knowledge with caching.
 
-### Hierarchical Fetching
-The `get(guild_id, channel_id)` method fetches both levels simultaneously. Channel-level knowledge usually overrides or supplements Guild-level knowledge in the final prompt.
+- **Attributes**:
+  - `storage` (`Any`): Instance attribute managing storage.
+  - `max_cache_size` (`Any`): Instance attribute managing max_cache_size.
 
-### Cache Management
-- **TTL Cache**: Uses a standard time-to-live cache (default 5 minutes).
-- **Invalidation**: Cache can be invalidated by administrative commands when knowledge is updated.
+- **Methods**:
+  - `get(guild_id, channel_id) -> KnowledgeMemory`: Fetch knowledge for the current guild and channel.  Args:     guild_id: Discord guild ID.     channel_id: Discord channel ID.      Returns:     KnowledgeMemory object containing both levels of knowledge.
+  - `invalidate(target_type, target_id) -> None`: Invalidate cache for a specific target.
 
-## Usage in Prompting
-
-Knowledge is typically injected early in the system prompt to set the "ground rules" for the conversation within that specific environment.
-
----
-*By separating User, Episodic, and Knowledge memory, the bot can distinguish between "what I know about you" vs "what I know about this place".*

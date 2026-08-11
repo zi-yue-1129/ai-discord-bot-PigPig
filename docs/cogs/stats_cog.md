@@ -1,54 +1,31 @@
-# StatsCog: User Awareness & Statistics
+# File: `cogs/stats_cog.py`
 
 ## Overview
+StatsCog: real-time user statistics tracking and historical log migration.
 
-The `StatsCog` is a specialized module designed for real-time user interaction tracking and historical log migration. It provides the foundation for "User Awareness" by maintaining a database of user activity across all servers the bot participates in.
+Listens for on_message events to update per-user stats in the user_stats
+table, and runs a low-priority background task on cog load to ingest
+historical NDJSON log files.
 
-## Core Features
+## Classes
 
-### 📊 Real-time Tracking
-- Listens for every incoming message in allowed channels.
-- Records user ID, guild ID, channel name, message content, and timestamps.
-- Updates the `user_stats` table in the procedural database.
-- Uses `asyncio.shield` to ensure database writes are not interrupted by message deletions or task cancellations.
+### `StatsCog`
+Real-time user stats tracking and historical log migration.
 
-### 📂 Historical Log Migration
-- Automatically ingests historical NDJSON log files (`info.jsonl`) into the database.
-- Runs as a low-priority background task on cog load.
-- Tracks migration progress via the `log_migration_state` table to avoid redundant processing.
-- **Performance Safeguards**:
-    - Batch processing (commits every 500 records).
-    - Event loop yielding (`asyncio.sleep(0)`) to maintain bot responsiveness.
-    - Day-by-day throttling (30-second delay between processing different days).
+Attributes:
+    bot: The Discord bot instance.
+    stats_storage: StatsStorage instance for DB operations.
 
-## Database Schema
+- **Attributes**:
+  - `bot` (`Any`): Instance attribute managing bot.
 
-The cog interacts with two main tables:
+- **Methods**:
+  - `cog_load() -> None`: Start background log migration task when cog loads.
+  - `cog_unload() -> None`: Cancel background migration task on cog unload.
+  - `on_message(message) -> None`: Update user stats for every incoming message.  Args:     message: The Discord message object.
 
-### `user_stats`
-| Column | Type | Description |
-|--------|------|-------------|
-| `user_id` | TEXT | Discord Snowflake ID of the user |
-| `guild_id` | TEXT | Discord Snowflake ID of the server |
-| `channel_name` | TEXT | Name of the channel where message was sent |
-| `message_content` | TEXT | The content of the message |
-| `timestamp` | TEXT | ISO 8601 timestamp of the message |
+## Functions
 
-### `log_migration_state`
-| Column | Type | Description |
-|--------|------|-------------|
-| `guild_id` | TEXT | The server being migrated |
-| `last_date` | TEXT | The last YYYYMMDD directory successfully processed |
+### `setup(bot) -> None`
+Register StatsCog with the bot.
 
-## Lifecycle Management
-
-1. **Initialization**: Connects to the procedural database via the bot's `procedural_storage`.
-2. **Cog Load**: Starts the `_migrate_logs_background` task.
-3. **Cog Unload**: Safely cancels any ongoing migration tasks.
-
-## Configuration
-
-The cog relies on the `procedural_storage` being initialized on the bot instance. If the storage is missing, the cog will log a warning and disable tracking.
-
----
-*This module is a key component of the PigPig Bot's cognitive architecture, enabling the bot to 'remember' who users are and how they interact over time.*

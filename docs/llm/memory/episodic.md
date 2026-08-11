@@ -1,48 +1,35 @@
-# Episodic Memory Provider
+# File: `llm/memory/episodic.py`
 
 ## Overview
+Automatic Episodic Memory Provider for context injection.
 
-The `EpisodicMemoryProvider` implements a "long-term recall" mechanism. It uses semantic vector search to find past messages that are relevant to the user's current query, even if they occurred months ago.
+Performs a lightweight vector search on each incoming message and returns
+the top-k relevant past memory fragments as a formatted string.
+Silent failure design: any error returns None without raising.
 
-## Core Logic
+## Classes
 
-### 1. Query Pre-processing
-- **Mention Removal**: Mentions (e.g., `<@123456>`) are stripped to prevent biased search results.
-- **Short Message Skip**: Messages with fewer than 4 words are ignored to avoid searching for generic greetings like "hello" or "ok".
+### `EpisodicMemoryProvider`
+Retrieve semantically relevant past memory fragments for context injection.
 
-### 2. Vector Search
-The provider interacts with the `vector_manager` (part of `cogs.memory`) to:
-- Generate an embedding for the current message.
-- Search the vector database for the top-k (default 3) most similar past messages in the current channel.
+The result is injected into procedural_context_str so both info_agent and
+message_agent receive the episodic background without extra tool calls.
 
-### 3. Formatting
-Relevant fragments are formatted into a clear section for the LLM:
-```text
---- Relevant Past Memories ---
-[memory #1] User said: "I love pepperoni pizza" [[來源](jump_url)]
-[memory #2] User said: "Pizza night on Friday?" [[來源](jump_url)]
---- End Past Memories ---
-```
-- **Source Linking**: Each memory fragment includes a Discord "Jump URL" and a relative timestamp (e.g., "3 months ago") using Discord's `<t:timestamp:R>` format.
+Args:
+    bot: Discord bot instance (must have vector_manager attribute).
+    top_k: Maximum number of fragments to retrieve. Default 3.
+    max_chars: Hard character limit for the returned string. Default 1500.
+    max_cache_size: Maximum number of entries to retain in the cache. Default 1000.
+    cache_ttl: Cache Time-To-Live in seconds. Default 300.0.
 
-## Performance Optimization
+- **Attributes**:
+  - `bot` (`Any`): Instance attribute managing bot.
+  - `top_k` (`Any`): Instance attribute managing top_k.
+  - `max_chars` (`Any`): Instance attribute managing max_chars.
+  - `max_cache_size` (`Any`): Instance attribute managing max_cache_size.
+  - `cache_ttl` (`Any`): Instance attribute managing cache_ttl.
 
-### TTL Caching
-The provider maintains a thread-safe cache of recent search results:
-- **Key**: `(channel_id, query_text)`
-- **TTL**: 5 minutes (default).
-- **Benefit**: Prevents redundant vector searches if the user repeats a query or if multiple agents need the same context.
+- **Methods**:
+  - `invalidate(channel_id) -> None`: Invalidate all cached episodic queries for a specific channel.  Args:     channel_id: The Discord channel ID.
+  - `get(message) -> Optional[str]`: Return formatted episodic context string, or None if nothing relevant.  Runs in parallel with ProceduralMemoryProvider via asyncio.gather in ContextManager, so it does not add serial latency to the pipeline.  Args:     message: Current Discord message (provides query text and channel scope).  Returns:     Formatted string with past memory fragments, or None.
 
-### Async Execution
-`EpisodicMemoryProvider.get()` is designed to run in parallel with other providers, ensuring that vector search latency does not block the entire bot response.
-
-## Configuration
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `top_k` | 3 | Number of fragments to retrieve. |
-| `max_chars` | 1500 | Maximum total length of the context string. |
-| `cache_ttl` | 300.0 | Seconds before a cache entry expires. |
-
----
-*This provider allows the bot to maintain a sense of history and "remember" facts that were never explicitly saved to procedural memory.*

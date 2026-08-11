@@ -9,5 +9,5 @@ Core logic and functionalities for progress.py. This file is part of the cogs su
 A class to handle the display of music playback progress
 
 - **Methods**:
-  - `create_progress_bar(current: Any, total: Any, length: Any) -> Any`: Create a more aesthetic progress bar
-  - `format_timestamp(seconds: Any) -> Any`: Format seconds into MM:SS format
+  - `create_progress_bar(current, total, length) -> Any`: Create a more aesthetic progress bar  Args:     current (int): Current position in seconds     total (int): Total duration in seconds     length (int): Length of the progress bar      Returns:     str: Formatted progress bar with timestamps
+  - `format_timestamp(seconds) -> Any`: Format seconds into MM:SS format  Args:     seconds (int): Time in seconds      Returns:     str: Formatted timestamp

@@ -1,34 +1,47 @@
-# Story System - Database
+# File: `cogs/story/database.py`
 
-**File:** [`cogs/story/database.py`](cogs/story/database.py)
+## Overview
+Core responsibilities and logic for `cogs/story/database.py`. This module is part of the cogs subsystem and handles the associated business logic, state management, and integrations.
 
-This module handles all data persistence for the story system. It is uniquely designed with two separate database classes to manage global and server-specific data.
+## Classes
 
-## `CharacterDB` Class (Global)
+### `CharacterDB`
+Handles all database operations for characters, independent of story worlds.
 
-This class manages a single, global database file: `data/story/characters.db`. This database stores all characters created across all servers the bot is in.
+- **Attributes**:
+  - `db_path` (`Any`): Instance attribute managing db_path.
+  - `_initialized` (`Any`): Instance attribute managing _initialized.
+  - `_lock` (`Any`): Instance attribute managing _lock.
+  - `logger` (`Any`): Instance attribute managing logger.
 
-*   **Purpose:** To create a shared repository of characters. A character created on one server can potentially be used in another, depending on its `is_public` flag.
-*   **Key Methods:**
-    *   `save_character(...)`: Saves or updates a `StoryCharacter` object.
-    *   `get_character(...)`: Retrieves a single character by its unique ID.
-    *   `get_characters_by_guild(...)`: Retrieves all characters associated with a specific server.
-    *   `get_selectable_characters(...)`: Retrieves all characters a specific user is allowed to use in a story. This includes all public characters in the server plus any private characters created by that user.
-    *   `delete_character(...)`: Deletes a character from the database.
+- **Methods**:
+  - `initialize() -> Any`: Initializes the character database, creates the table, and handles migrations.
+  - `save_character(character) -> Any`: Saves or updates a character.
+  - `get_character(character_id) -> Optional[StoryCharacter]`: Retrieves a character by ID.
+  - `get_characters_by_user(user_id, guild_id) -> List[StoryCharacter]`: Retrieves all characters created by a user in a specific guild.
+  - `get_characters_by_guild(guild_id) -> List[StoryCharacter]`: Retrieves all characters for a specific guild.
+  - `get_selectable_characters(guild_id, user_id) -> List[StoryCharacter]`: Retrieves all characters that a user can select in a guild.  This includes all public characters in the guild and all private characters created by the user.
+  - `get_characters_by_ids(character_ids) -> List[StoryCharacter]`: Retrieves multiple characters by their IDs.  Args:     character_ids: List of character ID strings (UUIDs)      Returns:     List of StoryCharacter objects
+  - `delete_character(character_id) -> Any`: Deletes a character by ID.
 
-## `StoryDB` Class (Per-Guild)
+### `StoryDB`
+Handles all database operations for the story module (worlds and instances).
 
-This class manages a separate database file for each server (guild), located at `data/story/{guild_id}_story.db`.
+- **Attributes**:
+  - `db_path` (`Any`): Instance attribute managing db_path.
+  - `guild_id` (`Any`): Instance attribute managing guild_id.
+  - `_initialized` (`Any`): Instance attribute managing _initialized.
+  - `_lock` (`Any`): Instance attribute managing _lock.
+  - `logger` (`Any`): Instance attribute managing logger.
 
-*   **Purpose:** To keep all story-related data completely isolated between servers. One server's worlds, ongoing stories, and character relationships cannot be accessed by another.
-*   **Key Methods:**
-    *   **World Management:**
-        *   `save_world(...)`: Saves or updates a `StoryWorld` object, serializing its complex nested data (locations, events) into JSON format for storage.
-        *   `get_world(...)`: Retrieves and deserializes a `StoryWorld` object from the database.
-        *   `get_all_worlds()`: Gets a list of all worlds created on that server.
-    *   **Instance Management:**
-        *   `save_story_instance(...)`: Saves or updates a `StoryInstance`, which represents an active story in a specific channel. This includes the current state, active characters, summaries, and outlines.
-        *   `get_story_instance(...)`: Retrieves the active story for a specific channel.
-    *   **Relationship Management:**
-        *   `save_player_relationship(...)`: Saves or updates the description of the relationship between a player (user) and an NPC (character).
-        *   `get_relationships_for_story(...)`: Retrieves all relationship data for an ongoing story.
+- **Methods**:
+  - `initialize() -> Any`: Initializes the database and creates tables if they don't exist.
+  - `save_world(world) -> Any`: Saves or updates a story world using a SELECT then INSERT/UPDATE strategy.
+  - `get_world(world_name) -> Optional[StoryWorld]`: Retrieves a story world by name.
+  - `get_all_worlds() -> List[StoryWorld]`: Retrieves all story worlds for this guild.
+  - `save_story_instance(instance) -> Any`: Saves or updates a story instance.
+  - `get_story_instance(channel_id) -> Optional[StoryInstance]`: Retrieves a story instance by channel ID.
+  - `save_player_relationship(relationship) -> Any`: Saves or updates a player-NPC relationship.
+  - `get_player_relationship(relationship_id) -> Optional[PlayerRelationship]`: Retrieves a player-NPC relationship by ID.
+  - `get_relationships_for_story(story_id) -> List[PlayerRelationship]`: Retrieves all relationships for a given story instance.
+

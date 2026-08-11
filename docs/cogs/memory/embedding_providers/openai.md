@@ -5,5 +5,11 @@ Core logic and functionalities for openai.py. This file is part of the cogs subs
 
 ## Functions
 
-### `openai_provider(settings: MemoryConfig) -> Embeddings`
-OpenAI embedding provider factory. Plays a key role in the system logic.
+### `openai_provider(settings) -> Embeddings`
+OpenAI embedding provider factory.
+
+Expects settings to provide:
+  - openai_api_key
+  - openai_model_name
+
+Returns a langchain_core compatible Embeddings instance.

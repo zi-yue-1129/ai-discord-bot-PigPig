@@ -1,29 +1,37 @@
-# System Prompt Manager Cog
+# File: `cogs/system_prompt_manager.py`
 
-**File:** [`cogs/system_prompt_manager.py`](cogs/system_prompt_manager.py)
+## Overview
+頻道系統提示管理模組的主要 Cog
 
-This cog serves as the central coordinator for the powerful System Prompt management feature. It acts as the main entry point, loading and integrating all the necessary components from the `cogs/system_prompt/` directory.
+這個檔案作為系統提示管理模組的入口點，整合所有功能組件。
 
-## Dependencies
+## Classes
 
-This cog is the primary interface for the **[System Prompt System](./system_prompt/index.md)**. It initializes and provides access to the core components of this system, including:
+### `SystemPromptManagerCog`
+系統提示管理主要 Cog 類別
 
-*   **`SystemPromptManager`:** The core engine that handles the logic of storing, retrieving, and combining prompts.
-*   **`SystemPromptCommands`:** The cog that contains all the user-facing slash commands for managing prompts.
-*   **`PermissionValidator`:** The component responsible for checking if a user has the required permissions to manage prompts.
+- **Attributes**:
+  - `bot` (`Any`): Instance attribute managing bot.
+  - `logger` (`Any`): Instance attribute managing logger.
+  - `manager` (`Any`): Instance attribute managing manager.
+  - `permission_validator` (`Any`): Instance attribute managing permission_validator.
+  - `commands_cog` (`Any`): Instance attribute managing commands_cog.
+  - `language_manager` (`Any`): Instance attribute managing language_manager.
 
-## Role as a Coordinator
+- **Methods**:
+  - `cog_load() -> Any`: Cog 載入時的初始化
+  - `cog_unload() -> Any`: Cog 卸載時的清理
+  - `get_system_prompt_manager() -> SystemPromptManager`: 取得系統提示管理器實例  這個方法供 gpt/sendmessage.py 調用，以整合系統提示功能。  Returns:     SystemPromptManager 實例
+  - `get_permission_validator() -> PermissionValidator`: 取得權限驗證器實例  Returns:     PermissionValidator 實例
+  - `get_effective_system_prompt(channel_id, guild_id, message) -> str`: 取得有效的系統提示（供外部模組調用的便利方法）  Args:     channel_id: 頻道 ID     guild_id: 伺服器 ID     message: Discord 訊息物件（可選）      Returns:     完整的系統提示字串
+  - `validate_user_permission(user, action, target) -> bool`: 驗證用戶權限（供外部模組調用的便利方法）  Args:     user: Discord 用戶     action: 操作類型     target: 目標物件      Returns:     是否有權限
+  - `on_guild_join(guild) -> Any`: 當機器人加入新伺服器時的處理
+  - `on_guild_remove(guild) -> Any`: 當機器人離開伺服器時的處理
+  - `system_prompt_status(ctx) -> Any`: View system prompt module status (bot owner only)
+  - `clear_system_prompt_cache(ctx, guild_id) -> Any`: Clear system prompt cache (bot owner only)
 
-The `SystemPromptManagerCog` itself does not contain any user-facing commands. Its main responsibilities are:
+## Functions
 
-1.  **Initialization:** It creates instances of the `SystemPromptManager`, `PermissionValidator`, and `SystemPromptCommands` cog.
-2.  **Cog Loading:** It ensures that the `SystemPromptCommands` cog is properly loaded into the bot, making the slash commands available to users.
-3.  **Central Access Point:** It provides getter methods (`get_system_prompt_manager`, `get_permission_validator`) for other parts of the bot (like the core message handler) to easily access the system's functionality.
-4.  **Convenience Methods:** It offers high-level methods like `get_effective_system_prompt` that simplify the process for external modules to get the final, combined system prompt for a specific channel.
+### `setup(bot) -> Any`
+設定函式，用於載入 Cog
 
-## Owner-only Commands
-
-This cog also includes two hidden commands for the bot owner to manage the module itself:
-
-*   `/system_prompt_status`: Displays the status of the module, including cache size and loaded components.
-*   `/system_prompt_clear_cache`: Allows the owner to clear the prompt cache for a specific server or for all servers.

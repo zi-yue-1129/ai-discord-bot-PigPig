@@ -12,24 +12,19 @@ Represents UserPref.
 Represents SearchRecord.
 
 - **Attributes**:
-  - `discord_id` (`Any`): Instance attribute.
-  - `keyword` (`Any`): Instance attribute.
-  - `title` (`Any`): Instance attribute.
-  - `tag` (`Any`): Instance attribute.
-  - `address` (`Any`): Instance attribute.
-  - `map_rate` (`Any`): Instance attribute.
-  - `self_rate` (`Any`): Instance attribute.
-  - `date` (`Any`): Instance attribute.
-
-- **Methods**:
-  - `__init__(discord_id: str, title: str, keyword: str, tag: str, address: str, map_rate: str, self_rate: float) -> Any`: Executes __init__ operation.
+  - `discord_id` (`Any`): Instance attribute managing discord_id.
+  - `keyword` (`Any`): Instance attribute managing keyword.
+  - `title` (`Any`): Instance attribute managing title.
+  - `tag` (`Any`): Instance attribute managing tag.
+  - `address` (`Any`): Instance attribute managing address.
+  - `map_rate` (`Any`): Instance attribute managing map_rate.
+  - `self_rate` (`Any`): Instance attribute managing self_rate.
+  - `date` (`Any`): Instance attribute managing date.
 
 ### `Keywords`
 Represents Keywords.
 
 - **Attributes**:
-  - `keyword` (`Any`): Instance attribute.
-  - `add_date` (`Any`): Instance attribute.
+  - `keyword` (`Any`): Instance attribute managing keyword.
+  - `add_date` (`Any`): Instance attribute managing add_date.
 
-- **Methods**:
-  - `__init__(keyword: String) -> Any`: Executes __init__ operation.
