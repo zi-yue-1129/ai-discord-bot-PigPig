@@ -122,13 +122,20 @@ class SystemPromptTools:
             user_id = str(author.id)
             bot = getattr(runtime, "bot", None)
 
+            from cogs.system_prompt.permissions import PermissionValidator
+            validator = PermissionValidator(bot)
+
             if scope == "server":
-                from cogs.system_prompt.permissions import PermissionValidator
-                validator = PermissionValidator(bot)
                 if not validator.can_modify_server_prompt(author, guild):
                     return (
                         "Error: You need administrator permissions to modify the "
                         "server-level personality."
+                    )
+            else:
+                if not validator.can_modify_channel_prompt(author, channel):
+                    return (
+                        "Error: You do not have permission to modify the "
+                        "channel-level personality."
                     )
 
             return await write_personality(guild_id, channel_id, merged_prompt, scope, bot, user_id)

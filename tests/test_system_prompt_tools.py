@@ -140,7 +140,7 @@ class TestUpdatePersonalityChannel:
         self.tool = SystemPromptTools(self.runtime).get_tools()[0]
 
     def test_calls_set_channel_prompt_with_correct_args(self):
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             self.tool.coroutine(merged_prompt="Be funny.", scope="channel")
         )
         self.mock_manager.set_channel_prompt.assert_called_once_with(
@@ -148,13 +148,13 @@ class TestUpdatePersonalityChannel:
         )
 
     def test_returns_success_message(self):
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             self.tool.coroutine(merged_prompt="Be funny.", scope="channel")
         )
         assert "success" in result.lower() or "updated" in result.lower()
 
     def test_invalidates_cache_after_write(self):
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             self.tool.coroutine(merged_prompt="Be funny.", scope="channel")
         )
         self.mock_manager.cache.invalidate.assert_called()
@@ -169,7 +169,7 @@ class TestUpdatePersonalityServer:
     def test_blocks_non_admin_from_server_scope(self):
         with patch("cogs.system_prompt.permissions.PermissionValidator") as MockV:
             MockV.return_value.can_modify_server_prompt.return_value = False
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 self.tool.coroutine(merged_prompt="...", scope="server")
             )
         assert "permission" in result.lower() or "administrator" in result.lower()
@@ -177,7 +177,7 @@ class TestUpdatePersonalityServer:
     def test_allows_admin_to_set_server_scope(self):
         with patch("cogs.system_prompt.permissions.PermissionValidator") as MockV:
             MockV.return_value.can_modify_server_prompt.return_value = True
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 self.tool.coroutine(merged_prompt="Be formal.", scope="server")
             )
         self.mock_manager.set_server_prompt.assert_called_once_with(
@@ -192,7 +192,7 @@ class TestUpdatePersonalityErrors:
         mock_bot.get_cog.return_value = None
         runtime = _make_runtime(bot=mock_bot)
         tool = SystemPromptTools(runtime).get_tools()[0]
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             tool.coroutine(merged_prompt="...", scope="channel")
         )
         assert "error" in result.lower()
@@ -201,7 +201,7 @@ class TestUpdatePersonalityErrors:
         runtime = MagicMock()
         runtime.message = None
         tool = SystemPromptTools(runtime).get_tools()[0]
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             tool.coroutine(merged_prompt="...", scope="channel")
         )
         assert "error" in result.lower()
