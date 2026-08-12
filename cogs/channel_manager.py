@@ -72,6 +72,15 @@ class ChannelManager(commands.Cog):
         except Exception as e:
             asyncio.create_task(func.report_error(e, f"saving config for guild {guild_id}"))
 
+    async def _send_deferred_response(self, interaction: discord.Interaction, content: str) -> None:
+        """Helper to send a response to a deferred interaction.
+        Falls back to followup if the original response was not found.
+        """
+        try:
+            await interaction.edit_original_response(content=content)
+        except discord.NotFound:
+            await interaction.followup.send(content, ephemeral=True)
+
     async def check_admin_permissions(self, interaction: discord.Interaction, *, defer: bool = False) -> bool:
         """Check if the user has administrator permissions or is the bot owner."""
         if defer and not interaction.response.is_done():
@@ -91,7 +100,7 @@ class ChannelManager(commands.Cog):
             error_message = "You do not have permission to perform this action. Restricted to administrators."
         
         if interaction.response.is_done():
-            await interaction.followup.send(error_message, ephemeral=True)
+            await self._send_deferred_response(interaction, error_message)
         else:
             await interaction.response.send_message(error_message, ephemeral=True)
         return False
@@ -122,7 +131,7 @@ class ChannelManager(commands.Cog):
         else:
             response = f"Set **Server-wide** response mode to: {mode.name}"
 
-        await interaction.followup.send(response, ephemeral=True)
+        await self._send_deferred_response(interaction, response)
 
     @app_commands.command(name="set_channel_mode", description="Set a special mode for a specific channel (e.g., Story Mode)")
     @app_commands.describe(channel="The channel to set", mode="The mode to set for this channel")
@@ -168,7 +177,7 @@ class ChannelManager(commands.Cog):
                 message = f"Set mode for {channel.mention} to: **{mode.name}**."
 
         self.save_config(guild_id, config)
-        await interaction.followup.send(message, ephemeral=True)
+        await self._send_deferred_response(interaction, message)
 
     @app_commands.command(name="add_channel", description="Add channel to whitelist or blacklist")
     @app_commands.choices(list_type=[
@@ -202,7 +211,7 @@ class ChannelManager(commands.Cog):
             else:
                 success_message = f"Added <#{channel_id}> to {list_type_name}"
             
-            await interaction.followup.send(success_message, ephemeral=True)
+            await self._send_deferred_response(interaction, success_message)
         else:
             if self.lang_manager:
                 exists_message = self.lang_manager.translate(
@@ -211,7 +220,7 @@ class ChannelManager(commands.Cog):
             else:
                 exists_message = f"<#{channel_id}> already exists in {list_type_name}"
             
-            await interaction.followup.send(exists_message, ephemeral=True)
+            await self._send_deferred_response(interaction, exists_message)
 
     @app_commands.command(name="remove_channel", description="Remove channel from whitelist or blacklist")
     @app_commands.choices(list_type=[
@@ -245,7 +254,7 @@ class ChannelManager(commands.Cog):
             else:
                 success_message = f"Removed <#{channel_id}> from {list_type_name}"
             
-            await interaction.followup.send(success_message, ephemeral=True)
+            await self._send_deferred_response(interaction, success_message)
         else:
             if self.lang_manager:
                 not_found_message = self.lang_manager.translate(
@@ -254,7 +263,7 @@ class ChannelManager(commands.Cog):
             else:
                 not_found_message = f"<#{channel_id}> does not exist in {list_type_name}"
             
-            await interaction.followup.send(not_found_message, ephemeral=True)
+            await self._send_deferred_response(interaction, not_found_message)
 
     @app_commands.command(name="auto_response", description="Set channel auto-response")
     async def auto_response_command(self, interaction: discord.Interaction, channel: Union[discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.Thread], enabled: bool):
@@ -275,7 +284,7 @@ class ChannelManager(commands.Cog):
         else:
             success_message = f"Set auto-response for <#{channel_id}> to: {enabled}"
         
-        await interaction.followup.send(success_message, ephemeral=True)
+        await self._send_deferred_response(interaction, success_message)
 
     def is_allowed_channel(self, channel: Union[discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.Thread], guild_id: str) -> Tuple[bool, bool, Optional[str]]:
         """
