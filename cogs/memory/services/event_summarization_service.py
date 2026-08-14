@@ -266,12 +266,17 @@ class EventSummarizationService:
             # Group messages into events (initial implementation treats all as single event)
             grouped_messages = await self._group_messages(messages)
             
-            # Process each group into event summaries
+            # Process each group into event summaries concurrently
+            tasks = [self._process_message_group(group, previous_summary) for group in grouped_messages]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
             event_summaries = []
-            for message_group in grouped_messages:
-                summary_list = await self._process_message_group(message_group, previous_summary)
-                if summary_list:
-                    event_summaries.extend(summary_list)
+            for result in results:
+                if isinstance(result, Exception):
+                    log.error(f"Error processing message group: {result}", exc_info=True)
+                    await func.report_error(result, "EventSummarizationService/_process_message_group (gather)")
+                elif result:
+                    event_summaries.extend(result)
             
             return event_summaries
             
