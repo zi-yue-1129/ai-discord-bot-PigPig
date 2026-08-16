@@ -227,6 +227,15 @@ class SystemPromptCommands(commands.Cog):
                     ephemeral=True,
                 )
                 return
+        elif scope_value == "channel":
+            from .permissions import PermissionValidator
+            validator = PermissionValidator(self.bot)
+            if not validator.can_modify_channel_prompt(interaction.user, interaction.channel):
+                await interaction.followup.send(
+                    "❌ You do not have permission to modify the channel-level personality.",
+                    ephemeral=True,
+                )
+                return
 
         # Get current effective system prompt to merge with
         sp_cog = self.bot.get_cog("SystemPromptManagerCog")

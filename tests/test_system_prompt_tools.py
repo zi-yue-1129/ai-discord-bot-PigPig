@@ -139,7 +139,9 @@ class TestUpdatePersonalityChannel:
         self.runtime = _make_runtime(bot=self.mock_bot)
         self.tool = SystemPromptTools(self.runtime).get_tools()[0]
 
-    def test_calls_set_channel_prompt_with_correct_args(self):
+    @patch("cogs.system_prompt.permissions.PermissionValidator")
+    def test_calls_set_channel_prompt_with_correct_args(self, MockV):
+        MockV.return_value.can_modify_channel_prompt.return_value = True
         asyncio.get_event_loop().run_until_complete(
             self.tool.coroutine(merged_prompt="Be funny.", scope="channel")
         )
@@ -147,17 +149,29 @@ class TestUpdatePersonalityChannel:
             "111", "222", {"prompt": "Be funny.", "enabled": True}, "333"
         )
 
-    def test_returns_success_message(self):
+    @patch("cogs.system_prompt.permissions.PermissionValidator")
+    def test_returns_success_message(self, MockV):
+        MockV.return_value.can_modify_channel_prompt.return_value = True
         result = asyncio.get_event_loop().run_until_complete(
             self.tool.coroutine(merged_prompt="Be funny.", scope="channel")
         )
         assert "success" in result.lower() or "updated" in result.lower()
 
-    def test_invalidates_cache_after_write(self):
+    @patch("cogs.system_prompt.permissions.PermissionValidator")
+    def test_invalidates_cache_after_write(self, MockV):
+        MockV.return_value.can_modify_channel_prompt.return_value = True
         asyncio.get_event_loop().run_until_complete(
             self.tool.coroutine(merged_prompt="Be funny.", scope="channel")
         )
         self.mock_manager.cache.invalidate.assert_called()
+
+    @patch("cogs.system_prompt.permissions.PermissionValidator")
+    def test_blocks_non_admin_from_channel_scope(self, MockV):
+        MockV.return_value.can_modify_channel_prompt.return_value = False
+        result = asyncio.get_event_loop().run_until_complete(
+            self.tool.coroutine(merged_prompt="...", scope="channel")
+        )
+        assert "permission" in result.lower()
 
 
 class TestUpdatePersonalityServer:
