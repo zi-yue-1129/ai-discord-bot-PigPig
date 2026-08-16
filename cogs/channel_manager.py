@@ -90,11 +90,34 @@ class ChannelManager(commands.Cog):
         else:
             error_message = "You do not have permission to perform this action. Restricted to administrators."
         
-        if interaction.response.is_done():
-            await interaction.followup.send(error_message, ephemeral=True)
-        else:
-            await interaction.response.send_message(error_message, ephemeral=True)
+        await self._send_response(interaction, error_message, ephemeral=True)
         return False
+
+
+
+
+
+    async def _send_response(self, interaction: discord.Interaction, content: str, ephemeral: bool = True):
+        """Helper to send a response, falling back to followup if original response is not found."""
+        try:
+            if interaction.response.is_done():
+                # Note: edit_original_response does not take 'ephemeral'.
+                # It inherits the ephemeral state of the defer call.
+                # All commands in channel_manager that defer use ephemeral=True.
+                await interaction.edit_original_response(content=content)
+            else:
+                await interaction.response.send_message(content, ephemeral=ephemeral)
+        except discord.errors.NotFound:
+            await interaction.followup.send(content, ephemeral=ephemeral)
+        except discord.errors.HTTPException as e:
+            if e.code == 50027: # Invalid Webhook Token, also effectively NotFound, interaction expired.
+                # Since we cannot guarantee ephemeral delivery via channel.send,
+                # we must drop the message to avoid leaking sensitive information.
+                guild_id = str(interaction.guild_id) if interaction.guild_id else "0"
+                logger = get_logger(guild_id, "ChannelManager")
+                logger.warning(f"Interaction expired for {interaction.command.name if interaction.command else 'unknown command'}, cannot send ephemeral response: {content}")
+            else:
+                raise
 
     @app_commands.command(name="set_server_mode", description="Set the server-wide response mode (Whitelist/Blacklist)")
     @app_commands.choices(mode=[
@@ -122,7 +145,7 @@ class ChannelManager(commands.Cog):
         else:
             response = f"Set **Server-wide** response mode to: {mode.name}"
 
-        await interaction.followup.send(response, ephemeral=True)
+        await self._send_response(interaction, response, ephemeral=True)
 
     @app_commands.command(name="set_channel_mode", description="Set a special mode for a specific channel (e.g., Story Mode)")
     @app_commands.describe(channel="The channel to set", mode="The mode to set for this channel")
@@ -168,7 +191,7 @@ class ChannelManager(commands.Cog):
                 message = f"Set mode for {channel.mention} to: **{mode.name}**."
 
         self.save_config(guild_id, config)
-        await interaction.followup.send(message, ephemeral=True)
+        await self._send_response(interaction, message, ephemeral=True)
 
     @app_commands.command(name="add_channel", description="Add channel to whitelist or blacklist")
     @app_commands.choices(list_type=[
@@ -202,7 +225,7 @@ class ChannelManager(commands.Cog):
             else:
                 success_message = f"Added <#{channel_id}> to {list_type_name}"
             
-            await interaction.followup.send(success_message, ephemeral=True)
+            await self._send_response(interaction, success_message, ephemeral=True)
         else:
             if self.lang_manager:
                 exists_message = self.lang_manager.translate(
@@ -211,7 +234,7 @@ class ChannelManager(commands.Cog):
             else:
                 exists_message = f"<#{channel_id}> already exists in {list_type_name}"
             
-            await interaction.followup.send(exists_message, ephemeral=True)
+            await self._send_response(interaction, exists_message, ephemeral=True)
 
     @app_commands.command(name="remove_channel", description="Remove channel from whitelist or blacklist")
     @app_commands.choices(list_type=[
@@ -245,7 +268,7 @@ class ChannelManager(commands.Cog):
             else:
                 success_message = f"Removed <#{channel_id}> from {list_type_name}"
             
-            await interaction.followup.send(success_message, ephemeral=True)
+            await self._send_response(interaction, success_message, ephemeral=True)
         else:
             if self.lang_manager:
                 not_found_message = self.lang_manager.translate(
@@ -254,7 +277,7 @@ class ChannelManager(commands.Cog):
             else:
                 not_found_message = f"<#{channel_id}> does not exist in {list_type_name}"
             
-            await interaction.followup.send(not_found_message, ephemeral=True)
+            await self._send_response(interaction, not_found_message, ephemeral=True)
 
     @app_commands.command(name="auto_response", description="Set channel auto-response")
     async def auto_response_command(self, interaction: discord.Interaction, channel: Union[discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.Thread], enabled: bool):
@@ -275,7 +298,7 @@ class ChannelManager(commands.Cog):
         else:
             success_message = f"Set auto-response for <#{channel_id}> to: {enabled}"
         
-        await interaction.followup.send(success_message, ephemeral=True)
+        await self._send_response(interaction, success_message, ephemeral=True)
 
     def is_allowed_channel(self, channel: Union[discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.Thread], guild_id: str) -> Tuple[bool, bool, Optional[str]]:
         """
