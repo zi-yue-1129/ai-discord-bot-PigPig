@@ -100,8 +100,8 @@ class SystemPromptTools:
                 merged_prompt: The complete merged system prompt text — your current
                     personality with the requested changes incorporated. Must be a
                     full system prompt, not just the changed part.
-                scope: "channel" applies only to the current channel (any user may
-                    do this). "server" applies to the entire server (admin only).
+                scope: "channel" applies only to the current channel (requires channel
+                    management permissions). "server" applies to the entire server (admin only).
 
             Returns:
                 Confirmation message or an error description.
@@ -122,13 +122,20 @@ class SystemPromptTools:
             user_id = str(author.id)
             bot = getattr(runtime, "bot", None)
 
+            from cogs.system_prompt.permissions import PermissionValidator
+            validator = PermissionValidator(bot)
+
             if scope == "server":
-                from cogs.system_prompt.permissions import PermissionValidator
-                validator = PermissionValidator(bot)
                 if not validator.can_modify_server_prompt(author, guild):
                     return (
                         "Error: You need administrator permissions to modify the "
                         "server-level personality."
+                    )
+            else:
+                if not validator.can_modify_channel_prompt(author, channel):
+                    return (
+                        "Error: You need channel management permissions to modify the "
+                        "channel-level personality."
                     )
 
             return await write_personality(guild_id, channel_id, merged_prompt, scope, bot, user_id)
