@@ -266,12 +266,24 @@ class EventSummarizationService:
             # Group messages into events (initial implementation treats all as single event)
             grouped_messages = await self._group_messages(messages)
             
-            # Process each group into event summaries
+            # Process each group into event summaries concurrently
             event_summaries = []
-            for message_group in grouped_messages:
-                summary_list = await self._process_message_group(message_group, previous_summary)
-                if summary_list:
-                    event_summaries.extend(summary_list)
+
+            # Create tasks for all message groups
+            tasks = [
+                self._process_message_group(message_group, previous_summary)
+                for message_group in grouped_messages
+            ]
+
+            if tasks:
+                # Run all tasks concurrently
+                # No return_exceptions=True, so it fails fast just like the original sequential loop
+                results = await asyncio.gather(*tasks)
+
+                # Process results
+                for result in results:
+                    if result:  # Check if result is not None and not empty list
+                        event_summaries.extend(result)
             
             return event_summaries
             
