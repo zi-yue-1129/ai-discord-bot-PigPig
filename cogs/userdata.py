@@ -652,6 +652,14 @@ class UserDataCog(commands.Cog):
             )
             
             if success:
+                # Delete episodic memory vectors as well for complete data privacy
+                try:
+                    vector_manager = getattr(self.bot, "vector_manager", None)
+                    if vector_manager and hasattr(vector_manager, "store"):
+                        deleted_count = await vector_manager.store.delete_vectors_by_user(user_id)
+                        self.logger.debug(f"Deleted episodic memory vectors for {user_id}, count: {deleted_count}")
+                except Exception as vec_err:
+                    self.logger.warning(f"Failed to delete episodic memory vectors for {user_id}: {vec_err}")
                 # Invalidate ProceduralMemoryProvider cache
                 try:
                     orchestrator = getattr(self.bot, "orchestrator", None)
@@ -1034,6 +1042,14 @@ class UserDataCog(commands.Cog):
 
             success = await self.user_manager.delete_user_data(user_id)
             if success:
+                # Delete episodic memory vectors as well for complete data privacy
+                try:
+                    vector_manager = getattr(self.bot, "vector_manager", None)
+                    if vector_manager and hasattr(vector_manager, "store"):
+                        deleted_count = await vector_manager.store.delete_vectors_by_user(user_id)
+                        self.logger.debug(f"Deleted episodic memory vectors for {user_id}, count: {deleted_count}")
+                except Exception as vec_err:
+                    self.logger.warning(f"Failed to delete episodic memory vectors for {user_id}: {vec_err}")
                 # Invalidate ProceduralMemoryProvider cache
                 try:
                     orchestrator = getattr(self.bot, "orchestrator", None)
