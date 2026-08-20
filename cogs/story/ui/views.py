@@ -295,21 +295,16 @@ class ActiveStoryView(discord.ui.View):
             )
             
             if not user_characters:
-                await interaction.followup.send(
+                await interaction.edit_original_response(content=
                     f"❌ 你在這個伺服器中還沒有創建任何角色。\n"
-                    f"請先使用 `/story` 選單中的 '創建角色' 按鈕來創建一個。",
-                    ephemeral=True
-                )
+                    f"請先使用 `/story` 選單中的 '創建角色' 按鈕來創建一個。")
                 return
             
             # 使用第一個角色（未來可以改為讓使用者選擇）
             character_to_join = user_characters[0]
             
             if character_to_join.character_id in self.story_instance.active_character_ids:
-                await interaction.followup.send(
-                    f"✅ 你的角色 **{character_to_join.name}** 已經在故事中了！",
-                    ephemeral=True
-                )
+                await interaction.edit_original_response(content=f"✅ 你的角色 **{character_to_join.name}** 已經在故事中了！")
                 return
             
             # 將角色加入故事
@@ -341,17 +336,11 @@ class ActiveStoryView(discord.ui.View):
             
             await interaction.channel.send(embed=embed)
             
-            await interaction.followup.send(
-                f"✅ **{character_to_join.name}** 已成功加入故事！",
-                ephemeral=True
-            )
+            await interaction.edit_original_response(content=f"✅ **{character_to_join.name}** 已成功加入故事！")
             
         except Exception as e:
             self.logger.error(f"加入故事錯誤: {e}", exc_info=True)
-            await interaction.followup.send(
-                "❌ 加入故事時發生錯誤，請稍後再試",
-                ephemeral=True
-            )
+            await interaction.edit_original_response(content="❌ 加入故事時發生錯誤，請稍後再試")
     
     @discord.ui.button(label="⏸️ 暫停故事", style=discord.ButtonStyle.secondary)
     async def pause_story_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -597,7 +586,7 @@ class NPCSelectView(discord.ui.View):
 
             if not self.npc_select.values:
                 self.logger.warning("[DEBUG] No values selected in npc_select.")
-                await interaction.followup.send("請至少選擇一個 NPC 或保留預設旁白來開始故事。", ephemeral=True)
+                await interaction.edit_original_response(content="請至少選擇一個 NPC 或保留預設旁白來開始故事。")
                 return
 
             self.logger.info(f"[DEBUG] Raw selected values: {self.npc_select.values}")
@@ -627,8 +616,8 @@ class NPCSelectView(discord.ui.View):
 
         except ValueError:
             self.logger.error("無法將角色 ID 從字串轉換為整數", exc_info=True)
-            await interaction.followup.send("處理角色選擇時發生內部錯誤，請聯繫管理員。", ephemeral=True)
+            await interaction.edit_original_response(content="處理角色選擇時發生內部錯誤，請聯繫管理員。")
         except Exception as e:
             self.logger.error("Error in NPCSelectView confirm_button", exc_info=True)
             if not interaction.response.is_done():
-                 await interaction.followup.send("❌ 開始故事時發生嚴重錯誤，請聯繫管理員。", ephemeral=True)
+                 await interaction.response.send_message(content="❌ 開始故事時發生嚴重錯誤，請聯繫管理員。", ephemeral=True)

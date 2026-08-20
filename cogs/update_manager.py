@@ -129,9 +129,9 @@ class UpdateManagerCog(commands.Cog):
                 # 只有擁有者才顯示更新按鈕
                 if self.permission_checker.check_update_permission(interaction.user.id):
                     view = UpdateActionView(self.update_manager, guild_id, self._get_translation)
-                    await interaction.followup.send(embed=embed, view=view)
+                    await interaction.edit_original_response(embed=embed, view=view)
                 else:
-                    await interaction.followup.send(embed=embed)
+                    await interaction.edit_original_response(embed=embed)
             else:
                 status_label = self._get_translation(guild_id, "commands", "update_manager", "commands", "check_update", "up_to_date", "status")
                 status_field_name = self._get_translation(guild_id, "commands", "update_manager", "fields", "status")
@@ -140,7 +140,7 @@ class UpdateManagerCog(commands.Cog):
                     value=status_label,
                     inline=False
                 )
-                await interaction.followup.send(embed=embed)
+                await interaction.edit_original_response(embed=embed)
                 
         except Exception as e:
             self.logger.error(f"檢查更新時發生錯誤: {e}")
@@ -152,7 +152,7 @@ class UpdateManagerCog(commands.Cog):
                 description=error_desc,
                 color=discord.Color.red()
             )
-            await interaction.followup.send(embed=embed)
+            await interaction.edit_original_response(embed=embed)
     
     @app_commands.command(name="update_now", description="立即執行更新（僅限擁有者）")
     async def update_now(self, interaction: discord.Interaction, force: bool = False):
@@ -187,7 +187,7 @@ class UpdateManagerCog(commands.Cog):
                     description=busy_desc,
                     color=discord.Color.orange()
                 )
-                await interaction.followup.send(embed=embed)
+                await interaction.edit_original_response(embed=embed)
                 return
             
             # 檢查是否有可用更新
@@ -201,7 +201,7 @@ class UpdateManagerCog(commands.Cog):
                         description=no_update_desc,
                         color=discord.Color.blue()
                     )
-                    await interaction.followup.send(embed=embed)
+                    await interaction.edit_original_response(embed=embed)
                     return
                 
                 # 創建確認視圖
@@ -235,7 +235,7 @@ class UpdateManagerCog(commands.Cog):
                 warning_field_name = self._get_translation(guild_id, "commands", "update_manager", "fields", "warning")
                 embed.add_field(name=warning_field_name, value=force_warning, inline=False)
             
-            await interaction.followup.send(embed=embed, view=view)
+            await interaction.edit_original_response(embed=embed, view=view)
             
         except Exception as e:
             self.logger.error(f"準備更新時發生錯誤: {e}")
@@ -247,7 +247,7 @@ class UpdateManagerCog(commands.Cog):
                 description=error_desc,
                 color=discord.Color.red()
             )
-            await interaction.followup.send(embed=embed)
+            await interaction.edit_original_response(embed=embed)
     
     @app_commands.command(name="update_status", description="查看更新系統狀態")
     async def update_status(self, interaction: discord.Interaction):
