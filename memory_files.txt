@@ -1,0 +1,459 @@
+"""Automatic Episodic Memory Provider for context injection.
+
+Performs a lightweight vector search on each incoming message and returns
+the top-k relevant past memory fragments as a formatted string.
+Silent failure design: any error returns None without raising.
+"""
+from __future__ import annotations
+
+import asyncio
+import re
+import time
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
+
+import discord
+
+from addons.logging import get_logger
+from function import func
+
+_LOGGER = get_logger(server_id="Bot", source="llm.memory.episodic")
+
+# Messages shorter than this word count (after stripping mentions) are skipped
+# to avoid meaningless vector searches on greetings like "hi" or "ok".
+_MIN_QUERY_TOKENS = 4
+
+# Pattern to strip Discord mention tags from message content
+_MENTION_RE = re.compile(r"<@!?\d+>")
+
+
+class EpisodicMemoryProvider:
+    """Retrieve semantically relevant past memory fragments for context injection.
+
+    The result is injected into procedural_context_str so both info_agent and
+    message_agent receive the episodic background without extra tool calls.
+
+    Args:
+        bot: Discord bot instance (must have vector_manager attribute).
+        top_k: Maximum number of fragments to retrieve. Default 3.
+        max_chars: Hard character limit for the returned string. Default 1500.
+        max_cache_size: Maximum number of entries to retain in the cache. Default 1000.
+        cache_ttl: Cache Time-To-Live in seconds. Default 300.0.
+    """
+
+    def __init__(self, bot: Any, top_k: int = 3, max_chars: int = 1500, max_cache_size: int = 1000, cache_ttl: float = 300.0) -> None:
+        if max_cache_size < 0:
+            raise ValueError("max_cache_size must be >= 0")
+        self.bot = bot
+        self.top_k = top_k
+        self.max_chars = max_chars
+        self.max_cache_size = max_cache_size
+        self.cache_ttl = cache_ttl
+        # key: (channel_id: str, query: str), value: (formatted_str: Optional[str], expire_at: float monotonic)
+        self._cache: Dict[Tuple[str, str], Tuple[Optional[str], float]] = {}
+        # prevents cache stampedes
+        self._pending_queries: Dict[Tuple[str, str], asyncio.Event] = {}
+
+    async def invalidate(self, channel_id: str) -> None:
+        """Invalidate all cached episodic queries for a specific channel.
+
+        Args:
+            channel_id: The Discord channel ID.
+        """
+        keys_to_remove = [k for k in self._cache.keys() if k[0] == channel_id]
+        for k in keys_to_remove:
+            self._cache.pop(k, None)
+
+        # Unblock any pending queries that were waiting on a now-invalidated result
+        pending_to_remove = [k for k in self._pending_queries.keys() if k[0] == channel_id]
+        for k in pending_to_remove:
+            event = self._pending_queries.pop(k, None)
+            if event:
+                event.set()
+
+    async def get(self, message: discord.Message) -> Optional[str]:
+        """Return formatted episodic context string, or None if nothing relevant.
+
+        Runs in parallel with ProceduralMemoryProvider via asyncio.gather in
+        ContextManager, so it does not add serial latency to the pipeline.
+
+        Args:
+            message: Current Discord message (provides query text and channel scope).
+
+        Returns:
+            Formatted string with past memory fragments, or None.
+        """
+        vector_manager = getattr(self.bot, "vector_manager", None)
+        if not vector_manager or not hasattr(vector_manager, "store"):
+            return None
+
+        # Clean query: strip mentions and whitespace
+        raw = getattr(message, "content", "") or ""
+        query = _MENTION_RE.sub("", raw).strip()
+
+        # Skip trivially short messages (greetings, reactions, single words)
+        if len(query.split()) < _MIN_QUERY_TOKENS:
+            return None
+
+        channel_id = str(message.channel.id)
+        cache_key = (channel_id, query)
+
+        # Thundering herd protection logic
+        while cache_key in self._pending_queries:
+            await self._pending_queries[cache_key].wait()
+            now = time.monotonic()
+            entry = self._cache.get(cache_key)
+            if entry is not None and entry[1] > now:
+                return entry[0]
+            # If wait finished but cache wasn't updated (e.g. error in primary task),
+            # loop again in case another task picked up the query.
+
+        now = time.monotonic()
+        entry = self._cache.get(cache_key)
+        if entry is not None and entry[1] > now:
+            return entry[0]
+
+        event = asyncio.Event()
+        self._pending_queries[cache_key] = event
+
+        try:
+            try:
+                fragments = await vector_manager.store.search_memories_by_vector(
+                    query_text=query,
+                    limit=self.top_k,
+                    channel_id=channel_id,
+                )
+            except Exception as e:
+                await func.report_error(e, "EpisodicMemoryProvider.get: vector search failed")
+                return None
+
+            if not fragments:
+                formatted_result = None
+            else:
+                lines = ["--- Relevant Past Memories ---"]
+                total_chars = len(lines[0])
+
+                for i, frag in enumerate(fragments, 1):
+                    ts = frag.metadata.get("start_timestamp") or frag.metadata.get("timestamp")
+                    jump_url = frag.metadata.get("jump_url")
+
+                    # Build source label: prefer a Discord message link over plain timestamp
+                    if jump_url and ts:
+                        try:
+                            unix_ts = int(float(ts))
+                            source_str = f" [[Source <t:{unix_ts}:R>]({jump_url})]"
+                        except Exception:
+                            source_str = f" [[Source]({jump_url})]"
+                    elif jump_url:
+                        source_str = f" [[Source]({jump_url})]"
+                    elif ts:
+                        try:
+                            unix_ts = int(float(ts))
+                            source_str = f" [<t:{unix_ts}:R>]"
+                        except Exception:
+                            source_str = ""
+                    else:
+                        source_str = ""
+
+                    entry_str = f"[memory #{i}] {frag.content}{source_str}"
+
+                    if total_chars + len(entry_str) + 1 > self.max_chars:
+                        break
+                    lines.append(entry_str)
+                    total_chars += len(entry_str) + 1
+
+                lines.append("--- End Past Memories ---")
+                _LOGGER.debug(f"Injecting {len(lines) - 2} episodic fragments into context.")
+                formatted_result = "\n".join(lines)
+
+            # Update cache
+            expire_at = now + self.cache_ttl
+            self._cache[cache_key] = (formatted_result, expire_at)
+
+            # Prune expired items if cache is getting large
+            if len(self._cache) > self.max_cache_size:
+                now_insert = time.monotonic()
+                self._cache = {k: v for k, v in self._cache.items() if v[1] > now_insert}
+
+                # If still over size, remove oldest via insertion order
+                while len(self._cache) > self.max_cache_size:
+                    oldest_key = next(iter(self._cache))
+                    self._cache.pop(oldest_key, None)
+
+            return formatted_result
+        finally:
+            # Always ensure the event is cleaned up and waiting tasks are notified
+            self._pending_queries.pop(cache_key, None)
+            event.set()
+
+from typing import List, Any
+import re
+
+import discord
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from function import func
+
+
+class ShortTermMemoryProvider:
+    """
+    Provides short-term memory as a list of LangChain messages.
+
+    The provider fetches recent message history from the channel and converts
+    each Discord message to a LangChain HumanMessage or AIMessage.
+    """
+
+    def __init__(self, bot: Any, limit: int = 10):
+        """
+        Initialize the provider.
+
+        Args:
+            limit: maximum number of recent messages to fetch from channel.
+        """
+        if not isinstance(limit, int) or limit <= 0:
+            raise ValueError("limit must be a positive integer")
+        self.limit = limit
+        self.bot = bot
+
+    async def get(self, message: discord.Message) -> List[BaseMessage]:
+        """
+        Fetch recent messages and return as LangChain BaseMessage list.
+
+        The returned order is oldest -> newest.
+        """
+        try:
+            from llm.utils.attachment_processor import process_attachment
+            from llm.utils.embed_processor import process_embed
+            from addons.settings import attachment_config as _att_cfg
+
+            history = [
+                msg async for msg in message.channel.history(limit=self.limit)
+            ]
+            history.reverse()
+
+            # Pre-fetch all attachments concurrently
+            attachment_tasks = []
+            task_mapping = []  # To map task index back to msg.id
+            if _att_cfg.enabled:
+                for msg in history:
+                    if msg.attachments:
+                        for att in msg.attachments:
+                            attachment_tasks.append(process_attachment(att))
+                            task_mapping.append(msg.id)
+
+            attachment_results_by_msg = {}
+            if attachment_tasks:
+                import asyncio
+                results = await asyncio.gather(*attachment_tasks, return_exceptions=True)
+                for msg_id, res in zip(task_mapping, results):
+                    if not isinstance(res, Exception) and isinstance(res, list):
+                        attachment_results_by_msg.setdefault(msg_id, []).extend(res)
+                    else:
+                        # Fallback or log error could go here if process_attachment didn't handle it
+                        pass
+
+            result: List[BaseMessage] = []
+            for msg in history:
+                content_parts = []
+                content_suffix = []
+
+                content_prefix = f"{msg.author.name} | UserID:{msg.author.id} | MessageID:{msg.id}"
+
+                # Include reactions
+                if msg.reactions:
+                    reactions_info = ", ".join(str(r.emoji) for r in msg.reactions)
+                    content_suffix.append(f"reactions: {reactions_info}")
+                # Include reference info if it's a reply
+                if msg.reference:
+                    ref_text = f"reply_to: {msg.reference.message_id}"
+                    ref_msg = None
+                    if hasattr(msg.reference, "resolved") and isinstance(msg.reference.resolved, discord.Message):
+                        ref_msg = msg.reference.resolved
+                    elif hasattr(msg.reference, "cached_message") and msg.reference.cached_message:
+                        ref_msg = msg.reference.cached_message
+
+                    if ref_msg:
+                        ref_author = ref_msg.author.name
+                        # Create a brief summary of the referenced content
+                        ref_content = ref_msg.content.replace('\n', ' ')[:50]
+                        if len(ref_msg.content) > 50:
+                            ref_content += "..."
+                        if not ref_content and ref_msg.attachments:
+                            ref_content = "[Image/Attachment]"
+                        ref_text = f"Replying to @{ref_author}: '{ref_content}' (MessageID:{msg.reference.message_id})"
+
+                    content_suffix.append(ref_text)
+
+                # Provide both Unix timestamp and human-readable time
+                ts = msg.created_at.timestamp()
+                human_time = msg.created_at.strftime('%Y-%m-%d %H:%M:%S UTC')
+                content_suffix.append(f"timestamp: {ts} ({human_time})")
+
+                if msg.content:
+                    cleaned_content = re.sub(rf'<@!?{self.bot.user.id}>', '', msg.content).strip()
+                    content_parts.append({"type": "text", "text": f"[{content_prefix}] <som> {cleaned_content} <eom> [{' | '.join(content_suffix)}]"})
+                else:
+                    content_parts.append({"type": "text", "text": f"[{content_prefix}] <som> <eom>  [{ ' | '.join(content_suffix)}]"})
+
+                if _att_cfg.enabled and msg.id in attachment_results_by_msg:
+                    content_parts.extend(attachment_results_by_msg[msg.id])
+
+                if msg.embeds and _att_cfg.embeds.enabled:
+                    for embed in msg.embeds:
+                        parts = process_embed(embed)
+                        content_parts.extend(parts)
+
+                # Create message (using list format for content)
+                # Add explicit speaker identification to help LLM distinguish between users
+                if msg.author.bot:
+                    result.append(AIMessage(content=content_parts))
+                else:
+                    # Include 'name' parameter to make speaker identity explicit
+                    result.append(HumanMessage(
+                        content=content_parts,
+                        name=f"{msg.author.name}_{msg.author.id}"
+                    ))
+
+            return result
+        except Exception as e:
+            await func.report_error(e)
+            return []
+import asyncio
+import time
+from typing import Dict, List, Optional, Tuple
+
+from llm.memory.schema import ProceduralMemory, UserInfo
+from cogs.memory.users.manager import SQLiteUserManager
+from function import func
+from addons.settings import memory_config
+
+
+class ProceduralMemoryProvider:
+    """Provides procedural memory for multiple users with per-user TTL cache.
+
+    The provider fetches UserInfo for each user_id using the provided user manager
+    and caches results per user_id to avoid redundant DB calls within the TTL window.
+    """
+
+    def __init__(self, user_manager: SQLiteUserManager, max_cache_size: int = 1000) -> None:
+        """Initializes the provider with a user manager instance and cache size limit.
+
+        Args:
+            user_manager: Manager used to fetch user information from storage.
+            max_cache_size: Maximum number of user entries to retain in the cache
+                before pruning. Must be a non-negative integer.
+
+        Raises:
+            ValueError: If max_cache_size is negative.
+        """
+        if max_cache_size < 0:
+            raise ValueError("max_cache_size must be >= 0")
+        self.user_manager = user_manager
+        self.max_cache_size = max_cache_size
+        # key: user_id (str), value: (UserInfo, expire_at: float monotonic)
+        self._cache: Dict[str, Tuple[Optional[UserInfo], float]] = {}
+        self._pending_queries: Dict[str, asyncio.Event] = {}
+
+    async def get(self, user_ids: List[str]) -> ProceduralMemory:
+        """Fetch procedural memory with per-user TTL cache.
+
+        Cache hit: return cached UserInfo without DB call.
+        Cache miss: fetch from DB and store in cache.
+
+        Args:
+            user_ids: List of user id strings to fetch info for.
+
+        Returns:
+            ProceduralMemory containing a dict mapping user_id to UserInfo.
+        """
+        if not user_ids or not self.user_manager:
+            return ProceduralMemory(user_info={})
+
+        unique_ids = list(set(str(uid) for uid in user_ids))
+        result: Dict[str, UserInfo] = {}
+        attempted_ids = set()
+
+        while True:
+            now = time.monotonic()
+            missing_ids: List[str] = []
+            pending_events: List[asyncio.Event] = []
+
+            for uid in unique_ids:
+                if uid in result:
+                    continue
+
+                if uid in self._pending_queries:
+                    pending_events.append(self._pending_queries[uid])
+                    continue
+
+                entry = self._cache.get(uid)
+                if entry is not None and entry[1] > now:
+                    if entry[0] is not None:
+                        result[uid] = entry[0]
+                elif uid not in attempted_ids:
+                    missing_ids.append(uid)
+
+            if not missing_ids and not pending_events:
+                break
+
+            for uid in missing_ids:
+                self._pending_queries[uid] = asyncio.Event()
+                attempted_ids.add(uid)
+
+            async def fetch_missing():
+                if not missing_ids:
+                    return
+
+                try:
+                    try:
+                        fetched: Dict[str, UserInfo] = await self.user_manager.get_multiple_users(missing_ids)
+                        error_occurred = False
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        await func.report_error(e, "ProceduralMemoryProvider.get failed while fetching users")
+                        fetched = {}
+                        error_occurred = True
+
+                    now_insert = time.monotonic()
+                    expire_at = now_insert + memory_config.procedural_cache_ttl
+
+                    for uid in missing_ids:
+                        if error_occurred and uid not in fetched:
+                            continue # Do not cache None on error
+                        info = fetched.get(uid)
+                        self._cache[uid] = (info, expire_at)
+                        if info is not None:
+                            result[uid] = info
+
+                    if len(self._cache) > self.max_cache_size:
+                        self._cache = {k: v for k, v in self._cache.items() if v[1] > now_insert}
+
+                        while len(self._cache) > self.max_cache_size:
+                            oldest_key = next(iter(self._cache))
+                            self._cache.pop(oldest_key, None)
+                finally:
+                    for uid in missing_ids:
+                        event = self._pending_queries.pop(uid, None)
+                        if event:
+                            event.set()
+
+            await asyncio.gather(
+                *[event.wait() for event in pending_events],
+                fetch_missing()
+            )
+
+        return ProceduralMemory(user_info=result)
+
+    async def invalidate(self, user_id: str) -> None:
+        """Evict a single user from the cache.
+
+        Call this after a successful /memory save to ensure the next request
+        reflects the updated data without waiting for TTL expiry.
+
+        Args:
+            user_id: The user_id string to remove from cache.
+        """
+        uid_str = str(user_id)
+        self._cache.pop(uid_str, None)
+        event = self._pending_queries.pop(uid_str, None)
+        if event:
+            event.set()
