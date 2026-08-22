@@ -1033,6 +1033,16 @@ class UserDataCog(commands.Cog):
                 )
 
             success = await self.user_manager.delete_user_data(user_id)
+
+            # Delete episodic memory vectors to ensure full privacy compliance
+            try:
+                vector_manager = getattr(self.bot, "vector_manager", None)
+                if vector_manager and hasattr(vector_manager, "store"):
+                    await vector_manager.store.delete_vectors_by_user(str(user_id))
+            except Exception as vector_err:
+                self.logger.error(f"Failed to delete episodic vectors for {user_id}: {vector_err}")
+                await func.report_error(vector_err, f"Clear user episodic vectors failed (user: {user_id})")
+
             if success:
                 # Invalidate ProceduralMemoryProvider cache
                 try:
