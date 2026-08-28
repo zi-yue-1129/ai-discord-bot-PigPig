@@ -1,23 +1,28 @@
-import os
-import random
-import platform
 from time import sleep
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, WebDriverException
 from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
 import re
-import concurrent.futures
 import asyncio
 import threading
 from addons.logging import get_logger
 
 logger = get_logger(server_id="Bot", source="eat.crawler")
+
+# driver.get() 若無明確逾時，遇到卡住的頁面會無限期阻塞執行緒。
+# 這個 crawler 是透過 run_in_executor 丟到 asyncio 預設執行緒池執行的，
+# 一旦某次呼叫卡死，該執行緒永遠不會歸還，累積幾次後會把預設執行緒池耗盡，
+# 導致 bot 內其他所有依賴 run_in_executor 的功能全部排隊卡住（外觀上像整個 bot 凍結）。
+PAGE_LOAD_TIMEOUT_SECONDS = 20
+LOCK_ACQUIRE_TIMEOUT_SECONDS = 25
+ASYNC_CALL_TIMEOUT_SECONDS = 30
+
 
 class GoogleMapCrawler:
     def __init__(self):
@@ -32,6 +37,7 @@ class GoogleMapCrawler:
         chrome_options.add_argument('--disable-blink-features=AutomationControlled')
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option('useAutomationExtension', False)
+        chrome_options.page_load_strategy = 'eager'
 
         try:
             self.webdriver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
@@ -43,7 +49,10 @@ class GoogleMapCrawler:
             except Exception as e2:
                 logger.error(f"本地 WebDriver 初始化也失敗：{e2}")
                 raise e2
-        
+
+        self.webdriver.set_page_load_timeout(PAGE_LOAD_TIMEOUT_SECONDS)
+        self.webdriver.set_script_timeout(PAGE_LOAD_TIMEOUT_SECONDS)
+
         self._lock = threading.Lock()
 
     def search_list(self, keyword: str, lang: str = "zh_TW") -> list[dict]:
@@ -55,15 +64,22 @@ class GoogleMapCrawler:
         lang_map = {"zh_TW": "zh-TW", "zh_CN": "zh-CN", "en_US": "en", "ja_JP": "ja"}
         hl = lang_map.get(lang, "zh-TW")
 
-        with self._lock:
+        if not self._lock.acquire(timeout=LOCK_ACQUIRE_TIMEOUT_SECONDS):
+            logger.error("search_list 無法取得 webdriver 鎖（前一個請求可能已卡死），放棄本次搜尋。")
+            return []
+        try:
             search_url = f"https://www.google.com/maps/search/{keyword}餐廳?hl={hl}"
-            self.webdriver.get(search_url)
-            
+            try:
+                self.webdriver.get(search_url)
+            except (TimeoutException, WebDriverException) as e:
+                logger.warning(f"search_list 頁面載入逾時/失敗：{e}")
+                return []
+
             try:
                 WebDriverWait(self.webdriver, 10).until(
                     EC.presence_of_element_located((By.CLASS_NAME, "hfpxzc"))
                 )
-                
+
                 # 執行滾動以載入更多結果
                 try:
                     # 搜尋結果的滾動容器
@@ -76,7 +92,7 @@ class GoogleMapCrawler:
 
                 html = self.webdriver.page_source
                 soup = BeautifulSoup(html, "html.parser")
-                
+
                 # 取得所有搜尋結果元素
                 cards = soup.find_all("a", class_="hfpxzc")
                 results = []
@@ -89,12 +105,14 @@ class GoogleMapCrawler:
                             "maps_url": link,
                             "is_detailed": False
                         })
-                
+
                 logger.info(f"「{keyword}」搜尋清單抓取完成，共 {len(results)} 筆結果。")
                 return results
             except Exception as e:
                 logger.warning(f"search_list 失敗：{e}")
                 return []
+        finally:
+            self._lock.release()
 
     def fetch_detail(self, url: str, lang: str = "zh_TW") -> dict:
         """導航至特定餐廳頁面，抓取詳盡資訊（地址、評分、照片等）。"""
@@ -108,16 +126,39 @@ class GoogleMapCrawler:
         hl = config["hl"]
         menu_label = config["menu"]
 
-        with self._lock:
+        if not self._lock.acquire(timeout=LOCK_ACQUIRE_TIMEOUT_SECONDS):
+            logger.error(f"fetch_detail 無法取得 webdriver 鎖（前一個請求可能已卡死），放棄本次抓取 ({url})。")
+            return {
+                "name": "無法抓取",
+                "rating": 0.0,
+                "category": "餐廳",
+                "address": "伺服器忙碌中",
+                "maps_url": url,
+                "photo_url": "",
+                "is_detailed": True
+            }
+        try:
             if not url.startswith("http"):
                 return {}
-            
+
             # 確保語系正確
             fixed_url = url
             if "hl=" not in fixed_url:
                 fixed_url += f"&hl={hl}" if "?" in fixed_url else f"?hl={hl}"
-            
-            self.webdriver.get(fixed_url)
+
+            try:
+                self.webdriver.get(fixed_url)
+            except (TimeoutException, WebDriverException) as e:
+                logger.warning(f"fetch_detail 頁面載入逾時/失敗 ({url}): {e}")
+                return {
+                    "name": "無法抓取",
+                    "rating": 0.0,
+                    "category": "餐廳",
+                    "address": "連線逾時",
+                    "maps_url": url,
+                    "photo_url": "",
+                    "is_detailed": True
+                }
             try:
                 # 等待關鍵元件載入
                 WebDriverWait(self.webdriver, 12).until(
@@ -224,21 +265,45 @@ class GoogleMapCrawler:
                     "photo_url": "",
                     "is_detailed": True
                 }
+        finally:
+            self._lock.release()
 
     async def async_search_list(self, keyword: str, lang: str = "zh_TW") -> list[dict]:
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self.search_list, keyword, lang)
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, self.search_list, keyword, lang),
+                timeout=ASYNC_CALL_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"async_search_list 逾時（>{ASYNC_CALL_TIMEOUT_SECONDS}s），放棄本次搜尋：{keyword}")
+            return []
 
     async def async_fetch_detail(self, url: str, lang: str = "zh_TW") -> dict:
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self.fetch_detail, url, lang)
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, self.fetch_detail, url, lang),
+                timeout=ASYNC_CALL_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"async_fetch_detail 逾時（>{ASYNC_CALL_TIMEOUT_SECONDS}s），放棄本次抓取：{url}")
+            return {
+                "name": "無法抓取",
+                "rating": 0.0,
+                "category": "餐廳",
+                "address": "連線逾時",
+                "maps_url": url,
+                "photo_url": "",
+                "is_detailed": True
+            }
 
     def close(self):
+        acquired = self._lock.acquire(timeout=LOCK_ACQUIRE_TIMEOUT_SECONDS)
         try:
-            self._lock.acquire()
             self.webdriver.quit()
-        except:
+        except Exception:
             pass
         finally:
-            if self._lock.locked():
+            if acquired:
                 self._lock.release()
