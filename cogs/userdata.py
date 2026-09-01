@@ -1034,6 +1034,18 @@ class UserDataCog(commands.Cog):
 
             success = await self.user_manager.delete_user_data(user_id)
             if success:
+                # Delete episodic memory vectors to comply with privacy deletion
+                from addons.settings import memory_config
+                if getattr(memory_config, "enabled", True):
+                    vector_manager = getattr(self.bot, "vector_manager", None)
+                    if vector_manager and hasattr(vector_manager, "store"):
+                        try:
+                            await vector_manager.store.delete_vectors_by_user(user_id)
+                        except Exception as e:
+                            self.logger.error(f"Failed to delete episodic vectors for user {user_id}: {e}")
+                    else:
+                        self.logger.error("Critical: vector_manager or store is missing while memory is enabled. Cannot delete episodic memory vectors.")
+
                 # Invalidate ProceduralMemoryProvider cache
                 try:
                     orchestrator = getattr(self.bot, "orchestrator", None)
