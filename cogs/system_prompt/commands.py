@@ -210,7 +210,7 @@ class SystemPromptCommands(commands.Cog):
             scope: Choice of "channel" or "server".
             description: Natural language description of the desired personality change.
         """
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
 
         guild_id = str(interaction.guild.id) if interaction.guild else "0"
         channel_id = str(interaction.channel.id) if interaction.channel else "0"
@@ -223,13 +223,13 @@ class SystemPromptCommands(commands.Cog):
             self.bot, interaction.user, interaction.guild, interaction.channel, scope_value
         )
         if permission_error is not None:
-            await interaction.followup.send(f"❌ {permission_error}", ephemeral=True)
+            await interaction.edit_original_response(content=f"❌ {permission_error}")
             return
 
         # Get current effective system prompt to merge with
         sp_cog = self.bot.get_cog("SystemPromptManagerCog")
         if sp_cog is None:
-            await interaction.followup.send("❌ System prompt module is not loaded.", ephemeral=True)
+            await interaction.edit_original_response(content="❌ System prompt module is not loaded.")
             return
 
         manager = sp_cog.get_system_prompt_manager()
@@ -247,7 +247,7 @@ class SystemPromptCommands(commands.Cog):
                 model_priority[0], guild_id=guild_id, max_retries=1,
             )
         except Exception as exc:
-            await interaction.followup.send(f"❌ Failed to load language model: {exc}", ephemeral=True)
+            await interaction.edit_original_response(content=f"❌ Failed to load language model: {exc}")
             return
 
         merge_prompt = (
@@ -263,7 +263,7 @@ class SystemPromptCommands(commands.Cog):
             response = await model_instance.ainvoke([HumanMessage(content=merge_prompt)])
             merged_prompt = response.content if hasattr(response, "content") else str(response)
         except Exception as exc:
-            await interaction.followup.send(f"❌ Failed to generate merged prompt: {exc}", ephemeral=True)
+            await interaction.edit_original_response(content=f"❌ Failed to generate merged prompt: {exc}")
             return
 
         # Write using shared helper
@@ -278,12 +278,9 @@ class SystemPromptCommands(commands.Cog):
         )
 
         if result.startswith("Error"):
-            await interaction.followup.send(f"❌ {result}", ephemeral=True)
+            await interaction.edit_original_response(content=f"❌ {result}")
         else:
-            await interaction.followup.send(
-                f"✅ {result}\n\nApplied change: *{description}*",
-                ephemeral=True,
-            )
+            await interaction.edit_original_response(content=f"✅ {result}\n\nApplied change: *{description}*")
 
 
 
