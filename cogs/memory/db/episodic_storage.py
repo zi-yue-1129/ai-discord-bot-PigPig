@@ -59,6 +59,41 @@ class EpisodicStorage:
                 
             conn.commit()
 
+
+
+    async def delete_user_data(self, user_id: str) -> int:
+        """Delete all relational episodic data associated with a user_id.
+
+        Removes records from messages, pending_messages, and messages_archive
+        where the author_id matches the given user_id.
+
+        Args:
+            user_id: The Discord user ID string.
+
+        Returns:
+            The total number of rows deleted.
+        """
+        try:
+            with self.db.get_connection() as conn:
+                cursor = conn.cursor()
+                total_deleted = 0
+
+                cursor.execute("DELETE FROM messages WHERE author_id = ?", (user_id,))
+                total_deleted += cursor.rowcount
+
+                cursor.execute("DELETE FROM pending_messages WHERE author_id = ?", (user_id,))
+                total_deleted += cursor.rowcount
+
+                cursor.execute("DELETE FROM messages_archive WHERE author_id = ?", (user_id,))
+                total_deleted += cursor.rowcount
+
+                conn.commit()
+                self.logger.info(f"Deleted {total_deleted} relational episodic records for user {user_id}")
+                return total_deleted
+        except Exception as e:
+            self.logger.error(f"Failed to delete relational episodic data for user {user_id}: {e}")
+            return -1
+
     async def get_channel_memory_state(self, channel_id: int) -> Optional[Dict[str, int]]:
         """Get the memory state for a specific channel.
         
