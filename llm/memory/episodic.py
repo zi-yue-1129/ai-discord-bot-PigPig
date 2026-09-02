@@ -70,6 +70,41 @@ class EpisodicMemoryProvider:
             if event:
                 event.set()
 
+
+    async def delete_user(self, user_id: str) -> None:
+        """Delete all episodic memories for a user.
+
+        Delegates to the vector store to delete fragments matching the user_id.
+        Invalidates any cached queries that might contain this user's data.
+
+        Args:
+            user_id: The Discord user ID string.
+        """
+        vector_manager = getattr(self.bot, "vector_manager", None)
+        if not vector_manager or not hasattr(vector_manager, "store"):
+            _LOGGER.warning("Vector store not available. Episodic memories not deleted.")
+            return
+
+        if not hasattr(vector_manager.store, "delete_vectors_by_user"):
+            _LOGGER.error(f"delete_vectors_by_user not implemented on {type(vector_manager.store).__name__}. Episodic data may still exist.")
+            return
+
+        try:
+            await vector_manager.store.delete_vectors_by_user(user_id)
+        except Exception as e:
+            _LOGGER.error(f"Error deleting episodic memories for user {user_id}: {e}")
+            return
+
+        # Clear entire cache since we don't know which queries contained this user's data
+        self._cache.clear()
+
+        # Also clear pending queries just in case
+        for key, event in list(self._pending_queries.items()):
+            event.set()
+        self._pending_queries.clear()
+
+        _LOGGER.info(f"Deleted episodic memories for user {user_id} and invalidated cache.")
+
     async def get(self, message: discord.Message) -> Optional[str]:
         """Return formatted episodic context string, or None if nothing relevant.
 

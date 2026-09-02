@@ -1034,6 +1034,32 @@ class UserDataCog(commands.Cog):
 
             success = await self.user_manager.delete_user_data(user_id)
             if success:
+                # Explicitly delete episodic memory vectors for privacy compliance
+                try:
+                    # Access EpisodicMemoryProvider
+                    orchestrator = getattr(self.bot, "orchestrator", None)
+                    provider = getattr(getattr(orchestrator, "context_manager", None), "episodic_provider", None)
+
+                    if provider and hasattr(provider, "delete_user"):
+                        await provider.delete_user(user_id)
+                    else:
+                        self.logger.error("episodic_provider.delete_user is missing or not implemented")
+                except Exception as ve:
+                    self.logger.error(f"Failed to delete episodic memory vectors for user {user_id}: {ve}")
+                    # Allow to proceed so the user knows core deletion succeeded
+
+                # Explicitly delete relational episodic data for privacy compliance
+                try:
+                    episodic_cog = self.bot.get_cog("EpisodicMemory")
+                    if episodic_cog and hasattr(episodic_cog, "storage"):
+                        if not hasattr(episodic_cog.storage, "delete_user_data"):
+                            self.logger.error(f"delete_user_data not implemented on {type(episodic_cog.storage).__name__}")
+                        else:
+                            await episodic_cog.storage.delete_user_data(user_id)
+                            self.logger.info(f"Deleted episodic relational data for user {user_id}.")
+                except Exception as e:
+                    self.logger.error(f"Failed to delete episodic relational data for user {user_id}: {e}")
+
                 # Invalidate ProceduralMemoryProvider cache
                 try:
                     orchestrator = getattr(self.bot, "orchestrator", None)
