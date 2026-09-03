@@ -63,7 +63,7 @@ class BotInfo(commands.Cog):
                 self.botinfo.description = localized_desc
 
         try:
-            await interaction.response.defer()
+            await interaction.response.defer(thinking=True)
 
             bot = interaction.client
             guild_id = str(interaction.guild_id) if interaction.guild_id else "0"
@@ -198,7 +198,7 @@ class BotInfo(commands.Cog):
                 icon_url=avatar_url
             )
 
-            await interaction.followup.send(embed=main_embed)
+            await interaction.edit_original_response(embed=main_embed)
         except Exception as e:
             await func.report_error(e, "getting bot info")
 
