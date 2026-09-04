@@ -1,4 +1,5 @@
 from typing import List, Any
+from collections import OrderedDict
 import re
 
 import discord
@@ -25,6 +26,8 @@ class ShortTermMemoryProvider:
             raise ValueError("limit must be a positive integer")
         self.limit = limit
         self.bot = bot
+        self._attachment_cache = OrderedDict()
+        self._max_cache_size = 50
 
     async def get(self, message: discord.Message) -> List[BaseMessage]:
         """
@@ -44,21 +47,29 @@ class ShortTermMemoryProvider:
 
             # Pre-fetch all attachments concurrently
             attachment_tasks = []
-            task_mapping = []  # To map task index back to msg.id
+            task_mapping = []
+            attachment_results_by_msg = {}  # To map task index back to msg.id
             if _att_cfg.enabled:
                 for msg in history:
                     if msg.attachments:
                         for att in msg.attachments:
-                            attachment_tasks.append(process_attachment(att))
-                            task_mapping.append(msg.id)
+                            if att.id in self._attachment_cache:
+                                attachment_results_by_msg.setdefault(msg.id, []).extend(self._attachment_cache[att.id])
+                            else:
+                                attachment_tasks.append(process_attachment(att))
+                                task_mapping.append((msg.id, att.id))
 
-            attachment_results_by_msg = {}
             if attachment_tasks:
                 import asyncio
                 results = await asyncio.gather(*attachment_tasks, return_exceptions=True)
-                for msg_id, res in zip(task_mapping, results):
+                for (msg_id, att_id), res in zip(task_mapping, results):
                     if not isinstance(res, Exception) and isinstance(res, list):
                         attachment_results_by_msg.setdefault(msg_id, []).extend(res)
+
+                        # Cache the result
+                        self._attachment_cache[att_id] = res
+                        if len(self._attachment_cache) > self._max_cache_size:
+                            self._attachment_cache.popitem(last=False)
                     else:
                         # Fallback or log error could go here if process_attachment didn't handle it
                         pass
