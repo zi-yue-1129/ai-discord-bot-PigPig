@@ -174,6 +174,25 @@ class MathCalculatorCog(commands.Cog):
             # Use extracted expression
             expression = extracted
 
+
+            # Validate expression for suspicious patterns
+            dangerous_patterns = [
+                r'__',
+                r'globals',
+                r'locals',
+                r'exec',
+                r'import',
+                r'open',
+                r'eval',
+                r'compile'
+            ]
+            for pattern in dangerous_patterns:
+                if re.search(pattern, expression, re.IGNORECASE):
+                    error_message = self.lang_manager.translate(
+                        guild_id, "commands", "math", "responses", "error_unsupported_elements"
+                    ) if self.lang_manager else "Error: Expression contains unsafe patterns."
+                    return error_message
+
             # Safely parse expression
             sympy_expr = parse_expr(
                 expression,
