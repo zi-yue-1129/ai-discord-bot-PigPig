@@ -217,16 +217,14 @@ class SystemPromptCommands(commands.Cog):
         user_id = str(interaction.user.id)
         scope_value = scope.value
 
-        # Permission check for server scope
-        if scope_value == "server":
-            from .permissions import PermissionValidator
-            validator = PermissionValidator(self.bot)
-            if not validator.can_modify_server_prompt(interaction.user, interaction.guild):
-                await interaction.followup.send(
-                    "❌ You need administrator permissions to modify the server-level personality.",
-                    ephemeral=True,
-                )
-                return
+        # Permission check shared with the update_personality LLM tool
+        from llm.tools.system_prompt_tools import check_personality_permission
+        permission_error = check_personality_permission(
+            self.bot, interaction.user, interaction.guild, interaction.channel, scope_value
+        )
+        if permission_error is not None:
+            await interaction.followup.send(f"❌ {permission_error}", ephemeral=True)
+            return
 
         # Get current effective system prompt to merge with
         sp_cog = self.bot.get_cog("SystemPromptManagerCog")
