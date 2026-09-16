@@ -1,5 +1,6 @@
-from typing import List, Any
+from typing import List, Any, Dict, Optional
 import re
+from collections import OrderedDict
 
 import discord
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
@@ -14,17 +15,22 @@ class ShortTermMemoryProvider:
     each Discord message to a LangChain HumanMessage or AIMessage.
     """
 
-    def __init__(self, bot: Any, limit: int = 10):
+    def __init__(self, bot: Any, limit: int = 10, max_cache_size: int = 100):
         """
         Initialize the provider.
 
         Args:
             limit: maximum number of recent messages to fetch from channel.
+            max_cache_size: Maximum number of attachment results to retain in the cache.
         """
         if not isinstance(limit, int) or limit <= 0:
             raise ValueError("limit must be a positive integer")
+        if not isinstance(max_cache_size, int) or max_cache_size < 0:
+            raise ValueError("max_cache_size must be a non-negative integer")
         self.limit = limit
+        self.max_cache_size = max_cache_size
         self.bot = bot
+        self._attachment_cache: OrderedDict = OrderedDict()
 
     async def get(self, message: discord.Message) -> List[BaseMessage]:
         """
@@ -33,7 +39,7 @@ class ShortTermMemoryProvider:
         The returned order is oldest -> newest.
         """
         try:
-            from llm.utils.attachment_processor import process_attachment
+            from llm.utils.attachment_processor import is_processing_failure, process_attachment
             from llm.utils.embed_processor import process_embed
             from addons.settings import attachment_config as _att_cfg
 
@@ -44,21 +50,36 @@ class ShortTermMemoryProvider:
 
             # Pre-fetch all attachments concurrently
             attachment_tasks = []
-            task_mapping = []  # To map task index back to msg.id
+            task_mapping = []  # To map task index back to (msg.id, att.id)
+            attachment_results_by_msg = {}
+
             if _att_cfg.enabled:
                 for msg in history:
                     if msg.attachments:
                         for att in msg.attachments:
-                            attachment_tasks.append(process_attachment(att))
-                            task_mapping.append(msg.id)
+                            # Check cache first
+                            if att.id in self._attachment_cache:
+                                # Move to end to mark as recently used
+                                res = self._attachment_cache.pop(att.id)
+                                self._attachment_cache[att.id] = res
+                                attachment_results_by_msg.setdefault(msg.id, []).extend(res)
+                            else:
+                                attachment_tasks.append(process_attachment(att))
+                                task_mapping.append((msg.id, att.id))
 
-            attachment_results_by_msg = {}
             if attachment_tasks:
                 import asyncio
                 results = await asyncio.gather(*attachment_tasks, return_exceptions=True)
-                for msg_id, res in zip(task_mapping, results):
+                for (msg_id, att_id), res in zip(task_mapping, results):
                     if not isinstance(res, Exception) and isinstance(res, list):
                         attachment_results_by_msg.setdefault(msg_id, []).extend(res)
+
+                        # Transient failures are not cached so they are retried next time.
+                        if is_processing_failure(res):
+                            continue
+                        self._attachment_cache[att_id] = res
+                        if len(self._attachment_cache) > self.max_cache_size:
+                            self._attachment_cache.popitem(last=False)
                     else:
                         # Fallback or log error could go here if process_attachment didn't handle it
                         pass
