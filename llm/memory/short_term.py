@@ -39,7 +39,7 @@ class ShortTermMemoryProvider:
         The returned order is oldest -> newest.
         """
         try:
-            from llm.utils.attachment_processor import process_attachment
+            from llm.utils.attachment_processor import is_processing_failure, process_attachment
             from llm.utils.embed_processor import process_embed
             from addons.settings import attachment_config as _att_cfg
 
@@ -74,7 +74,9 @@ class ShortTermMemoryProvider:
                     if not isinstance(res, Exception) and isinstance(res, list):
                         attachment_results_by_msg.setdefault(msg_id, []).extend(res)
 
-                        # Store in cache
+                        # Transient failures are not cached so they are retried next time.
+                        if is_processing_failure(res):
+                            continue
                         self._attachment_cache[att_id] = res
                         if len(self._attachment_cache) > self.max_cache_size:
                             self._attachment_cache.popitem(last=False)
