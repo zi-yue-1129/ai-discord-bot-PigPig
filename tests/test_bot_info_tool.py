@@ -102,7 +102,7 @@ def test_tool_name():
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 def test_changelog_output_contains_versions():
