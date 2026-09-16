@@ -1,10 +1,73 @@
 """Tests for new ProceduralStorage methods added for dashboard memory management."""
 import json
 import asyncio
+import sys
 import tempfile
+import types
 import os
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
+
+# ---------------------------------------------------------------------------
+# Stub out heavy external dependencies before any test module is imported.
+# ---------------------------------------------------------------------------
+
+def _stub_module(name: str, **attrs: object) -> types.ModuleType:
+    """Create a lightweight stub module and register it in sys.modules."""
+    mod = types.ModuleType(name)
+    for attr, value in attrs.items():
+        setattr(mod, attr, value)
+    sys.modules[name] = mod
+    return mod
+
+
+# -- addons.settings --------------------------------------------------------
+# Reuse real config objects from the already-loaded module (if present) so the
+# stub exposes valid values for the symbols the dashboard code reads.
+_real_settings = sys.modules.get("addons.settings")
+_real_attachment_config = getattr(_real_settings, "attachment_config", None)
+_real_AttachmentConfig = getattr(_real_settings, "AttachmentConfig", None)
+_real_memory_config = getattr(_real_settings, "memory_config", None)
+_real_update_config = getattr(_real_settings, "update_config", None)
+
+_memory_cfg = MagicMock()
+_memory_cfg.qdrant.host = "localhost"
+_memory_cfg.qdrant.port = 6333
+
+_settings_mod = _stub_module(
+    "addons.settings",
+    memory_config=_real_memory_config if _real_memory_config is not None else _memory_cfg,
+    update_config=_real_update_config if _real_update_config is not None else MagicMock(),
+    attachment_config=_real_attachment_config if _real_attachment_config is not None else MagicMock(),
+    AttachmentConfig=_real_AttachmentConfig if _real_AttachmentConfig is not None else MagicMock(),
+)
+# Ensure parent package is also registered
+sys.modules.setdefault("addons", _stub_module("addons"))
+
+# -- addons.logging ---------------------------------------------------------
+_logging_mod = _stub_module(
+    "addons.logging",
+    get_logger=lambda **kwargs: MagicMock(),
+)
+
+# -- addons.tokens ----------------------------------------------------------
+_stub_module("addons.tokens", tokens=MagicMock())
+
+# -- qdrant_client ----------------------------------------------------------
+_qdrant_mod = _stub_module("qdrant_client", QdrantClient=MagicMock())
+_stub_module(
+    "qdrant_client.models",
+    Filter=MagicMock(),
+    FieldCondition=MagicMock(),
+    MatchAny=MagicMock(),
+)
+
+# -- function (ROOT_DIR) ----------------------------------------------------
+_stub_module(
+    "function",
+    ROOT_DIR="/tmp/pigpig_test_root",
+    func=MagicMock(report_error=AsyncMock(return_value=None)),
+)
 
 
 # ---------- helpers ----------
@@ -146,7 +209,8 @@ def test_admin_delete_user_memory_requires_confirm(owner_token_payload):
     # Patch the DB path so it doesn't try to open a real file
     with patch("dashboard.routers.admin._PROCEDURAL_DB") as mock_db:
         mock_db.exists.return_value = False
-        response = client.delete(
+        response = client.request(
+            "DELETE",
             "/api/admin/users/test_user_id/memory",
             json={"confirm": False},
         )
@@ -161,7 +225,8 @@ def test_admin_delete_user_memory_success(owner_token_payload):
         patch("dashboard.routers.admin.aiosqlite.connect") as mock_connect,
     ):
         mock_pdb.exists.return_value = False  # Skip actual DB calls; just test routing
-        response = client.delete(
+        response = client.request(
+            "DELETE",
             "/api/admin/users/target_user/memory",
             json={"confirm": True},
         )
