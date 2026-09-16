@@ -81,7 +81,7 @@ class Orchestrator:
             )
 
         short_term_provider = ShortTermMemoryProvider(bot=bot, limit=memory_config.short_term_limit)
-        procedural_provider = ProceduralMemoryProvider(user_manager=user_manager)
+        procedural_provider = ProceduralMemoryProvider(user_manager=user_manager, max_cache_size=memory_config.procedural_max_cache_size)
 
         # Episodic provider: only when memory is enabled and vector store is available
         episodic_provider: Optional[EpisodicMemoryProvider] = None
