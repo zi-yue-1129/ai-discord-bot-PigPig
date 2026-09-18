@@ -213,8 +213,7 @@ class MessageTracker:
             # Call event summarization
             messages_to_process = all_messages
             # Get previous summary for context
-            channel_state = await self.storage.get_channel_memory_state(channel.id)
-            previous_summary = channel_state.get("last_summary_text", "") if channel_state else ""
+            previous_summary = state.get("last_summary_text", "") if state else ""
 
             # Summarize events
             event_summaries = await summarization_service.summarize_events(
