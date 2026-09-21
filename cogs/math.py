@@ -174,6 +174,15 @@ class MathCalculatorCog(commands.Cog):
             # Use extracted expression
             expression = extracted
 
+
+            # Security check: rigorously block dangerous patterns to prevent RCE
+            dangerous_patterns = ['__', 'globals', 'locals', 'exec', 'import', 'eval', 'getattr', 'setattr', 'delattr', 'system', 'subprocess', 'popen']
+            if any(pattern in expression for pattern in dangerous_patterns):
+                error_message = self.lang_manager.translate(
+                    guild_id, "commands", "math", "responses", "error_general"
+                ) if self.lang_manager else "Calculation error: Unable to parse or evaluate the expression."
+                return error_message
+
             # Safely parse expression
             sympy_expr = parse_expr(
                 expression,
