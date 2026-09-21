@@ -185,3 +185,17 @@ class EpisodicMemoryProvider:
             self._pending_queries.pop(cache_key, None)
             event.set()
 
+    async def delete_user(self, user_id: str) -> None:
+        """Delete all vector fragments for a given user from the vector store.
+
+        Args:
+            user_id: The Discord user ID.
+        """
+        vector_manager = getattr(self.bot, "vector_manager", None)
+        if not vector_manager or not hasattr(vector_manager, "store"):
+            return None
+
+        try:
+            await vector_manager.store.delete_vectors_by_user(user_id)
+        except Exception as e:
+            _LOGGER.error(f"EpisodicMemoryProvider.delete_user failed for {user_id}", exception=e)

@@ -667,6 +667,7 @@ class UserDataCog(commands.Cog):
                     self.logger.warning(f"Failed to invalidate procedural cache for {user_id}: {cache_err}")
 
 
+
                 response_key = "data_updated" if existing_data else "data_created"
                 
                 # Format merged_data for display
@@ -1047,6 +1048,27 @@ class UserDataCog(commands.Cog):
                             await provider.invalidate(str(user_id))
                 except Exception as cache_err:
                     self.logger.warning(f"Failed to invalidate procedural cache for {user_id}: {cache_err}")
+
+                # Delete user episodic memory vectors
+                try:
+                    if orchestrator:
+                        episodic_provider = getattr(
+                            getattr(orchestrator, "context_manager", None),
+                            "episodic_provider",
+                            None,
+                        )
+                        if episodic_provider and hasattr(episodic_provider, "delete_user"):
+                            await episodic_provider.delete_user(str(user_id))
+                except Exception as epi_err:
+                    self.logger.error(f"Failed to delete episodic vectors for {user_id}: {epi_err}")
+
+                # Delete user relational episodic data
+                try:
+                    if orchestrator and hasattr(orchestrator.bot, "episodic_storage"):
+                        await orchestrator.bot.episodic_storage.delete_user_data(str(user_id))
+                except Exception as epi_sql_err:
+                    self.logger.error(f"Failed to delete relational episodic data for {user_id}: {epi_sql_err}")
+
 
 
                 return self._translate(

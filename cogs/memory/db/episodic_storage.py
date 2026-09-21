@@ -168,3 +168,24 @@ class EpisodicStorage:
             )
             row = cursor.fetchone()
             return int(row["count"]) if row else 0
+
+    async def delete_user_data(self, user_id: str) -> bool:
+        """Delete all data related to a user from episodic relational storage (if any).
+
+        Args:
+            user_id: The Discord user ID.
+
+        Returns:
+            True if executed successfully, False otherwise.
+        """
+        try:
+            return await asyncio.to_thread(self._delete_user_data_sync, user_id)
+        except Exception as e:
+            await func.report_error(e, f"delete_user_data failed for user {user_id}")
+            return False
+
+    def _delete_user_data_sync(self, user_id: str) -> bool:
+        # Currently, channel_memory_state doesn't have user_id.
+        # But for future-proofing and interface completeness, we implement this as a no-op or
+        # clean any future user-specific tables in this storage.
+        return True
