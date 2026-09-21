@@ -1,74 +1,79 @@
 # File: `cogs/system_prompt/views.py`
 
 ## Overview
-系統提示管理的統一 UI 選單系統 This file is part of the cogs subsystem and handles the primary operations for its respective domain.
+系統提示管理的統一 UI 選單系統
+
+提供全新的統一介面，整合所有系統提示管理功能和模組化編輯。
 
 ## Classes
 
 ### `LocalizedView`
 Base class for all system-prompt views.
 
+Provides :meth:`_t` for translating strings at construction time using
+the server's configured language.
+
 - **Attributes**:
-  - `manager` (`Any`): Instance attribute.
-  - `guild_id` (`Any`): Instance attribute.
-  - `_bot` (`Any`): Instance attribute.
+  - `manager` (`Any`): Attribute holding manager data.
+  - `guild_id` (`Any`): Attribute holding guild_id data.
+  - `_bot` (`Any`): Attribute holding _bot data.
 
 - **Methods**:
-  - `__init__(manager: SystemPromptManager, guild_id: str, timeout: float) -> Any`: Executes __init__ operation.
-  - `_t(*keys) -> str`: Translate *keys* using the guild's language.
+  - `__init__(manager: SystemPromptManager, guild_id: str, timeout: float) -> Any`: Executes __init__ logic.
+  - `_t(*keys, fallback: str) -> str`: Translate *keys* using the guild's language.
 
 ### `SystemPromptMainView`
 系統提示管理主選單
 
 - **Attributes**:
-  - `permission_validator` (`Any`): Instance attribute.
-  - `logger` (`Any`): Instance attribute.
+  - `permission_validator` (`Any`): Attribute holding permission_validator data.
+  - `logger` (`Any`): Attribute holding logger data.
 
 - **Methods**:
-  - `__init__(manager: SystemPromptManager, permission_validator: PermissionValidator, guild_id: str, timeout: float) -> Any`: Executes __init__ operation.
+  - `__init__(manager: SystemPromptManager, permission_validator: PermissionValidator, guild_id: str, timeout: float) -> Any`: Executes __init__ logic.
   - `_setup_main_buttons() -> Any`: 設定主要功能按鈕
   - `function_callback(interaction: discord.Interaction, function: str) -> Any`: 處理功能按鈕回調
-  - `_handle_set_function(interaction: discord.Interaction) -> Any`: Executes _handle_set_function operation.
-  - `_handle_view_function(interaction: discord.Interaction) -> Any`: Executes _handle_view_function operation.
-  - `_handle_copy_function(interaction: discord.Interaction) -> Any`: Executes _handle_copy_function operation.
-  - `_handle_remove_function(interaction: discord.Interaction) -> Any`: Executes _handle_remove_function operation.
-  - `_handle_reset_function(interaction: discord.Interaction) -> Any`: Executes _handle_reset_function operation.
-  - `_handle_reload_function(interaction: discord.Interaction) -> Any`: Executes _handle_reload_function operation.
+  - `_handle_set_function(interaction: discord.Interaction) -> Any`: Executes _handle_set_function logic.
+  - `_handle_view_function(interaction: discord.Interaction) -> Any`: Executes _handle_view_function logic.
+  - `_handle_copy_function(interaction: discord.Interaction) -> Any`: Executes _handle_copy_function logic.
+  - `_handle_remove_function(interaction: discord.Interaction) -> Any`: Executes _handle_remove_function logic.
+  - `_handle_reset_function(interaction: discord.Interaction) -> Any`: Executes _handle_reset_function logic.
+  - `_handle_reload_function(interaction: discord.Interaction) -> Any`: Executes _handle_reload_function logic.
 
 ### `SystemPromptFunctionButton`
 系統提示功能按鈕
 
 - **Attributes**:
-  - `function` (`Any`): Instance attribute.
+  - `function` (`Any`): Attribute holding function data.
 
 - **Methods**:
-  - `__init__(function: str, **kwargs) -> Any`: Executes __init__ operation.
+  - `__init__(function: str, **kwargs) -> Any`: Executes __init__ logic.
   - `callback(interaction: discord.Interaction) -> Any`: 按鈕回調
 
 ### `SystemPromptSetView`
 設定系統提示的子選單
 
 - **Attributes**:
-  - `permission_validator` (`Any`): Instance attribute.
-  - `logger` (`Any`): Instance attribute.
+  - `permission_validator` (`Any`): Attribute holding permission_validator data.
+  - `logger` (`Any`): Attribute holding logger data.
 
 - **Methods**:
-  - `__init__(manager: SystemPromptManager, permission_validator: PermissionValidator, guild_id: str, timeout: float) -> Any`: Executes __init__ operation.
-  - `scope_callback(interaction: discord.Interaction, scope: str) -> Any`: Executes scope_callback operation.
+  - `__init__(manager: SystemPromptManager, permission_validator: PermissionValidator, guild_id: str, timeout: float) -> Any`: Executes __init__ logic.
+  - `scope_callback(interaction: discord.Interaction, scope: str) -> Any`: Executes scope_callback logic.
 
 ### `EditModeSelectionView`
 編輯模式選擇選單
 
 - **Attributes**:
-  - `permission_validator` (`Any`): Instance attribute.
-  - `scope` (`Any`): Instance attribute.
-  - `target_channel` (`Any`): Instance attribute.
-  - `scope_text` (`Any`): Instance attribute.
-  - `guild` (`Any`): Instance attribute.
-  - `logger` (`Any`): Instance attribute.
+  - `permission_validator` (`Any`): Attribute holding permission_validator data.
+  - `scope` (`Any`): Attribute holding scope data.
+  - `target_channel` (`Any`): Attribute holding target_channel data.
+  - `scope_text` (`Any`): Attribute holding scope_text data.
+  - `guild` (`Any`): Attribute holding guild data.
+  - `logger` (`Any`): Attribute holding logger data.
 
 - **Methods**:
-  - `__init__(manager: SystemPromptManager, permission_validator: PermissionValidator, scope: str, target_channel: Optional[discord.TextChannel], scope_text: str, guild: discord.Guild, guild_id: str, timeout: float) -> Any`: Executes __init__ operation.
+  - `__init__(manager: SystemPromptManager, permission_validator: PermissionValidator, scope: str, target_channel: Optional[discord.TextChannel], scope_text: str, guild: discord.Guild, guild_id: str, timeout: float) -> Any`: Executes __init__ logic.
   - `edit_mode_callback(interaction: discord.Interaction, edit_mode: str) -> Any`: 處理編輯模式選擇
   - `_handle_direct_edit(interaction: discord.Interaction) -> Any`: 處理直接編輯提示
   - `_restore_variable_placeholders(prompt: str, guild_id: str) -> str`: 將已替換的變數還原為占位符格式，以便編輯時顯示原始模板
@@ -79,85 +84,85 @@ Base class for all system-prompt views.
 編輯模式按鈕
 
 - **Attributes**:
-  - `edit_mode` (`Any`): Instance attribute.
+  - `edit_mode` (`Any`): Attribute holding edit_mode data.
 
 - **Methods**:
-  - `__init__(edit_mode: str, **kwargs) -> Any`: Executes __init__ operation.
-  - `callback(interaction: discord.Interaction) -> Any`: Executes callback operation.
+  - `__init__(edit_mode: str, **kwargs) -> Any`: Executes __init__ logic.
+  - `callback(interaction: discord.Interaction) -> Any`: Executes callback logic.
 
 ### `SystemPromptScopeButton`
 範圍選擇按鈕
 
 - **Attributes**:
-  - `scope` (`Any`): Instance attribute.
+  - `scope` (`Any`): Attribute holding scope data.
 
 - **Methods**:
-  - `__init__(scope: str, **kwargs) -> Any`: Executes __init__ operation.
-  - `callback(interaction: discord.Interaction) -> Any`: Executes callback operation.
+  - `__init__(scope: str, **kwargs) -> Any`: Executes __init__ logic.
+  - `callback(interaction: discord.Interaction) -> Any`: Executes callback logic.
 
 ### `SystemPromptViewOptionsView`
 查看配置選項選單
 
 - **Attributes**:
-  - `permission_validator` (`Any`): Instance attribute.
-  - `logger` (`Any`): Instance attribute.
+  - `permission_validator` (`Any`): Attribute holding permission_validator data.
+  - `logger` (`Any`): Attribute holding logger data.
 
 - **Methods**:
-  - `__init__(manager: SystemPromptManager, permission_validator: PermissionValidator, guild_id: str, timeout: float) -> Any`: Executes __init__ operation.
+  - `__init__(manager: SystemPromptManager, permission_validator: PermissionValidator, guild_id: str, timeout: float) -> Any`: Executes __init__ logic.
   - `view_callback(interaction: discord.Interaction, view_type: str) -> Any`: 處理查看回調
 
 ### `SystemPromptViewButton`
 查看選項按鈕
 
 - **Attributes**:
-  - `view_type` (`Any`): Instance attribute.
+  - `view_type` (`Any`): Attribute holding view_type data.
 
 - **Methods**:
-  - `__init__(view_type: str, **kwargs) -> Any`: Executes __init__ operation.
-  - `callback(interaction: discord.Interaction) -> Any`: Executes callback operation.
+  - `__init__(view_type: str, **kwargs) -> Any`: Executes __init__ logic.
+  - `callback(interaction: discord.Interaction) -> Any`: Executes callback logic.
 
 ### `ModuleEditView`
-Represents ModuleEditView.
+Core class implementation.
 
 - **Attributes**:
-  - `permission_validator` (`Any`): Instance attribute.
-  - `modules` (`Any`): Instance attribute.
-  - `guild` (`Any`): Instance attribute.
-  - `scope` (`Any`): Instance attribute.
-  - `target_channel` (`Any`): Instance attribute.
-  - `scope_text` (`Any`): Instance attribute.
-  - `logger` (`Any`): Instance attribute.
-  - `selected_scope` (`Any`): Instance attribute.
+  - `permission_validator` (`Any`): Attribute holding permission_validator data.
+  - `modules` (`Any`): Attribute holding modules data.
+  - `guild` (`Any`): Attribute holding guild data.
+  - `scope` (`Any`): Attribute holding scope data.
+  - `target_channel` (`Any`): Attribute holding target_channel data.
+  - `scope_text` (`Any`): Attribute holding scope_text data.
+  - `logger` (`Any`): Attribute holding logger data.
+  - `selected_scope` (`Any`): Attribute holding selected_scope data.
 
 - **Methods**:
-  - `__init__(manager: SystemPromptManager, permission_validator: PermissionValidator, modules: List[str], guild: discord.Guild, scope: Optional[str], target_channel: Optional[discord.TextChannel], scope_text: Optional[str], guild_id: str, timeout: float) -> Any`: Executes __init__ operation.
-  - `_setup_scope_selector() -> Any`: Executes _setup_scope_selector operation.
-  - `_setup_module_selector() -> Any`: Executes _setup_module_selector operation.
-  - `scope_callback(interaction: discord.Interaction, scope: str) -> Any`: Executes scope_callback operation.
+  - `__init__(manager: SystemPromptManager, permission_validator: PermissionValidator, modules: List[str], guild: discord.Guild, scope: Optional[str], target_channel: Optional[discord.TextChannel], scope_text: Optional[str], guild_id: str, timeout: float) -> Any`: Executes __init__ logic.
+  - `_setup_scope_selector() -> Any`: Executes _setup_scope_selector logic.
+  - `_setup_module_selector() -> Any`: Executes _setup_module_selector logic.
+  - `scope_callback(interaction: discord.Interaction, scope: str) -> Any`: Executes scope_callback logic.
 
 ### `ModuleScopeButton`
 模組範圍選擇按鈕
 
 - **Attributes**:
-  - `scope` (`Any`): Instance attribute.
+  - `scope` (`Any`): Attribute holding scope data.
 
 - **Methods**:
-  - `__init__(scope: str, **kwargs) -> Any`: Executes __init__ operation.
-  - `callback(interaction: discord.Interaction) -> Any`: Executes callback operation.
+  - `__init__(scope: str, **kwargs) -> Any`: Executes __init__ logic.
+  - `callback(interaction: discord.Interaction) -> Any`: Executes callback logic.
 
 ### `ModuleSelect`
 模組選擇器
 
 - **Attributes**:
-  - `manager` (`Any`): Instance attribute.
-  - `scope` (`Any`): Instance attribute.
-  - `channel` (`Any`): Instance attribute.
-  - `guild` (`Any`): Instance attribute.
-  - `scope_text` (`Any`): Instance attribute.
-  - `logger` (`Any`): Instance attribute.
+  - `manager` (`Any`): Attribute holding manager data.
+  - `scope` (`Any`): Attribute holding scope data.
+  - `channel` (`Any`): Attribute holding channel data.
+  - `guild` (`Any`): Attribute holding guild data.
+  - `scope_text` (`Any`): Attribute holding scope_text data.
+  - `logger` (`Any`): Attribute holding logger data.
 
 - **Methods**:
-  - `__init__(manager: SystemPromptManager, scope: str, channel: Optional[discord.TextChannel], guild: discord.Guild, scope_text: Optional[str], **kwargs) -> Any`: Executes __init__ operation.
+  - `__init__(manager: SystemPromptManager, scope: str, channel: Optional[discord.TextChannel], guild: discord.Guild, scope_text: Optional[str], **kwargs) -> Any`: Executes __init__ logic.
   - `_update_option_descriptions() -> Any`: 更新選項的說明文字 (基於語言管理器)
   - `callback(interaction: discord.Interaction) -> Any`: 選擇器回調
   - `_handle_module_callback(interaction: discord.Interaction, module_name: str, content: str) -> Any`: 處理模組編輯回調
@@ -166,84 +171,92 @@ Represents ModuleEditView.
 複製系統提示選單
 
 - **Attributes**:
-  - `permission_validator` (`Any`): Instance attribute.
-  - `guild` (`Any`): Instance attribute.
-  - `logger` (`Any`): Instance attribute.
+  - `permission_validator` (`Any`): Attribute holding permission_validator data.
+  - `guild` (`Any`): Attribute holding guild data.
+  - `logger` (`Any`): Attribute holding logger data.
 
 - **Methods**:
-  - `__init__(manager: SystemPromptManager, permission_validator: PermissionValidator, guild: discord.Guild, guild_id: str, timeout: float) -> Any`: Executes __init__ operation.
+  - `__init__(manager: SystemPromptManager, permission_validator: PermissionValidator, guild: discord.Guild, guild_id: str, timeout: float) -> Any`: Executes __init__ logic.
 
 ### `SystemPromptRemoveView`
 移除系統提示的子選單
 
 - **Attributes**:
-  - `permission_validator` (`Any`): Instance attribute.
-  - `logger` (`Any`): Instance attribute.
+  - `permission_validator` (`Any`): Attribute holding permission_validator data.
+  - `logger` (`Any`): Attribute holding logger data.
 
 - **Methods**:
-  - `__init__(manager: SystemPromptManager, permission_validator: PermissionValidator, guild_id: str, timeout: float) -> Any`: Executes __init__ operation.
+  - `__init__(manager: SystemPromptManager, permission_validator: PermissionValidator, guild_id: str, timeout: float) -> Any`: Executes __init__ logic.
 
 ### `SystemPromptResetView`
 重置系統提示的子選單
 
 - **Attributes**:
-  - `permission_validator` (`Any`): Instance attribute.
-  - `logger` (`Any`): Instance attribute.
+  - `permission_validator` (`Any`): Attribute holding permission_validator data.
+  - `logger` (`Any`): Attribute holding logger data.
 
 - **Methods**:
-  - `__init__(manager: SystemPromptManager, permission_validator: PermissionValidator, guild_id: str, timeout: float) -> Any`: Executes __init__ operation.
+  - `__init__(manager: SystemPromptManager, permission_validator: PermissionValidator, guild_id: str, timeout: float) -> Any`: Executes __init__ logic.
 
 ### `BackButton`
 返回主選單按鈕
 
 - **Attributes**:
-  - `guild_id` (`str`): Instance attribute.
-  - `_bot` (`Any`): Instance attribute.
-  - `logger` (`Any`): Instance attribute.
+  - `guild_id` (`str`): Attribute holding guild_id data.
+  - `_bot` (`Any`): Attribute holding _bot data.
+  - `logger` (`Any`): Attribute holding logger data.
 
 - **Methods**:
-  - `__init__(row: int, guild_id: str, bot: Any) -> Any`: Executes __init__ operation.
+  - `__init__(row: int, guild_id: str, bot) -> Any`: Executes __init__ logic.
   - `callback(interaction: discord.Interaction) -> Any`: 返回主選單
 
 ### `ChannelSelect`
 頻道選擇器（用於複製功能）
 
 - **Attributes**:
-  - `selected_channel_id` (`Optional[str]`): Instance attribute.
-  - `logger` (`Any`): Instance attribute.
+  - `selected_channel_id` (`Optional[str]`): Attribute holding selected_channel_id data.
+  - `logger` (`Any`): Attribute holding logger data.
 
 - **Methods**:
-  - `__init__(**kwargs) -> Any`: Executes __init__ operation.
-  - `callback(interaction: discord.Interaction) -> Any`: Executes callback operation.
+  - `__init__(**kwargs) -> Any`: Executes __init__ logic.
+  - `callback(interaction: discord.Interaction) -> Any`: Executes callback logic.
 
 ### `CopyExecuteButton`
 執行複製按鈕
 
 - **Attributes**:
-  - `logger` (`Any`): Instance attribute.
+  - `logger` (`Any`): Attribute holding logger data.
 
 - **Methods**:
-  - `__init__(label: str, **kwargs) -> Any`: Executes __init__ operation.
-  - `callback(interaction: discord.Interaction) -> Any`: Executes callback operation.
+  - `__init__(label: str, **kwargs) -> Any`: Executes __init__ logic.
+  - `callback(interaction: discord.Interaction) -> Any`: Executes callback logic.
 
 ### `RemoveButton`
 移除按鈕
 
 - **Attributes**:
-  - `remove_type` (`Any`): Instance attribute.
-  - `logger` (`Any`): Instance attribute.
+  - `remove_type` (`Any`): Attribute holding remove_type data.
+  - `logger` (`Any`): Attribute holding logger data.
 
 - **Methods**:
-  - `__init__(label: str, remove_type: str, **kwargs) -> Any`: Executes __init__ operation.
-  - `callback(interaction: discord.Interaction) -> Any`: Executes callback operation.
+  - `__init__(label: str, remove_type: str, **kwargs) -> Any`: Executes __init__ logic.
+  - `callback(interaction: discord.Interaction) -> Any`: Executes callback logic.
 
 ### `ResetButton`
 重置按鈕
 
 - **Attributes**:
-  - `reset_type` (`Any`): Instance attribute.
-  - `logger` (`Any`): Instance attribute.
+  - `reset_type` (`Any`): Attribute holding reset_type data.
+  - `logger` (`Any`): Attribute holding logger data.
 
 - **Methods**:
-  - `__init__(label: str, reset_type: str, **kwargs) -> Any`: Executes __init__ operation.
-  - `callback(interaction: discord.Interaction) -> Any`: Executes callback operation.
+  - `__init__(label: str, reset_type: str, **kwargs) -> Any`: Executes __init__ logic.
+  - `callback(interaction: discord.Interaction) -> Any`: Executes callback logic.
+
+## Functions
+
+### `_ti(interaction: discord.Interaction, *keys, fallback: str) -> str`
+Translate a key using the guild language from an interaction context.
+
+Falls back to ``fallback`` (or the last key segment) when LanguageManager
+is unavailable or the key is missing.

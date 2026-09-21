@@ -1,35 +1,45 @@
 # File: `cogs/eat/db/tables.py`
 
 ## Overview
-Core logic and functionalities for tables.py. This file is part of the cogs subsystem and handles the primary operations for its respective domain.
+This file is part of the cogs subsystem. It provides core functionality and logic for its respective domain within the PigPig project.
 
 ## Classes
 
 ### `UserPref`
-Represents UserPref.
+Core class implementation.
+
+- **Attributes**:
+  - None specified.
+
+- **Methods**:
+  - None specified.
 
 ### `SearchRecord`
-Represents SearchRecord.
+Core class implementation.
 
 - **Attributes**:
-  - `discord_id` (`Any`): Instance attribute.
-  - `keyword` (`Any`): Instance attribute.
-  - `title` (`Any`): Instance attribute.
-  - `tag` (`Any`): Instance attribute.
-  - `address` (`Any`): Instance attribute.
-  - `map_rate` (`Any`): Instance attribute.
-  - `self_rate` (`Any`): Instance attribute.
-  - `date` (`Any`): Instance attribute.
+  - `discord_id` (`Any`): Attribute holding discord_id data.
+  - `keyword` (`Any`): Attribute holding keyword data.
+  - `title` (`Any`): Attribute holding title data.
+  - `tag` (`Any`): Attribute holding tag data.
+  - `address` (`Any`): Attribute holding address data.
+  - `map_rate` (`Any`): Attribute holding map_rate data.
+  - `self_rate` (`Any`): Attribute holding self_rate data.
+  - `date` (`Any`): Attribute holding date data.
 
 - **Methods**:
-  - `__init__(discord_id: str, title: str, keyword: str, tag: str, address: str, map_rate: str, self_rate: float) -> Any`: Executes __init__ operation.
+  - `__init__(discord_id: str, title: str, keyword: str, tag: str, address: str, map_rate: str, self_rate: float) -> Any`: Executes __init__ logic.
 
 ### `Keywords`
-Represents Keywords.
+Core class implementation.
 
 - **Attributes**:
-  - `keyword` (`Any`): Instance attribute.
-  - `add_date` (`Any`): Instance attribute.
+  - `keyword` (`Any`): Attribute holding keyword data.
+  - `add_date` (`Any`): Attribute holding add_date data.
 
 - **Methods**:
-  - `__init__(keyword: String) -> Any`: Executes __init__ operation.
+  - `__init__(keyword: String) -> Any`: Executes __init__ logic.
+
+## Functions
+
+No top-level functions defined.

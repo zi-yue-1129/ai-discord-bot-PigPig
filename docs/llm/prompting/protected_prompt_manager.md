@@ -1,19 +1,29 @@
 # File: `llm/prompting/protected_prompt_manager.py`
 
 ## Overview
-Protected Prompt Management System. This file is part of the llm subsystem and handles the primary operations for its respective domain.
+Protected Prompt Management System.
+
+This module implements a two-tier prompt system:
+1. System-level prompts (protected, from base_configs)
+2. User-customizable prompts (can be overridden)
+
+The system ensures critical prompts like Discord format instructions,
+context handling, and input parsing cannot be accidentally modified by users.
 
 ## Classes
 
 ### `ProtectedPromptManager`
 Manages system-level (protected) and user-customizable prompts.
 
+Protected modules are always loaded from base_configs and cannot be overridden.
+User-customizable modules can be modified through database or custom configs.
+
 - **Attributes**:
-  - `PROTECTED_MODULES` (`Set[str]`): Class attribute.
-  - `CUSTOMIZABLE_MODULES` (`Set[str]`): Class attribute.
-  - `base_config_path` (`Any`): Instance attribute.
-  - `base_config` (`Dict`): Instance attribute.
-  - `custom_modules` (`Dict[Tuple[str, str]]`): Instance attribute.
+  - `PROTECTED_MODULES` (`Set[str]`): Attribute holding PROTECTED_MODULES data.
+  - `CUSTOMIZABLE_MODULES` (`Set[str]`): Attribute holding CUSTOMIZABLE_MODULES data.
+  - `base_config_path` (`Any`): Attribute holding base_config_path data.
+  - `base_config` (`Dict`): Attribute holding base_config data.
+  - `custom_modules` (`Dict[Tuple[str, str]]`): Attribute holding custom_modules data.
 
 - **Methods**:
   - `__init__(base_config_path: Optional[str]) -> Any`: Initialize the protected prompt manager.
@@ -30,4 +40,11 @@ Manages system-level (protected) and user-customizable prompts.
 ## Functions
 
 ### `get_protected_prompt_manager(config_path: Optional[str]) -> ProtectedPromptManager`
-Get or create a ProtectedPromptManager instance. Plays a key role in the system logic.
+Get or create a ProtectedPromptManager instance.
+
+Args:
+    config_path: Path to base config file.
+                Defaults to message_agent.yaml in base_configs/prompt/
+
+Returns:
+    ProtectedPromptManager instance

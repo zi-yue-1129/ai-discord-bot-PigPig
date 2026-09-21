@@ -1,32 +1,19 @@
-# Entry Point (main.py)
+# File: `main.py`
 
 ## Overview
+This file is part of the Core subsystem. It provides core functionality and logic for its respective domain within the PigPig project.
 
-`main.py` is the execution entry point for the PigPig Discord Bot. It handles environment setup, bot instantiation, and the initial connection to Discord.
-
-## Startup Workflow
-
-1. **Environment Loading**: Uses `python-dotenv` to load secrets and configuration from `.env`.
-2. **Intent Configuration**: Sets up Discord Intents (Message Content, Members, Presences) based on the `base_config`.
-3. **Bot Instantiation**: Creates the `PigPig` bot object with custom `CommandTree` for guild-only command validation.
-4. **Version Check**: Spawns a background thread to check for project updates without blocking the bot's connection.
-5. **Execution**: Calls `bot.run()` using the token from `addons.tokens`.
-
-## Custom Components
+## Classes
 
 ### `CommandCheck`
-A custom `app_commands.CommandTree` that overrides `interaction_check` to ensure that all slash commands are executed within a server (guild) context, preventing errors in Direct Messages.
+Core class implementation.
 
-## Background Services
+- **Attributes**:
+  - None specified.
 
-### Version Checker Thread
-To ensure the bot is always up to date, a dedicated daemon thread runs `VersionChecker` at startup. It logs warnings if a newer version is available on GitHub and provides the update command.
+- **Methods**:
+  - `interaction_check(interaction: discord.Interaction) -> bool`: Executes interaction_check logic.
 
-## Error Handling & Shutdown
+## Functions
 
-The entry point includes a `try...except...finally` block to handle:
-- **KeyboardInterrupt**: Catches `Ctrl+C` for manual stops.
-- **Graceful Shutdown**: Ensures `bot.close()` is called to clean up resources, close database connections, and cancel pending asyncio tasks.
-
----
-*For daily operation, simply run `python main.py`. For update management, refer to the [Update Guide](update.md).*
+No top-level functions defined.

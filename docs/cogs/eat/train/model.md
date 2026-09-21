@@ -1,20 +1,24 @@
 # File: `cogs/eat/train/model.py`
 
 ## Overview
-Core logic and functionalities for model.py. This file is part of the cogs subsystem and handles the primary operations for its respective domain.
+This file is part of the cogs subsystem. It provides core functionality and logic for its respective domain within the PigPig project.
 
 ## Classes
 
 ### `Net`
-Represents Net.
+Core class implementation.
 
 - **Attributes**:
-  - `embedding_dim` (`Any`): Instance attribute.
-  - `hidden_dim` (`Any`): Instance attribute.
-  - `embeddings` (`Any`): Instance attribute.
-  - `lstm` (`Any`): Instance attribute.
-  - `hidden2out` (`Any`): Instance attribute.
+  - `embedding_dim` (`Any`): Attribute holding embedding_dim data.
+  - `hidden_dim` (`Any`): Attribute holding hidden_dim data.
+  - `embeddings` (`Any`): Attribute holding embeddings data.
+  - `lstm` (`Any`): Attribute holding lstm data.
+  - `hidden2out` (`Any`): Attribute holding hidden2out data.
 
 - **Methods**:
-  - `__init__(n_vocab: Any, embedding_dim: Any, hidden_dim: Any, dropout: Any) -> Any`: Executes __init__ operation.
-  - `forward(seq_in: Any) -> Any`: Executes forward operation.
+  - `__init__(n_vocab, embedding_dim, hidden_dim, dropout) -> Any`: Executes __init__ logic.
+  - `forward(seq_in) -> Any`: Executes forward logic.
+
+## Functions
+
+No top-level functions defined.

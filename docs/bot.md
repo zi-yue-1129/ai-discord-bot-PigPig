@@ -1,55 +1,52 @@
-# Core Bot Class (bot.py)
+# File: `bot.py`
 
 ## Overview
+Discord bot main module.
 
-The `PigPig` class is the central orchestrator of the Discord bot. It extends `commands.Bot` and integrates various subsystems like memory, music management, and AI-driven message processing.
+This module contains the main bot class and configuration for a Discord bot
+with music playback, message handling, and logging capabilities.
 
-## Subsystem Integration
+## Classes
 
-The bot initializes several critical components in its `__init__` and `setup_hook` methods:
+### `PigPig`
+Main Discord bot class with music, messaging, and logging features.
 
-| Subsystem | Component | Description |
-|-----------|-----------|-------------|
-| **Logging** | `addons.logging` | Unified logging system with stdlib interception. |
-| **Music** | `StateManager`, `UIManager` | Handles playback state and interactive UI components. |
-| **Memory** | `ProceduralStorage`, `EpisodicStorage` | Persistent storage for user data and conversation context. |
-| **LLM** | `Orchestrator` | Coordinates AI agents and tool execution. |
-| **Updates** | `update.py` | Handles automatic version checking and installation. |
+This bot extends discord.ext.commands.Bot with additional functionality including:
+- Per-guild logging system
+- Music playback state management
+- AI-powered message handling
+- Performance monitoring
+- Dynamic status updates
 
-## Event Handlers
+Attributes:
+    loggers (dict): Dictionary mapping guild names to their logger instances.
+    state_manager (StateManager): Manager for music playback states.
+    ui_manager (UIManager): Manager for music player UI components.
+    status_cycle (itertools.cycle): Cycle iterator for rotating bot status messages.
+    message_handler (MessageHandler): Handler for processing Discord messages.
 
-### `on_message`
-The primary entry point for message interaction.
-1. Logs message details to guild-specific loggers.
-2. Tracks messages for episodic memory.
-3. Processes traditional commands.
-4. Delegates to `Orchestrator` for AI responses if:
-    - The bot is mentioned.
-    - Auto-response is enabled for the channel.
-    - The message is a reply to the bot.
+- **Attributes**:
+  - `loggers` (`Any`): Attribute holding loggers data.
+  - `state_manager` (`Any`): Attribute holding state_manager data.
+  - `ui_manager` (`Any`): Attribute holding ui_manager data.
+  - `stats_collector` (`Any`): Attribute holding stats_collector data.
+  - `status_cycle` (`Any`): Attribute holding status_cycle data.
 
-### `on_message_edit`
-Handles message edits by deleting previous AI replies and generating new ones, ensuring the conversation stays consistent with the user's updated intent.
+- **Methods**:
+  - `__init__(*args, **kwargs) -> Any`: Initialize the PigPig bot instance.
+  - `change_status_task() -> Any`: Update bot status every 15 seconds.
+  - `_change_presence(*args, **kwargs) -> Any`: Wrapper for change_presence to handle connection errors.
+  - `get_logger_for_guild(guild_id) -> Any`: Get or create logger for a specific guild.
+  - `setup_logger_for_guild(guild_id) -> Any`: Set up logger for a guild if it doesn't exist.
+  - `on_message(message: discord.Message) -> None`: Handle incoming Discord messages.
+  - `on_message_edit(before: discord.Message, after: discord.Message) -> Any`: Handle edited Discord messages.
+  - `setup_hook() -> None`: Set up bot before connecting to Discord.
+  - `on_ready() -> Any`: Handle bot ready event.
+  - `on_error(event_method: str, *args, **kwargs) -> Any`: Handle errors in event handlers.
+  - `on_command_error(ctx: commands.Context, error: commands.CommandError) -> Any`: Handle errors in command execution.
+  - `send_error_report(embed: discord.Embed) -> Any`: Executes send_error_report logic.
+  - `close() -> Any`: Gracefully shut down the bot and all systems.
 
-### `on_ready`
-Triggers when the bot connects to Discord.
-- Synchronizes command trees.
-- Initializes per-guild loggers.
-- Starts the periodic status update task.
-- Generates `guilds_map.json` and `guilds_and_channels.json` for system monitoring.
+## Functions
 
-## Lifecycle Management
-
-- **`setup_hook`**: Dynamically loads all cogs from the `cogs/` directory and initializes core services.
-- **`close`**: Performs a graceful shutdown by cancelling pending tasks and closing database connections.
-
-## Key Methods
-
-### `get_logger_for_guild(guild_id)`
-Retrieves or creates a structured logger for a specific server, ensuring separate log streams for each guild.
-
-### `change_status_task`
-A background loop that rotates the bot's Discord status (e.g., "Listening to your voice", "Playing in N servers").
-
----
-*The `PigPig` class follows a modular design, allowing components to be enabled or disabled via `addons/settings.py` without breaking core functionality.*
+No top-level functions defined.
