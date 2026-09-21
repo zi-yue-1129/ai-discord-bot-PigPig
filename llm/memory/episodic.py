@@ -49,9 +49,9 @@ class EpisodicMemoryProvider:
         self.max_cache_size = max_cache_size
         self.cache_ttl = cache_ttl
         # key: (channel_id: str, query: str), value: (formatted_str: Optional[str], expire_at: float monotonic)
-        self._cache: Dict[Tuple[str, str], Tuple[Optional[str], float]] = {}
+        self._cache: Dict[str, Dict[str, Tuple[Optional[str], float]]] = {}
         # prevents cache stampedes
-        self._pending_queries: Dict[Tuple[str, str], asyncio.Event] = {}
+        self._pending_queries: Dict[str, Dict[str, asyncio.Event]] = {}
 
     async def invalidate(self, channel_id: str) -> None:
         """Invalidate all cached episodic queries for a specific channel.
@@ -59,16 +59,12 @@ class EpisodicMemoryProvider:
         Args:
             channel_id: The Discord channel ID.
         """
-        keys_to_remove = [k for k in self._cache.keys() if k[0] == channel_id]
-        for k in keys_to_remove:
-            self._cache.pop(k, None)
+        self._cache.pop(channel_id, None)
 
         # Unblock any pending queries that were waiting on a now-invalidated result
-        pending_to_remove = [k for k in self._pending_queries.keys() if k[0] == channel_id]
-        for k in pending_to_remove:
-            event = self._pending_queries.pop(k, None)
-            if event:
-                event.set()
+        pending_dict = self._pending_queries.pop(channel_id, {})
+        for event in pending_dict.values():
+            event.set()
 
     async def get(self, message: discord.Message) -> Optional[str]:
         """Return formatted episodic context string, or None if nothing relevant.
@@ -95,25 +91,30 @@ class EpisodicMemoryProvider:
             return None
 
         channel_id = str(message.channel.id)
-        cache_key = (channel_id, query)
+
+        if channel_id not in self._cache:
+            self._cache[channel_id] = {}
+        if channel_id not in self._pending_queries:
+            self._pending_queries[channel_id] = {}
 
         # Thundering herd protection logic
-        while cache_key in self._pending_queries:
-            await self._pending_queries[cache_key].wait()
+        while query in self._pending_queries.get(channel_id, {}):
+            event = self._pending_queries[channel_id][query]
+            await event.wait()
             now = time.monotonic()
-            entry = self._cache.get(cache_key)
+            entry = self._cache.get(channel_id, {}).get(query)
             if entry is not None and entry[1] > now:
                 return entry[0]
             # If wait finished but cache wasn't updated (e.g. error in primary task),
             # loop again in case another task picked up the query.
 
         now = time.monotonic()
-        entry = self._cache.get(cache_key)
+        entry = self._cache.get(channel_id, {}).get(query)
         if entry is not None and entry[1] > now:
             return entry[0]
 
         event = asyncio.Event()
-        self._pending_queries[cache_key] = event
+        self._pending_queries.setdefault(channel_id, {})[query] = event
 
         try:
             try:
@@ -167,21 +168,37 @@ class EpisodicMemoryProvider:
 
             # Update cache
             expire_at = now + self.cache_ttl
-            self._cache[cache_key] = (formatted_result, expire_at)
+            self._cache.setdefault(channel_id, {})[query] = (formatted_result, expire_at)
+
+            # Count total items
+            total_items = sum(len(queries) for queries in self._cache.values())
 
             # Prune expired items if cache is getting large
-            if len(self._cache) > self.max_cache_size:
+            if total_items > self.max_cache_size:
                 now_insert = time.monotonic()
-                self._cache = {k: v for k, v in self._cache.items() if v[1] > now_insert}
+                for cid in list(self._cache.keys()):
+                    self._cache[cid] = {q: v for q, v in self._cache[cid].items() if v[1] > now_insert}
+                    if not self._cache[cid]:
+                        del self._cache[cid]
 
-                # If still over size, remove oldest via insertion order
-                while len(self._cache) > self.max_cache_size:
-                    oldest_key = next(iter(self._cache))
-                    self._cache.pop(oldest_key, None)
+                total_items = sum(len(queries) for queries in self._cache.values())
+
+                # If still over size, remove oldest via insertion order from channels
+                while total_items > self.max_cache_size and self._cache:
+                    oldest_cid = next(iter(self._cache))
+                    if self._cache[oldest_cid]:
+                        oldest_query = next(iter(self._cache[oldest_cid]))
+                        del self._cache[oldest_cid][oldest_query]
+                        total_items -= 1
+                    if not self._cache[oldest_cid]:
+                        del self._cache[oldest_cid]
 
             return formatted_result
         finally:
             # Always ensure the event is cleaned up and waiting tasks are notified
-            self._pending_queries.pop(cache_key, None)
+            if channel_id in self._pending_queries:
+                self._pending_queries[channel_id].pop(query, None)
+                if not self._pending_queries[channel_id]:
+                    del self._pending_queries[channel_id]
             event.set()
 
