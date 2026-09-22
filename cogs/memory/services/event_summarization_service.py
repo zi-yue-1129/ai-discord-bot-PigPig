@@ -16,7 +16,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage
 
 from function import func
-from addons.settings import MemoryConfig, prompt_config
+from addons.settings import MemoryConfig, prompt_config, llm_config
 from addons.logging import get_logger
 from llm.model_manager import ModelManager
 from llm.model_circuit_breaker import get_model_circuit_breaker
@@ -25,6 +25,13 @@ from llm.utils.model_init import create_model_instance
 log = get_logger(__name__)
 
 T = TypeVar('T', bound=BaseModel)
+
+# Some providers (e.g. ChatGoogleGenerativeAI) default to an unbounded request
+# timeout. A hung LLM call inside this service has previously frozen the whole
+# bot for hours (the event loop task never returns), so every model invocation
+# here is bounded both at the client config level and with asyncio.wait_for as
+# a second line of defense. Reuses the same config value as llm/orchestrator.py.
+LLM_CALL_TIMEOUT_SECONDS: float = llm_config.llm_call_timeout
 
 
 @dataclass
@@ -403,17 +410,21 @@ class EventSummarizationService:
                 try:
                     log.debug(f"Episodic memory: trying model {current_model} ({model_index + 1}/{len(model_priority_list)})")
                     
-                    # Create the model instance with zero retries
-                    model_instance = create_model_instance(current_model, max_retries=0)
-                    
+                    # Create the model instance with zero retries and a bounded timeout
+                    model_instance = create_model_instance(
+                        current_model, max_retries=0, timeout=LLM_CALL_TIMEOUT_SECONDS
+                    )
+
                     from langchain_core.messages import SystemMessage
                     full_messages = [SystemMessage(content=system_prompt)] + message_list
-                    
+
                     # Make the API call to the LLM
                     try:
                         # Since model supports tool calling natively, use with_structured_output
                         structured_llm = model_instance.with_structured_output(MemoryFragmentList)
-                        response = await structured_llm.ainvoke(full_messages)
+                        response = await asyncio.wait_for(
+                            structured_llm.ainvoke(full_messages), timeout=LLM_CALL_TIMEOUT_SECONDS
+                        )
                     except Exception as invoke_error:
                         # Fallback for when tool parsing fails (e.g., LLM returns Python code)
                         log.warning(f"Structured invoke failed for {current_model}: {invoke_error}. Attempting raw fallback.")
@@ -432,7 +443,9 @@ class EventSummarizationService:
                             )))
                             
                             # Manually invoke the model to get raw output
-                            raw_response = await model_instance.ainvoke(fallback_messages)
+                            raw_response = await asyncio.wait_for(
+                                model_instance.ainvoke(fallback_messages), timeout=LLM_CALL_TIMEOUT_SECONDS
+                            )
                             response = {"output": raw_response.content}
                             log.debug(f"Raw mode fallback successful for {current_model}")
                         except Exception as fallback_error:
@@ -507,15 +520,21 @@ class EventSummarizationService:
                 # Default to localhost if not specified in config
                 base_url = getattr(self.settings, "ollama_base_url", "http://localhost:11434")
                 # Use num_retries=0 for Ollama to ensure fast fallback
-                kwargs.update({"base_url": base_url, "num_retries": 0})
+                kwargs.update({"base_url": base_url, "num_retries": 0, "timeout": LLM_CALL_TIMEOUT_SECONDS})
                 if force_json:
                     kwargs["format"] = "json"
 
             elif model_name.startswith("vllm:"):
                 # vLLM exposes an OpenAI-compatible API; route through the openai provider
+                from addons.tokens import tokens
                 vllm_base_url = getattr(self.settings, "vllm_url", "http://localhost:8181")
                 model_name = f"openai:{model_name[len('vllm:'):]}"
-                kwargs.update({"base_url": f"{vllm_base_url}/v1", "api_key": "EMPTY", "max_retries": 0})
+                kwargs.update({
+                    "base_url": f"{vllm_base_url}/v1",
+                    "api_key": tokens.vllm_api_key,
+                    "max_retries": 0,
+                    "timeout": LLM_CALL_TIMEOUT_SECONDS,
+                })
 
             elif model_name.startswith("google_genai:"):
                 api_key = getattr(self.settings, "google_api_key", None)
@@ -527,7 +546,13 @@ class EventSummarizationService:
                         pass
                 if api_key:
                     kwargs["google_api_key"] = api_key
-                
+                # Unlike the other providers above, ChatGoogleGenerativeAI defaults to
+                # max_retries=6 and timeout=None (unbounded) — bound both explicitly so a
+                # degraded/hanging API call can't freeze this service (and the bot's
+                # single-threaded event loop with it) indefinitely.
+                kwargs["max_retries"] = 0
+                kwargs["timeout"] = LLM_CALL_TIMEOUT_SECONDS
+
             elif model_name.startswith("openai:"):
                 api_key = getattr(self.settings, "openai_api_key", None)
                 if not api_key:
@@ -539,7 +564,8 @@ class EventSummarizationService:
                 if api_key:
                     kwargs["api_key"] = api_key
                 kwargs["max_retries"] = 0
- 
+                kwargs["timeout"] = LLM_CALL_TIMEOUT_SECONDS
+
             elif model_name.startswith("anthropic:"):
                 api_key = getattr(self.settings, "anthropic_api_key", None)
                 if not api_key:
@@ -551,7 +577,8 @@ class EventSummarizationService:
                 if api_key:
                     kwargs["api_key"] = api_key
                 kwargs["max_retries"] = 0
-            
+                kwargs["timeout"] = LLM_CALL_TIMEOUT_SECONDS
+
             # Use centralized init_chat_model
             return init_chat_model(model_name, **kwargs)
                 
