@@ -114,32 +114,36 @@ class ContextManager:
             except Exception:
                 pass
 
-            # 2. Fetch short-term and author procedural in parallel
-            short_term_msgs, author_procedural = await asyncio.gather(
-                _fetch_short_term(),
+            async def _fetch_short_term_pipeline() -> Tuple[List[BaseMessage], ProceduralMemory]:
+                # Fetch short-term messages
+                short_term_msgs = await _fetch_short_term()
+
+                # Extract any additional user IDs from the fetched short-term messages
+                try:
+                    extracted_ids = self._extract_user_ids_from_messages(short_term_msgs, message)
+                except Exception as e:
+                    asyncio.create_task(
+                        func.report_error(e, "ContextManager.get_context: extract_user_ids failed")
+                    )
+                    _LOGGER.error("extract_user_ids failed", exception=e)
+                    extracted_ids = []
+
+                # Fetch procedural memory for any additional users
+                additional_ids = [uid for uid in extracted_ids if uid not in author_ids]
+                if additional_ids:
+                    return short_term_msgs, await _fetch_procedural(additional_ids)
+                return short_term_msgs, ProceduralMemory(user_info={})
+
+            # 2. Fetch short-term pipeline and author procedural in parallel
+            (short_term_msgs, additional_procedural), author_procedural = await asyncio.gather(
+                _fetch_short_term_pipeline(),
                 _fetch_procedural(author_ids),
             )
 
-            # 3. Extract any additional user IDs from the fetched short-term messages
-            try:
-                extracted_ids = self._extract_user_ids_from_messages(short_term_msgs, message)
-            except Exception as e:
-                asyncio.create_task(
-                    func.report_error(e, "ContextManager.get_context: extract_user_ids failed")
-                )
-                _LOGGER.error("extract_user_ids failed", exception=e)
-                extracted_ids = []
-
-            # 4. Fetch procedural memory for any additional users
-            additional_ids = [uid for uid in extracted_ids if uid not in author_ids]
-            if additional_ids:
-                additional_procedural = await _fetch_procedural(additional_ids)
-                # Merge procedural memories
-                merged_info = dict(getattr(author_procedural, "user_info", {}))
-                merged_info.update(getattr(additional_procedural, "user_info", {}))
-                procedural_memory = ProceduralMemory(user_info=merged_info)
-            else:
-                procedural_memory = author_procedural
+            # 3. Merge procedural memories
+            merged_info = dict(getattr(author_procedural, "user_info", {}))
+            merged_info.update(getattr(additional_procedural, "user_info", {}))
+            procedural_memory = ProceduralMemory(user_info=merged_info)
 
             return short_term_msgs, procedural_memory
 
