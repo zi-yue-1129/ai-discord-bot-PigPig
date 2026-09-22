@@ -73,7 +73,16 @@ FALLBACK_TRANSLATIONS = {
     "update_failed": "Failed to update your memory: {error}",
     "analysis_failed": "Data analysis failed: {error}",
     "invalid_user": "Invalid user ID",
-    "invalid_response_format": "AI returned invalid response format"
+    "invalid_response_format": "AI returned invalid response format",
+    "knowledge_guild_only": "Guild knowledge is only available within a server.",
+    "knowledge_not_initialized": "Knowledge storage is not initialized.",
+    "knowledge_show_success": "Current {target_type} knowledge:\n\n{content}",
+    "knowledge_show_empty": "There is no {target_type} knowledge currently stored.",
+    "knowledge_show_error": "Failed to read knowledge: {error}",
+    "knowledge_save_error": "Failed to save knowledge: {error}",
+    "knowledge_clear_success": "Successfully cleared {target_type} knowledge.",
+    "knowledge_clear_empty": "There was no {target_type} knowledge to clear or an error occurred.",
+    "knowledge_clear_error": "Failed to clear knowledge: {error}"
 }
 
 # Default system prompt for user data agent
@@ -842,22 +851,22 @@ class UserDataCog(commands.Cog):
         target_id = str(interaction.guild_id) if target_type == "guild" else str(interaction.channel_id)
 
         if target_type == "guild" and not interaction.guild_id:
-            await interaction.edit_original_response(content="Guild knowledge is only available within a server.")
+            await interaction.edit_original_response(content=self._translate(str(interaction.guild_id) if interaction.guild_id else "", "commands", "userdata", "knowledge", "guild_only", fallback_key="knowledge_guild_only"))
             return
 
         if not self.knowledge_storage:
-            await interaction.edit_original_response(content="Knowledge storage is not initialized.")
+            await interaction.edit_original_response(content=self._translate(str(interaction.guild_id) if interaction.guild_id else "", "commands", "userdata", "knowledge", "not_initialized", fallback_key="knowledge_not_initialized"))
             return
 
         try:
             content = await self.knowledge_storage.get_knowledge(target_type, target_id)
             if content:
-                await interaction.edit_original_response(content=f"Current {target_type} knowledge:\n\n{content}")
+                await interaction.edit_original_response(content=self._translate(str(interaction.guild_id) if interaction.guild_id else "", "commands", "userdata", "knowledge", "show_success", fallback_key="knowledge_show_success", target_type=target_type, content=content))
             else:
-                await interaction.edit_original_response(content=f"There is no {target_type} knowledge currently stored.")
+                await interaction.edit_original_response(content=self._translate(str(interaction.guild_id) if interaction.guild_id else "", "commands", "userdata", "knowledge", "show_empty", fallback_key="knowledge_show_empty", target_type=target_type))
         except Exception as e:
             self.logger.error(f"Failed to read {target_type} knowledge for {target_id}: {e}")
-            await interaction.edit_original_response(content=f"Failed to read knowledge: {e}")
+            await interaction.edit_original_response(content=self._translate(str(interaction.guild_id) if interaction.guild_id else "", "commands", "userdata", "knowledge", "show_error", fallback_key="knowledge_show_error", error=str(e)))
 
     @knowledge_group.command(
         name="save",
@@ -890,11 +899,11 @@ class UserDataCog(commands.Cog):
         target_id = str(interaction.guild_id) if target_type == "guild" else str(interaction.channel_id)
 
         if target_type == "guild" and not interaction.guild_id:
-            await interaction.edit_original_response(content="Guild knowledge is only available within a server.")
+            await interaction.edit_original_response(content=self._translate(str(interaction.guild_id) if interaction.guild_id else "", "commands", "userdata", "knowledge", "guild_only", fallback_key="knowledge_guild_only"))
             return
 
         if not self.knowledge_storage:
-            await interaction.edit_original_response(content="Knowledge storage is not initialized.")
+            await interaction.edit_original_response(content=self._translate(str(interaction.guild_id) if interaction.guild_id else "", "commands", "userdata", "knowledge", "not_initialized", fallback_key="knowledge_not_initialized"))
             return
 
         try:
@@ -908,7 +917,7 @@ class UserDataCog(commands.Cog):
             await interaction.edit_original_response(content=result_msg)
         except Exception as e:
             self.logger.error(f"Failed to save {target_type} knowledge for {target_id}: {e}")
-            await interaction.edit_original_response(content=f"Failed to save knowledge: {e}")
+            await interaction.edit_original_response(content=self._translate(str(interaction.guild_id) if interaction.guild_id else "", "commands", "userdata", "knowledge", "save_error", fallback_key="knowledge_save_error", error=str(e)))
 
 
     @knowledge_group.command(
@@ -934,11 +943,11 @@ class UserDataCog(commands.Cog):
         target_id = str(interaction.guild_id) if target_type == "guild" else str(interaction.channel_id)
 
         if target_type == "guild" and not interaction.guild_id:
-            await interaction.edit_original_response(content="Guild knowledge is only available within a server.")
+            await interaction.edit_original_response(content=self._translate(str(interaction.guild_id) if interaction.guild_id else "", "commands", "userdata", "knowledge", "guild_only", fallback_key="knowledge_guild_only"))
             return
 
         if not self.knowledge_storage:
-            await interaction.edit_original_response(content="Knowledge storage is not initialized.")
+            await interaction.edit_original_response(content=self._translate(str(interaction.guild_id) if interaction.guild_id else "", "commands", "userdata", "knowledge", "not_initialized", fallback_key="knowledge_not_initialized"))
             return
 
         try:
@@ -958,12 +967,12 @@ class UserDataCog(commands.Cog):
                 except Exception as cache_err:
                     self.logger.warning(f"Failed to invalidate knowledge cache for {target_type} {target_id}: {cache_err}")
 
-                await interaction.edit_original_response(content=f"Successfully cleared {target_type} knowledge.")
+                await interaction.edit_original_response(content=self._translate(str(interaction.guild_id) if interaction.guild_id else "", "commands", "userdata", "knowledge", "clear_success", fallback_key="knowledge_clear_success", target_type=target_type))
             else:
-                await interaction.edit_original_response(content=f"There was no {target_type} knowledge to clear or an error occurred.")
+                await interaction.edit_original_response(content=self._translate(str(interaction.guild_id) if interaction.guild_id else "", "commands", "userdata", "knowledge", "clear_empty", fallback_key="knowledge_clear_empty", target_type=target_type))
         except Exception as e:
             self.logger.error(f"Failed to clear {target_type} knowledge for {target_id}: {e}")
-            await interaction.edit_original_response(content=f"Failed to clear knowledge: {e}")
+            await interaction.edit_original_response(content=self._translate(str(interaction.guild_id) if interaction.guild_id else "", "commands", "userdata", "knowledge", "clear_error", fallback_key="knowledge_clear_error", error=str(e)))
 
     async def manage_user_data(
         self,
