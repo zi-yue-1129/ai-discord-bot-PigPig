@@ -1,7 +1,7 @@
 # File: `cogs/memory/db/procedural_storage.py`
 
 ## Overview
-ProceduralStorage: handles users table and configuration storage. This file is part of the cogs subsystem and handles the primary operations for its respective domain.
+ProceduralStorage: handles users table and configuration storage.
 
 ## Classes
 
@@ -9,17 +9,29 @@ ProceduralStorage: handles users table and configuration storage. This file is p
 Handles users table and config storage.
 
 - **Attributes**:
-  - `db` (`Any`): Instance attribute.
-  - `_user_cache` (`Dict[Tuple[str, UserInfo]]`): Instance attribute.
-  - `_cache_size_limit` (`Any`): Instance attribute.
-  - `logger` (`Any`): Instance attribute.
+  - None specified.
 
 - **Methods**:
-  - `__init__(db: DatabaseConnection) -> None`: Executes __init__ operation.
-  - `get_user_info(discord_id: str) -> Optional[UserInfo]`: Executes get_user_info operation.
-  - `update_user_data(discord_id: str, discord_name: str, procedural_memory: Optional[str], user_background: Optional[str], display_names: Optional[List[str]]) -> bool`: Executes update_user_data operation.
-  - `delete_user_data(discord_id: str) -> bool`: Executes delete_user_data operation.
-  - `update_user_activity(discord_id: str, discord_name: str) -> bool`: Executes update_user_activity operation.
-  - `get_config(key: str) -> Optional[str]`: Executes get_config operation.
-  - `set_config(key: str, value: str) -> None`: Executes set_config operation.
-  - `_update_cache(user_id: str, user_info: UserInfo) -> None`: Executes _update_cache operation.
+  - `__init__(db: DatabaseConnection) -> None`: No description provided.
+  - `get_user_info(discord_id: str) -> Optional[UserInfo]`: No description provided.
+  - `_get_user_info_sync(discord_id: str) -> Optional[UserInfo]`: No description provided.
+  - `get_users_info(discord_ids: List[str]) -> Dict[Tuple[str, UserInfo]]`: Fetch multiple users efficiently using a single SQL query.
+  - `update_user_data(discord_id: str, discord_name: str, procedural_memory: Optional[str], user_background: Optional[str], display_names: Optional[List[str]], nickname: Optional[str]) -> bool`: No description provided.
+  - `_update_user_data_sync(discord_id: str, discord_name: str, procedural_memory: Optional[str], user_background: Optional[str], display_names: Optional[List[str]], nickname: Optional[str]) -> bool`: No description provided.
+  - `delete_user_data(discord_id: str) -> bool`: No description provided.
+  - `_delete_user_data_sync(discord_id: str) -> bool`: No description provided.
+  - `update_user_activity(discord_id: str, discord_name: str, nickname: Optional[str]) -> bool`: No description provided.
+  - `_update_user_activity_sync(discord_id: str, discord_name: str, nickname: Optional[str]) -> bool`: No description provided.
+  - `get_all_users(limit: int, offset: int) -> List[UserInfo]`: Return all users ordered by creation date (newest first).
+  - `_get_all_users_sync(limit: int, offset: int) -> List[UserInfo]`: No description provided.
+  - `get_users_count() -> int`: Return total number of users in the database.
+  - `_get_users_count_sync() -> int`: No description provided.
+  - `get_config(key: str) -> Optional[str]`: No description provided.
+  - `_get_config_sync(key: str) -> Optional[str]`: No description provided.
+  - `set_config(key: str, value: str) -> None`: No description provided.
+  - `_set_config_sync(key: str, value: str) -> None`: No description provided.
+  - `_update_cache(user_id: str, user_info: UserInfo) -> None`: No description provided.
+
+## Functions
+
+No module-level functions defined in this file.

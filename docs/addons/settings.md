@@ -1,57 +1,115 @@
-# Settings Manager
+# File: `addons/settings.py`
 
 ## Overview
+Core file handling responsibilities within the `addons` subsystem.
 
-The `addons/settings.py` module is the central configuration engine for the PigPig Bot. It handles loading YAML configuration files, managing environment variables via `.env`, and providing a structured API for other modules to access settings.
+## Classes
 
-## Configuration Hierarchy
+### `BaseConfig`
+Configuration object mapped from config/base.yaml
 
-The bot uses a "Config Root" pattern for flexibility:
-1. **`CONFIG_ROOT`**: Defined by the `CONFIG_ROOT` environment variable. Defaults to `./base_configs`.
-2. **YAML Files**: Settings are split into logical files within the config root (e.g., `base.yaml`, `llm.yaml`, `memory.yaml`).
-3. **Environment Variables**: Sensitive data (tokens, keys) are loaded from `.env` via `tokens.py`.
+- **Attributes**:
+  - None specified.
 
-## Core Configuration Objects
+- **Methods**:
+  - `__init__(path: str) -> None`: No description provided.
 
-The module exposes several specialized config classes:
+### `LLMConfig`
+Configuration object mapped from config/llm.yaml
 
-### `BaseConfig` (`base.yaml`)
-- **Prefix**: The default command prefix.
-- **Activity**: Discord "Watching/Playing" status rotation.
-- **Logging**: Detailed console and file logging settings (colors, levels, retention).
+- **Attributes**:
+  - None specified.
 
-### `LLMConfig` (`llm.yaml`)
-- **Model Priorities**: Ordered list of LLM models to try.
-- **Ollama URL**: Connection string for local models.
-- **Timeouts**: Global LLM call timeout settings.
+- **Methods**:
+  - `__init__(path: str) -> None`: No description provided.
 
-### `MemoryConfig` (`memory.yaml`)
-- **Enabled**: Toggle for the entire memory subsystem.
-- **Vector Store**: Qdrant connection details and collection names.
-- **Embeddings**: Provider (Google/OpenAI) and model selection.
-- **Thresholds**: Message/Time limits for triggering memory processing.
+### `UpdateConfig`
+Configuration object mapped from config/update.yaml
 
-### `PromptConfig` (`prompt/*.yaml`)
-- **Dynamic Prompts**: Manages agent-specific system prompts.
-- **Variable Injection**: Automatically replaces placeholders like `{bot_name}`, `{creator}`, and `{environment}`.
+- **Attributes**:
+  - None specified.
 
-## Technical Details
+- **Methods**:
+  - `__init__(path: str) -> None`: No description provided.
 
-- **Safe Loading**: YAML files are loaded with error handling that reports failures via `func.report_error`.
-- **Async Initialization**: Configuration is evaluated at module import time but can interact with the async event loop for error reporting.
-- **Logging Integration**: The settings module explicitly reloads the logging configuration once `BaseConfig` is loaded to ensure that `CONFIG_ROOT` settings are respected.
+### `MusicConfig`
+Configuration object mapped from config/music.yaml
 
-## Usage
+- **Attributes**:
+  - None specified.
 
-Modules should import the pre-instantiated config objects:
+- **Methods**:
+  - `__init__(path: str) -> None`: No description provided.
 
-```python
-from addons.settings import llm_config, memory_config
+### `PromptConfig`
+Configuration object mapped from config/prompt/*.yaml
 
-print(llm_config.ollama_url)
-if memory_config.enabled:
-    # Do something
-```
+- **Attributes**:
+  - None specified.
 
----
-*By centralizing settings, PigPig Bot remains highly portable and easy to configure for different Discord environments.*
+- **Methods**:
+  - `__init__(path: str) -> None`: No description provided.
+  - `get_system_prompt(agent_name: str, bot_id: int | None, message) -> str`: Retrieve system_prompt from agent config and apply dynamic variable replacement.
+
+### `MemoryConfig`
+Memory subsystem configuration object mapped from config/memory.yaml
+
+- **Attributes**:
+  - None specified.
+
+- **Methods**:
+  - `__init__(path: str) -> None`: No description provided.
+
+### `_AttachmentImageConfig`
+No description provided.
+
+- **Attributes**:
+  - None specified.
+
+- **Methods**:
+  - `__init__(data: dict) -> None`: No description provided.
+
+### `_AttachmentPdfConfig`
+No description provided.
+
+- **Attributes**:
+  - None specified.
+
+- **Methods**:
+  - `__init__(data: dict) -> None`: No description provided.
+
+### `_AttachmentVideoConfig`
+No description provided.
+
+- **Attributes**:
+  - None specified.
+
+- **Methods**:
+  - `__init__(data: dict) -> None`: No description provided.
+
+### `_AttachmentEmbedsConfig`
+No description provided.
+
+- **Attributes**:
+  - None specified.
+
+- **Methods**:
+  - `__init__(data: dict) -> None`: No description provided.
+
+### `AttachmentConfig`
+Configuration for attachment and embed processing (base_configs/attachments.yaml).
+
+- **Attributes**:
+  - None specified.
+
+- **Methods**:
+  - `__init__(path: str) -> None`: No description provided.
+
+## Functions
+
+### `_load_yaml_file(path: str) -> dict`
+Safely load a YAML file; report errors via func.report_error and return an empty dict on failure.
+
+### `_get_config_root() -> str`
+Read CONFIG_ROOT environment variable.
+

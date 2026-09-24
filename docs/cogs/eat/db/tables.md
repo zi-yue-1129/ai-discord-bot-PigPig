@@ -1,35 +1,37 @@
 # File: `cogs/eat/db/tables.py`
 
 ## Overview
-Core logic and functionalities for tables.py. This file is part of the cogs subsystem and handles the primary operations for its respective domain.
+Core file handling responsibilities within the `cogs/eat/db` subsystem.
 
 ## Classes
 
 ### `UserPref`
-Represents UserPref.
+No description provided.
+
+- **Attributes**:
+  - None specified.
+
+- **Methods**:
+  - None specified.
 
 ### `SearchRecord`
-Represents SearchRecord.
+No description provided.
 
 - **Attributes**:
-  - `discord_id` (`Any`): Instance attribute.
-  - `keyword` (`Any`): Instance attribute.
-  - `title` (`Any`): Instance attribute.
-  - `tag` (`Any`): Instance attribute.
-  - `address` (`Any`): Instance attribute.
-  - `map_rate` (`Any`): Instance attribute.
-  - `self_rate` (`Any`): Instance attribute.
-  - `date` (`Any`): Instance attribute.
+  - None specified.
 
 - **Methods**:
-  - `__init__(discord_id: str, title: str, keyword: str, tag: str, address: str, map_rate: str, self_rate: float) -> Any`: Executes __init__ operation.
+  - `__init__(discord_id: str, title: str, keyword: str, tag: str, address: str, map_rate: str, self_rate: float) -> Any`: No description provided.
 
 ### `Keywords`
-Represents Keywords.
+No description provided.
 
 - **Attributes**:
-  - `keyword` (`Any`): Instance attribute.
-  - `add_date` (`Any`): Instance attribute.
+  - None specified.
 
 - **Methods**:
-  - `__init__(keyword: String) -> Any`: Executes __init__ operation.
+  - `__init__(keyword: String) -> Any`: No description provided.
+
+## Functions
+
+No module-level functions defined in this file.

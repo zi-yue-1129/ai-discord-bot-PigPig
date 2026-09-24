@@ -1,23 +1,31 @@
 # File: `cogs/memory/interfaces/storage_interface.py`
 
 ## Overview
-Core logic and functionalities for storage_interface.py. This file is part of the cogs subsystem and handles the primary operations for its respective domain.
+Core file handling responsibilities within the `cogs/memory/interfaces` subsystem.
 
 ## Classes
 
 ### `ProceduralStorageInterface`
 Interface for procedural (user) storage operations.
 
+- **Attributes**:
+  - None specified.
+
 - **Methods**:
-  - `get_user_info(discord_id: str) -> Optional[UserInfo]`: Executes get_user_info operation.
-  - `delete_user_data(discord_id: str) -> bool`: Executes delete_user_data operation.
-  - `update_user_data(discord_id: str, discord_name: str, procedural_memory: Optional[str], user_background: Optional[str], display_names: Optional[List[str]]) -> bool`: Executes update_user_data operation.
-  - `update_user_activity(discord_id: str, discord_name: str) -> bool`: Executes update_user_activity operation.
-  - `get_config(key: str) -> Optional[str]`: Executes get_config operation.
-  - `set_config(key: str, value: str) -> None`: Executes set_config operation.
+  - `get_user_info(discord_id: str) -> Optional[str]`: No description provided.
+  - `delete_user_data(discord_id: str) -> bool`: No description provided.
+  - `update_user_data(discord_id: str, discord_name: str, procedural_memory: Optional[str], user_background: Optional[str], display_names: Optional[List[str]], nickname: Optional[str]) -> bool`: No description provided.
+  - `update_user_activity(discord_id: str, discord_name: str, nickname: Optional[str]) -> bool`: No description provided.
+  - `get_config(key: str) -> Optional[str]`: No description provided.
+  - `set_config(key: str, value: str) -> None`: No description provided.
+  - `get_all_users(limit: int, offset: int) -> List[str]`: No description provided.
+  - `get_users_count() -> int`: No description provided.
 
 ### `EpisodicStorageInterface`
 Interface for episodic (channel memory state) storage operations.
+
+- **Attributes**:
+  - None specified.
 
 - **Methods**:
   - `initialize_channel_memory_state() -> None`: Initialize the channel_memory_state table in the database.
@@ -26,3 +34,13 @@ Interface for episodic (channel memory state) storage operations.
 
 ### `StorageInterface`
 Combined interface kept for backward compatibility.
+
+- **Attributes**:
+  - None specified.
+
+- **Methods**:
+  - None specified.
+
+## Functions
+
+No module-level functions defined in this file.

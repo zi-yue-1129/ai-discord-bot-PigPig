@@ -1,19 +1,23 @@
 # File: `cogs/eat/train/data_loader.py`
 
 ## Overview
-Core logic and functionalities for data_loader.py. This file is part of the cogs subsystem and handles the primary operations for its respective domain.
+Core file handling responsibilities within the `cogs/eat/train` subsystem.
 
 ## Classes
 
 ### `DataLoader`
-Represents DataLoader.
+No description provided.
 
 - **Attributes**:
-  - `db` (`Any`): Instance attribute.
+  - None specified.
 
 - **Methods**:
-  - `__init__(db: DB) -> None`: Executes __init__ operation.
-  - `loadingData(discord_id: str) -> Any`: Executes loadingData operation.
-  - `procressData(data: Any) -> Any`: Executes procressData operation.
-  - `genVocabularyList(data: Any) -> Any`: Executes genVocabularyList operation.
-  - `transform(data: Any, voc_length: Any, batch_size: Any) -> Any`: Executes transform operation.
+  - `__init__(db: DB) -> None`: No description provided.
+  - `loadingData(discord_id: str) -> Any`: No description provided.
+  - `procressData(data) -> Any`: No description provided.
+  - `genVocabularyList(data) -> Any`: No description provided.
+  - `transform(data, voc_length, batch_size) -> Any`: No description provided.
+
+## Functions
+
+No module-level functions defined in this file.

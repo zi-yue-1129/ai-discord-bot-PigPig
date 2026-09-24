@@ -1,7 +1,7 @@
 # File: `llm/prompting/protected_prompt_manager.py`
 
 ## Overview
-Protected Prompt Management System. This file is part of the llm subsystem and handles the primary operations for its respective domain.
+Protected Prompt Management System.
 
 ## Classes
 
@@ -9,11 +9,8 @@ Protected Prompt Management System. This file is part of the llm subsystem and h
 Manages system-level (protected) and user-customizable prompts.
 
 - **Attributes**:
-  - `PROTECTED_MODULES` (`Set[str]`): Class attribute.
-  - `CUSTOMIZABLE_MODULES` (`Set[str]`): Class attribute.
-  - `base_config_path` (`Any`): Instance attribute.
-  - `base_config` (`Dict`): Instance attribute.
-  - `custom_modules` (`Dict[Tuple[str, str]]`): Instance attribute.
+  - `PROTECTED_MODULES` (`Set[str]`): Class attribute
+  - `CUSTOMIZABLE_MODULES` (`Set[str]`): Class attribute
 
 - **Methods**:
   - `__init__(base_config_path: Optional[str]) -> Any`: Initialize the protected prompt manager.
@@ -30,4 +27,4 @@ Manages system-level (protected) and user-customizable prompts.
 ## Functions
 
 ### `get_protected_prompt_manager(config_path: Optional[str]) -> ProtectedPromptManager`
-Get or create a ProtectedPromptManager instance. Plays a key role in the system logic.
+Get or create a ProtectedPromptManager instance.

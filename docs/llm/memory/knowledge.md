@@ -1,31 +1,32 @@
-# Knowledge Memory Provider
+# File: `llm/memory/knowledge.py`
 
 ## Overview
+KnowledgeMemoryProvider: provides guild and channel level knowledge with caching.
 
-The `KnowledgeMemoryProvider` handles "Shared Knowledge" at the server (Guild) or Channel level. This is used for storing community-specific information such as:
-- **Server Rules**: Custom instructions for the bot within a specific guild.
-- **Inside Jokes/Memes**: Information that applies to everyone in a channel.
-- **Local Facts**: Information about a specific community or project.
+## Classes
 
-## Levels of Knowledge
+### `KnowledgeMemory`
+Represents the fetched knowledge for a specific context.
 
-The provider fetches knowledge in a hierarchical manner:
+- **Attributes**:
+  - None specified.
 
-1. **Guild Knowledge**: Broad instructions or facts applicable to the entire server.
-2. **Channel Knowledge**: Specific context applicable only to the current channel.
+- **Methods**:
+  - `__init__(guild_knowledge: Optional[str], channel_knowledge: Optional[str]) -> Any`: No description provided.
 
-## Implementation Details
+### `KnowledgeMemoryProvider`
+Provides guild/channel knowledge with caching.
 
-### Hierarchical Fetching
-The `get(guild_id, channel_id)` method fetches both levels simultaneously. Channel-level knowledge usually overrides or supplements Guild-level knowledge in the final prompt.
+- **Attributes**:
+  - None specified.
 
-### Cache Management
-- **TTL Cache**: Uses a standard time-to-live cache (default 5 minutes).
-- **Invalidation**: Cache can be invalidated by administrative commands when knowledge is updated.
+- **Methods**:
+  - `__init__(storage: KnowledgeStorage, max_cache_size: int) -> None`: Initialize with storage and cache limit.
+  - `get(guild_id: Optional[str], channel_id: str) -> KnowledgeMemory`: Fetch knowledge for the current guild and channel.
+  - `_get_single(target_type: str, target_id: str) -> Optional[str]`: Internal helper with TTL cache and thundering herd protection.
+  - `invalidate(target_type: str, target_id: str) -> None`: Invalidate cache for a specific target.
 
-## Usage in Prompting
+## Functions
 
-Knowledge is typically injected early in the system prompt to set the "ground rules" for the conversation within that specific environment.
+No module-level functions defined in this file.
 
----
-*By separating User, Episodic, and Knowledge memory, the bot can distinguish between "what I know about you" vs "what I know about this place".*

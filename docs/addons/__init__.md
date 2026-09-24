@@ -1,4 +1,12 @@
 # File: `addons/__init__.py`
 
 ## Overview
-Core logic and functionalities for __init__.py. This file is part of the addons subsystem and handles the primary operations for its respective domain.
+Core file handling responsibilities within the `addons` subsystem.
+
+## Classes
+
+No classes defined in this file.
+
+## Functions
+
+No module-level functions defined in this file.

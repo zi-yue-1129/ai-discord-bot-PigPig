@@ -1,57 +1,84 @@
-# Logging Manager
+# File: `addons/logging.py`
 
 ## Overview
+Core file handling responsibilities within the `addons` subsystem.
 
-The `addons/logging.py` module provides a high-performance, structured logging system. It is designed for multi-guild environments, ensuring that logs are categorized by server ID and stored in a machine-readable NDJSON format while maintaining a beautiful, colorized console output.
+## Classes
 
-## Architecture
+### `LogRecord`
+Structured log record following plan.md schema.
 
-The system uses a **Dual-Sink Architecture**:
+- **Attributes**:
+  - `timestamp` (`str`): Class attribute
+  - `level` (`str`): Class attribute
+  - `source` (`str`): Class attribute
+  - `server_id` (`str`): Class attribute
+  - `channel_or_file` (`str`): Class attribute
+  - `user_id` (`str`): Class attribute
+  - `action` (`str`): Class attribute
+  - `message` (`str`): Class attribute
+  - `trace_id` (`Optional[str]`): Class attribute
+  - `extra` (`Dict[Tuple[str, Any]]`): Class attribute
 
-1. **Console Sink (Loguru)**: Provides immediate, human-readable feedback in the terminal with customizable colors and emojis.
-2. **File Sink (NDJSON)**: Writes structured logs to the `logs/` directory for long-term storage and analysis.
+- **Methods**:
+  - `to_json_line() -> str`: Serialize record to a single NDJSON line.
 
 ### `BackgroundWriter`
-To prevent logging from blocking the bot's main execution loop, all file writes are handled by a dedicated background thread:
-- **Batching**: Logs are collected into batches (default 500 records) or flushed every 2 seconds.
-- **Grouping**: Logs are grouped by `server_id`, `date`, and `level` to minimize disk syscalls.
-- **Emergency Stash**: If the primary log directory is unwritable, logs are diverted to an `emergency/` directory.
+Background single-thread writer that batches NDJSON records and writes per-level files.
 
-## Structured Logging
+- **Attributes**:
+  - None specified.
 
-Instead of plain text strings, PigPig Bot uses structured `LogRecord` objects:
-- `timestamp`: ISO 8601 UTC.
-- `level`: DEBUG, INFO, WARNING, ERROR, CRITICAL.
-- `source`: The module or component name.
-- `server_id`: The Discord Guild ID.
-- `user_id`: The ID of the user who triggered the event.
-- `action`: A short slug identifying the operation (e.g., `cmd_executed`).
-- `extra`: A dictionary for arbitrary metadata (e.g., LLM tokens, response times).
+- **Methods**:
+  - `__init__() -> Any`: No description provided.
+  - `get_instance(cls) -> str`: No description provided.
+  - `enqueue(server_id: str, level: str, json_line: str, timestamp_iso: str) -> None`: Attempt to enqueue a log event non-blocking. On full queue, drop and report.
+  - `_report_error_async(exc: Exception, context: str) -> None`: Report errors through func.report_error if available, fallback to printing.
+  - `stop(timeout: float) -> None`: Signal worker to stop and flush remaining items.
+  - `_worker() -> None`: Worker loop: collect batches and perform grouped writes per server/date/level.
 
-## Usage
+### `LoggerAdapter`
+Logger-like object exposing bind(...) and level methods (info/warning/error/debug).
 
-The primary entry point is `get_logger()`:
+- **Attributes**:
+  - None specified.
 
-```python
-from addons.logging import get_logger
+- **Methods**:
+  - `__init__(server_id: str, source: str, channel: Optional[str], bound: Optional[Dict[Tuple[str, Any]]]) -> Any`: No description provided.
+  - `isEnabledFor(level: int) -> bool`: Check if the given numeric level is enabled based on current CONFIG.
+  - `bind(**context: Any) -> str`: Return a new LoggerAdapter with merged context, similar to structlog.bind.
+  - `_emit(level: str, message: str, exception: Optional[BaseException], **event_fields: Any) -> None`: Compose structured record, enqueue NDJSON line, and render to console as single-line text.
+  - `_format_console_line(record: LogRecord) -> str`: Create enhanced console representation with simplified timestamp and optional emoji.
+  - `_colorize_line(record: LogRecord, line: str) -> str`: Apply ANSI color codes to different parts of the log line for better readability.
+  - `info(message: Optional[str], *args: Any, exception: Optional[BaseException], **event_fields: Any) -> None`: Emit an INFO event.
+  - `warning(message: Optional[str], *args: Any, exception: Optional[BaseException], **event_fields: Any) -> None`: Emit a WARNING event.
+  - `error(message: Optional[str], *args: Any, exception: Optional[BaseException], **event_fields: Any) -> None`: Emit an ERROR event.
+  - `debug(message: Optional[str], *args: Any, exception: Optional[BaseException], **event_fields: Any) -> None`: Emit a DEBUG event.
+  - `exception(message: Optional[str], *args: Any, **event_fields: Any) -> None`: Log an ERROR-level event with the current exception traceback.
 
-# Initialize logger for a specific server
-logger = get_logger(server_id="123456789", source="my_module")
+### `InterceptHandler`
+Logging.Handler that redirects stdlib logging records into our structured logger.
 
-# Basic logging
-logger.info("Something happened")
+- **Attributes**:
+  - None specified.
 
-# Bind context (structlog-style)
-bound_logger = logger.bind(user_id="alice", action="save_data")
-bound_logger.error("Failed to save", extra={"error_code": 500})
-```
+- **Methods**:
+  - `emit(record: logging.LogRecord) -> None`: No description provided.
 
-## Features
+## Functions
 
-- **ANSI Color Support**: Automatic detection of terminal color capabilities (Windows 10+ supported).
-- **Emoji Indicators**: Optional visual icons for log levels (🔍, ✅, ⚠️, ❌, 🚨).
-- **Intercept Handler**: Automatically redirects standard Python `logging` calls from third-party libraries (like `discord.py` or `sqlalchemy`) into the structured system.
-- **Per-Level Retention**: Configurable log rotation and cleanup policies via `base.yaml`.
+### `_check_color_support() -> bool`
+Enhanced check for terminal color support including Windows.
 
----
-*The logging system is a critical tool for debugging LLM interactions and monitoring bot health across multiple servers.*
+### `load_config_from_settings() -> None`
+Load logging configuration from addons.settings.base_config and merge with defaults.
+
+### `init_loguru_console() -> None`
+Initialize or reconfigure the loguru console sink based on current CONFIG.
+
+### `get_logger(server_id: Any, source: str, channel: Optional[str]) -> LoggerAdapter`
+Factory returning a bindable logger-like object for a given server_id.
+
+### `configure_std_logging() -> None`
+Configure the standard library logging to route through InterceptHandler and apply third-party levels.
+

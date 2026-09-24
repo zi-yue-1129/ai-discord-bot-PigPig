@@ -1,27 +1,23 @@
-# Music Library - Audio Manager
+# File: `cogs/music_lib/audio_manager.py`
 
-**File:** [`cogs/music_lib/audio_manager.py`](cogs/music_lib/audio_manager.py)
+## Overview
+Core file handling responsibilities within the `cogs/music_lib` subsystem.
 
-The `AudioManager` is a focused utility class responsible for creating audio sources that Discord can play and for managing the cleanup of temporary audio files.
+## Classes
 
-## `AudioManager` Class
+### `AudioManager`
+No description provided.
 
-### `create_audio_source(self, song: Dict[str, Any]) -> FFmpegPCMAudio`
+- **Attributes**:
+  - None specified.
 
-This is the primary method of the class. It takes a song dictionary and returns a `discord.FFmpegPCMAudio` object, which is the audio source that the bot's voice client plays.
+- **Methods**:
+  - `__init__() -> Any`: No description provided.
+  - `create_audio_source(song: Dict[Tuple[str, Any]]) -> FFmpegPCMAudio`: Create an FFmpeg audio source based on song information.
+  - `delete_file(guild_id: int, file_path: str) -> Any`: Non-blocking file deletion using asyncio.to_thread.
+  - `cleanup_guild_files(guild_id: int, folder: str) -> Any`: Clean up all audio files for a guild.
 
-*   **Parameters:**
-    *   `song` (Dict[str, Any]): A dictionary containing the song's metadata.
-*   **Logic:**
-    *   **Live Streams:** If the song dictionary has `is_live` set to `True`, it uses the `stream_url` and applies FFmpeg options optimized for reconnecting to live streams (`-reconnect 1`, etc.).
-    *   **Local Files:** If the song is not a live stream, it uses the `file_path` to create a standard audio source for a local file.
-*   **Returns:** A playable `FFmpegPCMAudio` source.
-*   **Raises:** `ValueError` if the required information (like `stream_url` or `file_path`) is missing from the song dictionary.
+## Functions
 
-### `delete_file(self, guild_id: int, file_path: str)`
+No module-level functions defined in this file.
 
-An asynchronous method for safely deleting a temporary audio file from the disk. It uses `asyncio.to_thread` to run the file deletion in a separate thread, preventing it from blocking the bot's main event loop.
-
-### `cleanup_guild_files(self, guild_id: int, folder: str)`
-
-A utility method to clean up all temporary audio files for a specific guild. This is typically called when the bot disconnects or the queue is stopped.
