@@ -174,6 +174,17 @@ class MathCalculatorCog(commands.Cog):
             # Use extracted expression
             expression = extracted
 
+            # Rigorous string validation to prevent RCE via Sandbox escape
+            dangerous_patterns = [
+                '__', 'globals', 'locals', 'exec', 'import', 'eval',
+                'getattr', 'setattr', 'delattr', 'system', 'subprocess', 'popen'
+            ]
+            for pattern_str in dangerous_patterns:
+                if pattern_str in expression:
+                    return self.lang_manager.translate(
+                        guild_id, "commands", "math", "responses", "error_unsupported_elements"
+                    ) if self.lang_manager else "Error: Expression contains unsupported elements."
+
             # Safely parse expression
             sympy_expr = parse_expr(
                 expression,
