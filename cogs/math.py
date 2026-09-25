@@ -174,6 +174,17 @@ class MathCalculatorCog(commands.Cog):
             # Use extracted expression
             expression = extracted
 
+            # Explicit security check to block dangerous tokens for parse_expr
+            dangerous_patterns = [
+                r'__', r'globals', r'locals', r'exec', r'import', r'eval',
+                r'getattr', r'setattr', r'delattr', r'system', r'subprocess', r'popen'
+            ]
+            if any(re.search(p, expression, re.IGNORECASE) for p in dangerous_patterns):
+                error_message = self.lang_manager.translate(
+                    guild_id, "commands", "math", "responses", "error_general"
+                ) if self.lang_manager else "Error: Expression contains forbidden characters."
+                return error_message
+
             # Safely parse expression
             sympy_expr = parse_expr(
                 expression,
