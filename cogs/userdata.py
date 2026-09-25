@@ -358,11 +358,12 @@ class UserDataCog(commands.Cog):
                         )
 
             if user_info:
-                return f"""
-                Preference: {user_info.procedural_memory}
-                Background: {user_info.user_background}
-                Display Names: {', '.join(user_info.display_names)}
-                """
+                display_names = ', '.join(user_info.display_names) if user_info.display_names else 'None'
+                return (
+                    f"**Preference:** {user_info.procedural_memory}\n"
+                    f"**Background:** {user_info.user_background}\n"
+                    f"**Display Names:** {display_names}"
+                )
 
             return self._translate(
                 guild_id,
@@ -670,11 +671,12 @@ class UserDataCog(commands.Cog):
                 response_key = "data_updated" if existing_data else "data_created"
                 
                 # Format merged_data for display
-                data_str = f"""
-                Preference: {merged_data.procedural_memory}
-                Background: {merged_data.user_background}
-                Display Names: {','.join(merged_data.display_names)}
-                """
+                display_names = ', '.join(merged_data.display_names) if merged_data.display_names else 'None'
+                data_str = (
+                    f"**Preference:** {merged_data.procedural_memory}\n"
+                    f"**Background:** {merged_data.user_background}\n"
+                    f"**Display Names:** {display_names}"
+                )
 
                 return self._translate(
                     guild_id,
