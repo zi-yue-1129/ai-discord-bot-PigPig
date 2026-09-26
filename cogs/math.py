@@ -174,6 +174,29 @@ class MathCalculatorCog(commands.Cog):
             # Use extracted expression
             expression = extracted
 
+            # Rigorous string validation to prevent RCE sandbox escapes
+            unsafe_patterns = [
+                r'__',
+                r'globals',
+                r'locals',
+                r'exec',
+                r'import',
+                r'eval',
+                r'getattr',
+                r'setattr',
+                r'delattr',
+                r'system',
+                r'subprocess',
+                r'popen'
+            ]
+            unsafe_regex = re.compile('|'.join(unsafe_patterns), re.IGNORECASE)
+
+            if unsafe_regex.search(expression):
+                error_message = self.lang_manager.translate(
+                    guild_id, "commands", "math", "responses", "error_general"
+                ) if self.lang_manager else "Error: Unsafe elements detected in the expression."
+                return error_message
+
             # Safely parse expression
             sympy_expr = parse_expr(
                 expression,
