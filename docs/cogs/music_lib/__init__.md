@@ -1,4 +1,5 @@
 # File: `cogs/music_lib/__init__.py`
 
 ## Overview
-Discord Music Bot Module This file is part of the cogs subsystem and handles the primary operations for its respective domain.
+Discord Music Bot Module
+This module provides music playback functionality for Discord servers using YouTube as the source.

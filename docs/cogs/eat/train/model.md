@@ -1,20 +1,20 @@
 # File: `cogs/eat/train/model.py`
 
 ## Overview
-Core logic and functionalities for model.py. This file is part of the cogs subsystem and handles the primary operations for its respective domain.
+This file is part of the `cogs` subsystem. It is responsible for `model` related functionality within the PigPig system, contributing to Discord bot commands and feature logic.
 
 ## Classes
 
 ### `Net`
-Represents Net.
+Represents the `Net` class in the system.
 
 - **Attributes**:
-  - `embedding_dim` (`Any`): Instance attribute.
-  - `hidden_dim` (`Any`): Instance attribute.
-  - `embeddings` (`Any`): Instance attribute.
-  - `lstm` (`Any`): Instance attribute.
-  - `hidden2out` (`Any`): Instance attribute.
+  - `embedding_dim` (`Any`): Instance attribute for embedding_dim.
+  - `hidden_dim` (`Any`): Instance attribute for hidden_dim.
+  - `embeddings` (`Any`): Instance attribute for embeddings.
+  - `lstm` (`Any`): Instance attribute for lstm.
+  - `hidden2out` (`Any`): Instance attribute for hidden2out.
 
 - **Methods**:
-  - `__init__(n_vocab: Any, embedding_dim: Any, hidden_dim: Any, dropout: Any) -> Any`: Executes __init__ operation.
-  - `forward(seq_in: Any) -> Any`: Executes forward operation.
+  - `__init__(n_vocab, embedding_dim, hidden_dim, dropout) -> Any`: Handles the `__init__` functionality. Internally, it interacts with methods like `__init__` and `Embedding`.
+  - `forward(seq_in) -> Any`: Handles the `forward` functionality. Internally, it interacts with methods like `embeddings` and `lstm`.

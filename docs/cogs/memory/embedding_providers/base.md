@@ -1,9 +1,9 @@
 # File: `cogs/memory/embedding_providers/base.py`
 
 ## Overview
-Core logic and functionalities for base.py. This file is part of the cogs subsystem and handles the primary operations for its respective domain.
+This file is part of the `cogs` subsystem. It is responsible for `base` related functionality within the PigPig system, contributing to Discord bot commands and feature logic.
 
 ## Functions
 
-### `base_provider(settings: MemoryConfig) -> Embeddings`
-Base dummy embedding provider returning zero vectors. Plays a key role in the system logic.
+### `base_provider(settings) -> Embeddings`
+Base dummy embedding provider returning zero vectors.

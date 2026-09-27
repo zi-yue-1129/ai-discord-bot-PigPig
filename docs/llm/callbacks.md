@@ -1,43 +1,18 @@
-# LLM Callbacks
+# File: `llm/callbacks.py`
 
 ## Overview
+This file is part of the `llm` subsystem. It is responsible for `callbacks` related functionality within the PigPig system, contributing to the LLM pipeline and orchestration.
 
-The `llm.callbacks` module implements custom LangChain callback handlers to provide real-time feedback to Discord users during complex AI reasoning and tool execution processes.
+## Classes
 
-## `ToolFeedbackCallbackHandler`
+### `ToolFeedbackCallbackHandler`
+Callback handler for providing feedback during tool execution.
 
-This handler intercepts LangChain's internal tool execution events to update Discord messages, keeping users informed of the bot's background actions.
+- **Attributes**:
+  - `message_edit` (`Any`): Instance attribute for message_edit.
+  - `language_manager` (`Any`): Instance attribute for language_manager.
+  - `guild_id` (`Any`): Instance attribute for guild_id.
 
-### Core Logic
-
-When a tool starts execution (`on_tool_start`), the handler:
-1. Identifies the tool name (e.g., `GoogleSearch`, `YouTubeSearch`).
-2. Consults the `LanguageManager` to find the localized feedback message for that specific tool.
-3. Falls back to a generic "Processing [Tool Name]..." message if no specific translation is found.
-4. Uses `safe_edit_message` to update the bot's response in Discord with the status update.
-
-### Resilience Features
-
-- **Error Suppression**: Callback errors are caught and logged but never allowed to interrupt the primary AI reasoning process.
-- **Async Safety**: Uses `asyncio.shield` to protect Discord message edits from being cancelled if the parent task is interrupted, preventing event loop mismatch errors.
-
-## Integration
-
-The callback handler is automatically instantiated and injected into the `Orchestrator`'s agent execution chain.
-
-```python
-# Example Internal usage
-callbacks = [
-    ToolFeedbackCallbackHandler(
-        message_edit=message,
-        language_manager=lang_manager,
-        guild_id=guild_id
-    )
-]
-
-# Passed to LangChain agent
-await agent_executor.ainvoke(input, config={"callbacks": callbacks})
-```
-
----
-*By providing granular feedback, this system improves perceived performance and reduces user uncertainty during long-running AI tasks.*
+- **Methods**:
+  - `__init__(message_edit, language_manager, guild_id) -> Any`: Handles the `__init__` functionality. Executes the underlying business logic for this operation.
+  - `on_tool_start(serialized, input_str, **kwargs) -> Any`: Run when tool starts running.

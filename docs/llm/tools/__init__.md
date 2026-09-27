@@ -1,4 +1,4 @@
 # File: `llm/tools/__init__.py`
 
 ## Overview
-Core logic and functionalities for __init__.py. This file is part of the llm subsystem and handles the primary operations for its respective domain.
+This file is part of the `llm` subsystem. It is responsible for `__init__` related functionality within the PigPig system, contributing to the LLM pipeline and orchestration.

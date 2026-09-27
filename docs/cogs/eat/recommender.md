@@ -1,7 +1,10 @@
 # File: `cogs/eat/recommender.py`
 
 ## Overview
-Lightweight Weighted Recommender. This file is part of the cogs subsystem and handles the primary operations for its respective domain.
+Lightweight Weighted Recommender.
+
+Replaces the PyTorch LSTM model with a real-time weighted algorithm based on user rating history.
+Calculates preference vectors directly from the DB and ranks candidate restaurants without training.
 
 ## Classes
 
@@ -9,9 +12,9 @@ Lightweight Weighted Recommender. This file is part of the cogs subsystem and ha
 Weighted recommender based on user rating history.
 
 - **Attributes**:
-  - `db` (`Any`): Instance attribute.
+  - `db` (`Any`): Instance attribute for db.
 
 - **Methods**:
-  - `__init__(db: DB) -> Any`: Executes __init__ operation.
-  - `suggest_keyword(discord_id: str, available_keywords: list[str]) -> str`: Suggest the next search keyword based on user preferences.
-  - `rank_candidates(discord_id: str, candidates: list[dict]) -> list[dict]`: Rank candidate restaurants, excluding disliked ones and weighting liked categories.
+  - `__init__(db) -> Any`: Handles the `__init__` functionality. Executes the underlying business logic for this operation.
+  - `suggest_keyword(discord_id, available_keywords) -> str`: Suggest the next search keyword based on user preferences.
+  - `rank_candidates(discord_id, candidates) -> list[...]`: Rank candidate restaurants, excluding disliked ones and weighting liked categories.

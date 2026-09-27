@@ -1,7 +1,7 @@
 # File: `cogs/memory/exceptions.py`
 
 ## Overview
-Core logic and functionalities for exceptions.py. This file is part of the cogs subsystem and handles the primary operations for its respective domain.
+This file is part of the `cogs` subsystem. It is responsible for `exceptions` related functionality within the PigPig system, contributing to Discord bot commands and feature logic.
 
 ## Classes
 

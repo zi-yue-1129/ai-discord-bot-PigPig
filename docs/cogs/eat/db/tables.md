@@ -1,35 +1,46 @@
 # File: `cogs/eat/db/tables.py`
 
 ## Overview
-Core logic and functionalities for tables.py. This file is part of the cogs subsystem and handles the primary operations for its respective domain.
+This file is part of the `cogs` subsystem. It is responsible for `tables` related functionality within the PigPig system, contributing to Discord bot commands and feature logic.
 
 ## Classes
 
 ### `UserPref`
-Represents UserPref.
+Represents the `UserPref` class in the system.
+
+- **Attributes**:
+  - `__tablename__` (`Any`): Class attribute representing __tablename__.
+  - `id` (`Any`): Class attribute representing id.
+  - `discord_id` (`Any`): Class attribute representing discord_id.
+  - `model_uri` (`Any`): Class attribute representing model_uri.
+  - `last_update` (`Any`): Class attribute representing last_update.
 
 ### `SearchRecord`
-Represents SearchRecord.
+Represents the `SearchRecord` class in the system.
 
 - **Attributes**:
-  - `discord_id` (`Any`): Instance attribute.
-  - `keyword` (`Any`): Instance attribute.
-  - `title` (`Any`): Instance attribute.
-  - `tag` (`Any`): Instance attribute.
-  - `address` (`Any`): Instance attribute.
-  - `map_rate` (`Any`): Instance attribute.
-  - `self_rate` (`Any`): Instance attribute.
-  - `date` (`Any`): Instance attribute.
+  - `__tablename__` (`Any`): Class attribute representing __tablename__.
+  - `id` (`Any`): Class attribute representing id.
+  - `date` (`Any`): Class attribute representing date.
+  - `discord_id` (`Any`): Class attribute representing discord_id.
+  - `title` (`Any`): Class attribute representing title.
+  - `tag` (`Any`): Class attribute representing tag.
+  - `address` (`Any`): Class attribute representing address.
+  - `keyword` (`Any`): Class attribute representing keyword.
+  - `map_rate` (`Any`): Class attribute representing map_rate.
+  - `self_rate` (`Any`): Class attribute representing self_rate.
 
 - **Methods**:
-  - `__init__(discord_id: str, title: str, keyword: str, tag: str, address: str, map_rate: str, self_rate: float) -> Any`: Executes __init__ operation.
+  - `__init__(discord_id, title, keyword, tag, address, map_rate, self_rate) -> Any`: Handles the `__init__` functionality. Internally, it interacts with methods like `timestamp` and `now`.
 
 ### `Keywords`
-Represents Keywords.
+Represents the `Keywords` class in the system.
 
 - **Attributes**:
-  - `keyword` (`Any`): Instance attribute.
-  - `add_date` (`Any`): Instance attribute.
+  - `__tablename__` (`Any`): Class attribute representing __tablename__.
+  - `id` (`Any`): Class attribute representing id.
+  - `keyword` (`Any`): Class attribute representing keyword.
+  - `add_date` (`Any`): Class attribute representing add_date.
 
 - **Methods**:
-  - `__init__(keyword: String) -> Any`: Executes __init__ operation.
+  - `__init__(keyword) -> Any`: Handles the `__init__` functionality. Internally, it interacts with methods like `timestamp` and `now`.
