@@ -174,6 +174,14 @@ class MathCalculatorCog(commands.Cog):
             # Use extracted expression
             expression = extracted
 
+            # Rigorous string validation to prevent RCE
+            blocked_patterns = r'(__|import|eval|exec|compile|globals|locals|getattr|setattr|delattr|system|popen|subprocess)'
+            if re.search(blocked_patterns, expression):
+                error_message = self.lang_manager.translate(
+                    guild_id, "commands", "math", "responses", "error_unsupported_elements"
+                ) if self.lang_manager else "Error: Expression contains unsupported elements."
+                return error_message
+
             # Safely parse expression
             sympy_expr = parse_expr(
                 expression,
