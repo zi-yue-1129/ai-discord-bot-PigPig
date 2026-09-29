@@ -168,3 +168,14 @@ class EpisodicStorage:
             )
             row = cursor.fetchone()
             return int(row["count"]) if row else 0
+
+    async def delete_user_data(self, user_id: str) -> bool:
+        """Delete user data from relational episodic storage.
+
+        Args:
+            user_id: The Discord user ID string.
+
+        Returns:
+            True. This table does not contain user-specific data, but the interface requires this method.
+        """
+        return True

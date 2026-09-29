@@ -1045,8 +1045,27 @@ class UserDataCog(commands.Cog):
                         )
                         if provider and hasattr(provider, "invalidate"):
                             await provider.invalidate(str(user_id))
+
+                        # Delete from episodic vector store
+                        episodic_provider = getattr(
+                            getattr(orchestrator, "context_manager", None),
+                            "episodic_provider",
+                            None,
+                        )
+                        if episodic_provider and hasattr(episodic_provider, "delete_user"):
+                            await episodic_provider.delete_user(str(user_id))
                 except Exception as cache_err:
-                    self.logger.warning(f"Failed to invalidate procedural cache for {user_id}: {cache_err}")
+                    self.logger.warning(f"Failed to invalidate procedural cache or delete vectors for {user_id}: {cache_err}")
+
+                # Delete from relational episodic storage
+                try:
+                    episodic_manager = self.bot.get_cog("EpisodicMemoryService")
+                    if episodic_manager and hasattr(episodic_manager, "storage"):
+                        storage = episodic_manager.storage
+                        if storage and hasattr(storage, "delete_user_data"):
+                            await storage.delete_user_data(str(user_id))
+                except Exception as e:
+                    self.logger.error(f"Failed to delete episodic relational data for {user_id}: {e}")
 
 
                 return self._translate(
