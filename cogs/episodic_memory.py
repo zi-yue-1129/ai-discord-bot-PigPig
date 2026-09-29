@@ -86,10 +86,9 @@ class EpisodicMemoryService(commands.Cog):
             # localization via LanguageManager if available
             lang_manager = self.bot.get_cog("LanguageManager")
             guild_id = str(interaction.guild.id) if interaction.guild else "0"
-            starting_text = self._translate_text(lang_manager, guild_id, "commands", "memory", "force_update", "starting")
 
-            # send initial ephemeral response
-            await interaction.response.send_message(starting_text, ephemeral=True)
+            # send initial deferred response (thinking state)
+            await interaction.response.defer(ephemeral=True, thinking=True)
 
             channel = interaction.channel
             if not channel or not isinstance(channel, (discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.Thread)):
@@ -155,10 +154,8 @@ class EpisodicMemoryService(commands.Cog):
             lang_manager = self.bot.get_cog("LanguageManager")
             guild_id = str(interaction.guild.id) if interaction.guild else "0"
             
-            searching_text = self._translate_text(lang_manager, guild_id, "commands", "memory", "search", "searching")
-            
-            # send initial response
-            await interaction.response.send_message(searching_text, ephemeral=True)
+            # send initial deferred response (thinking state)
+            await interaction.response.defer(ephemeral=True, thinking=True)
             
             # Validate that at least one search parameter is provided
             if not any([vector_query, keyword_query, user_id, channel_id]):
