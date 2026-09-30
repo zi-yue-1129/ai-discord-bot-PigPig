@@ -1,54 +1,28 @@
-# Checker Module
+# File: `addons/update/checker.py`
 
-**File:** [`addons/update/checker.py`](addons/update/checker.py)
+## Overview
+版本檢查器模組
 
-This module is responsible for checking for new versions of the bot on GitHub. It compares the local version with the latest release available in the repository.
+負責檢查 GitHub 上的最新版本並與當前版本進行比較。
 
-## `VersionChecker` Class
+## Classes
 
-The `VersionChecker` class handles the logic for checking versions.
+### `VersionChecker`
+版本檢查器
 
-### `__init__(self, github_config: Dict[str, str])`
+- **Attributes**:
+  - `github_api_url` (`Any`): Instance attribute github_api_url
+  - `current_version` (`Any`): Instance attribute current_version
+  - `logger` (`Any`): Instance attribute logger
 
-Initializes the `VersionChecker`.
+- **Methods**:
+  - `_get_current_version(self) -> str`: 獲取當前版本  Returns:     當前版本字串
+  - `check_for_updates(self) -> Dict[str, any]`: 檢查是否有可用更新  Returns:     包含版本資訊和更新狀態的字典
+  - `_compare_versions(self, current, latest) -> bool`: 比較版本號  Args:     current: 當前版本     latest: 最新版本      Returns:     如果有新版本可用則返回 True
+  - `_get_error_result(self, error_message) -> Dict[str, any]`: 獲取錯誤結果  Args:     error_message: 錯誤訊息      Returns:     錯誤結果字典
+  - `get_current_version(self) -> str`: 獲取當前版本  Returns:     當前版本字串
 
-*   **Parameters:**
-    *   `github_config` (Dict[str, str]): A dictionary containing GitHub configuration, including the `api_url`.
+## Functions
 
-### Methods
+None
 
-#### `async check_for_updates(self) -> Dict[str, any]`
-
-Checks for available updates by querying the GitHub API.
-
-*   **Returns:** A dictionary containing version information and the update status. The dictionary includes keys such as `current_version`, `latest_version`, `update_available`, `release_notes`, and `download_url`.
-
-#### `get_current_version(self) -> str`
-
-Retrieves the current version of the bot.
-
-*   **Returns:** The current version string.
-
-### Example Usage
-
-```python
-import asyncio
-from addons.update.checker import VersionChecker
-
-async def main():
-    # Example GitHub configuration
-    github_config = {
-        "api_url": "https://api.github.com/repos/starpig1129/ai-discord-bot-PigPig/releases/latest"
-    }
-
-    checker = VersionChecker(github_config)
-    update_info = await checker.check_for_updates()
-
-    if update_info.get("update_available"):
-        print(f"New version available: {update_info['latest_version']}")
-        print(f"Release notes: {update_info['release_notes']}")
-    else:
-        print("You are using the latest version.")
-
-if __name__ == "__main__":
-    asyncio.run(main())

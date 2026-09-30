@@ -1,4 +1,12 @@
 # File: `cogs/eat/__init__.py`
 
 ## Overview
-Core logic and functionalities for __init__.py. This file is part of the cogs subsystem and handles the primary operations for its respective domain.
+This file is part of the Discord bot commands and features (cogs) and handles its respective logic within the PigPig bot architecture. It is responsible for the operations defined in `cogs/eat/__init__.py`.
+
+## Classes
+
+None
+
+## Functions
+
+None

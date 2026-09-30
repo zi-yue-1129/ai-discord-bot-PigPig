@@ -1,84 +1,95 @@
-# Knowledge Management Tools
+# File: `llm/tools/knowledge.py`
 
 ## Overview
+Knowledge tools for managing guild and channel level memories.
 
-The `KnowledgeTools` class provides tools for the LLM to manage shared context and cultural facts at the Guild (Server) and Channel levels. Unlike episodic memory (which is raw history), knowledge tools are used to store "distilled" information like inside jokes, relationship statuses, aliases, and channel-specific rules.
+This module provides tools for the LLM to store and update shared information
+like inside jokes, relationships, aliases, and special events.
 
-## Class: KnowledgeTools
+## Classes
 
-### Constructor
+### `UpdateKnowledgeInput`
+Input for updating knowledge.
 
-```python
-def __init__(self, runtime: "OrchestratorRequest"):
-```
+- **Attributes**:
+  - `new_information` (`str`): Attribute new_information
+  - `category` (`str`): Attribute category
 
-**Parameters:**
-- `runtime`: Orchestrator request containing bot, message, and logger.
+- **Methods**:
+  - None
 
-### Methods
+### `UpdateGuildKnowledgeTool`
+Tool to update knowledge shared across the entire server.
 
-#### `get_tools(self) -> list`
+- **Attributes**:
+  - `name` (`str`): Attribute name
+  - `description` (`str`): Attribute description
+  - `args_schema` (`Type[BaseModel]`): Attribute args_schema
+  - `runtime` (`Optional[Any]`): Attribute runtime
 
-**Returns:**
-- `list`: A list containing `update_guild_knowledge` and `update_channel_knowledge`.
+- **Methods**:
+  - `_run(self, new_information, category) -> str`: Synchronous run (not used).
+  - `_arun(self, new_information, category) -> str`: Update guild-level knowledge.
 
-### Tools Reference
+### `UpdateChannelKnowledgeTool`
+Tool to update knowledge specific to the current channel.
 
-#### `update_guild_knowledge(new_information: str, category: str)`
-- **Description**: Records or updates facts, memes, or culture for the ENTIRE SERVER.
-- **Args**:
-  - `new_information`: The new fact or update to record.
-  - `category`: One of `inside_joke`, `relationship`, `alias`, `special_event`, or `general`.
-- **Purpose**: Permanent storage of server-wide context.
+- **Attributes**:
+  - `name` (`str`): Attribute name
+  - `description` (`str`): Attribute description
+  - `args_schema` (`Type[BaseModel]`): Attribute args_schema
+  - `runtime` (`Optional[Any]`): Attribute runtime
 
-#### `update_channel_knowledge(new_information: str, category: str)`
-- **Description**: Records or updates facts or rules for the CURRENT CHANNEL only.
-- **Args**:
-  - `new_information`: The information to record.
-  - `category`: Category of information.
-- **Purpose**: Localized context for specific channels (e.g., "The Spam Corner" rules).
+- **Methods**:
+  - `_run(self, new_information, category) -> str`: Synchronous run (not used).
+  - `_arun(self, new_information, category) -> str`: Update channel-level knowledge.
 
-## Data Flow
+### `ClearKnowledgeInput`
+Input for clearing knowledge.
 
-1. **Discovery**: The agent identifies a new fact (e.g., "User A and User B are now rivals").
-2. **Execution**: The agent calls `update_guild_knowledge`.
-3. **Persistence**: The tool calls `UserDataCog._save_knowledge_data`.
-4. **Integration**: The stored knowledge is injected into the **System Prompt** in future interactions within that guild/channel.
+- **Attributes**:
+  - `dummy` (`Optional[str]`): Attribute dummy
 
-## Implementation Details
+- **Methods**:
+  - None
 
-- **Backend Integration**: Reliant on the `UserDataCog` for database operations.
-- **Context Injection**: Knowledge updated via these tools is automatically prioritized in the LLM's long-term retrieval system.
-- **Validation**: Categories are standardized to ensure consistent categorization in the knowledge base.
-- **Target Mode**: Typically routed to the **Message Agent** (`target_agent_mode = "message"`) as it involves a "write" action.
+### `ClearGuildKnowledgeTool`
+Tool to clear all knowledge shared across the entire server.
 
-## Usage Examples
+- **Attributes**:
+  - `name` (`str`): Attribute name
+  - `description` (`str`): Attribute description
+  - `args_schema` (`Type[BaseModel]`): Attribute args_schema
+  - `runtime` (`Optional[Any]`): Attribute runtime
 
-**Recording a Meme:**
-```python
-# Server-wide meme
-await update_guild_knowledge(
-    new_information="Whenever someone says 'Hello', we all reply with 'o/'",
-    category="inside_joke"
-)
-```
+- **Methods**:
+  - `_run(self, dummy) -> str`: Synchronous run (not used).
+  - `_arun(self, dummy) -> str`: Clear guild-level knowledge.
 
-**Recording an Alias:**
-```python
-# Channel-specific nickname
-await update_channel_knowledge(
-    new_information="User123 is the 'King of Slimes' here",
-    category="alias"
-)
-```
+### `ClearChannelKnowledgeTool`
+Tool to clear knowledge specific to the current channel.
 
-## Performance & Constraints
+- **Attributes**:
+  - `name` (`str`): Attribute name
+  - `description` (`str`): Attribute description
+  - `args_schema` (`Type[BaseModel]`): Attribute args_schema
+  - `runtime` (`Optional[Any]`): Attribute runtime
 
-- **Storage**: Knowledge is stored as structured records in the bot's persistence layer (SQL/NoSQL).
-- **Retrieval**: Unlike vector search, knowledge is usually injected as "Shared Context" into the top of the prompt.
-- **Limits**: Individual knowledge entries should be concise to maintain prompt efficiency.
+- **Methods**:
+  - `_run(self, dummy) -> str`: Synchronous run (not used).
+  - `_arun(self, dummy) -> str`: Clear channel-level knowledge.
 
-## Dependencies
+### `KnowledgeTools`
+Wrapper class for discovering knowledge management tools. Supported by the factory but get_tools() is preferred.
 
-- `cogs.user_data.UserDataCog`: Handle for the underlying persistence system.
-- `langchain_core.tools.BaseTool`: Core tool wrapper.
+- **Attributes**:
+  - `runtime` (`Any`): Instance attribute runtime
+
+- **Methods**:
+  - `get_tools(self) -> list`: Return list of knowledge tools with shared runtime.
+
+## Functions
+
+### `get_tools(runtime) -> list`
+Discovery function for the tools factory.
+

@@ -1,72 +1,72 @@
-# Manager Module
+# File: `addons/update/manager.py`
 
-**File:** [`addons/update/manager.py`](addons/update/manager.py)
+## Overview
+核心更新管理器模組
 
-This is the core module of the update system. The `UpdateManager` class orchestrates the entire update process, integrating all other components of the system, such as the version checker, downloader, and notifier.
+整合所有更新相關功能，提供統一的更新管理介面。
 
-## `UpdateManager` Class
+## Classes
 
-This class provides a unified interface for managing the full update lifecycle.
+### `UpdateStatusTracker`
+更新狀態追蹤器
 
-### `__init__(self, bot)`
+- **Attributes**:
+  - `current_status` (`Any`): Instance attribute current_status
+  - `progress` (`Any`): Instance attribute progress
+  - `current_operation` (`Any`): Instance attribute current_operation
+  - `start_time` (`Any`): Instance attribute start_time
+  - `last_check_time` (`Any`): Instance attribute last_check_time
+  - `error_message` (`Any`): Instance attribute error_message
 
-Initializes the `UpdateManager` and all its components.
+- **Methods**:
+  - `update_status(self, status, progress, operation) -> Any`: 更新狀態
+  - `set_error(self, error_message) -> Any`: 設定錯誤狀態
+  - `reset(self) -> Any`: 重置狀態
 
-*   **Parameters:**
-    *   `bot`: The instance of the Discord bot.
+### `UpdateLogger`
+更新日誌管理器
 
-### Methods
+- **Attributes**:
+  - `log_dir` (`Any`): Instance attribute log_dir
+  - `logger` (`Any`): Instance attribute logger
+  - `log_file` (`Any`): Instance attribute log_file
+  - `current_log` (`Any`): Instance attribute current_log
 
-#### `async check_for_updates(self) -> Dict[str, Any]`
+- **Methods**:
+  - `start_log(self, event_type, trigger_type, user_id) -> Any`: 開始記錄更新事件
+  - `update_log(self, **kwargs) -> Any`: 更新日誌內容
+  - `finish_log(self, status, error_message) -> Any`: 完成日誌記錄
+  - `_write_log(self) -> Any`: 寫入日誌檔案
 
-Checks for available updates.
+### `UpdateManager`
+核心更新管理器
 
-*   **Returns:** A dictionary containing version information. See [`VersionChecker.check_for_updates()`](./checker.md#async-check_for_updates-self---dictstr-any) for details.
+- **Attributes**:
+  - `bot` (`Any`): Instance attribute bot
+  - `logger` (`Any`): Instance attribute logger
+  - `update_settings` (`Any`): Instance attribute update_settings
+  - `config` (`Any`): Instance attribute config
+  - `version_checker` (`Any`): Instance attribute version_checker
+  - `downloader` (`Any`): Instance attribute downloader
+  - `permission_checker` (`Any`): Instance attribute permission_checker
+  - `backup_manager` (`Any`): Instance attribute backup_manager
+  - `config_protector` (`Any`): Instance attribute config_protector
+  - `notifier` (`Any`): Instance attribute notifier
+  - `restart_manager` (`Any`): Instance attribute restart_manager
+  - `status_tracker` (`Any`): Instance attribute status_tracker
+  - `update_logger` (`Any`): Instance attribute update_logger
+  - `_update_lock` (`Any`): Instance attribute _update_lock
 
-#### `async execute_update(self, interaction=None, force: bool = False) -> Dict[str, Any]`
+- **Methods**:
+  - `check_for_updates(self) -> Dict[str, Any]`: 檢查更新
+  - `execute_update(self, interaction, force) -> Dict[str, Any]`: 執行更新流程  Args:     interaction: Discord 互動物件     force: 是否強制更新      Returns:     更新結果字典
+  - `_install_update(self, download_path, version) -> bool`: 安裝更新  Args:     download_path: 下載檔案路徑     version: 版本號      Returns:     安裝是否成功
+  - `_verify_installation(self) -> bool`: 驗證安裝是否成功
+  - `_start_auto_check(self) -> Any`: 啟動自動檢查
+  - `get_status(self) -> Dict[str, Any]`: 獲取更新系統狀態
+  - `post_restart_initialization(self) -> Any`: 重啟後初始化
 
-Executes the full update process. This is a comprehensive workflow that includes:
-1.  Checking for updates.
-2.  Creating a backup (if enabled).
-3.  Downloading the new version.
-4.  Installing the update.
-5.  Cleaning up old backups and downloaded files.
-6.  Notifying the owner of the result.
-7.  Initiating a graceful restart.
+## Functions
 
-*   **Parameters:**
-    *   `interaction` (Optional): The Discord interaction object that triggered the update.
-    *   `force` (bool): If `True`, the update will be attempted even if no new version is detected.
-*   **Returns:** A dictionary containing the results of the update, including a `success` flag and other relevant details.
+None
 
-#### `get_status(self) -> Dict[str, Any]`
-
-Gets the current status of the update system.
-
-*   **Returns:** A dictionary with status information, such as `status`, `progress`, `operation`, and `current_version`.
-
-#### `async post_restart_initialization(self)`
-
-Performs necessary checks and initializations after the bot has restarted. This is typically called once upon bot startup.
-
-## `UpdateStatusTracker` Class
-
-This class tracks the real-time status of the update process.
-
-### Properties
-
-*   `current_status` (str): The current status (e.g., "idle", "checking", "downloading", "error").
-*   `progress` (int): The progress percentage of the current operation.
-*   `current_operation` (str): A description of the current operation.
-*   `error_message` (Optional[str]): An error message if the process has failed.
-
-## `UpdateLogger` Class
-
-This class logs all update events to a file for auditing and debugging purposes.
-
-### `__init__(self, log_dir: str = "data/update_logs")`
-
-Initializes the logger.
-
-*   **Parameters:**
-    *   `log_dir` (str): The directory where update logs are stored.

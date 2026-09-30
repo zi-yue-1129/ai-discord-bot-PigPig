@@ -1,9 +1,13 @@
 # File: `cogs/memory/embedding_providers/openai.py`
 
 ## Overview
-Core logic and functionalities for openai.py. This file is part of the cogs subsystem and handles the primary operations for its respective domain.
+This file is part of the Discord bot commands and features (cogs) and handles its respective logic within the PigPig bot architecture. It is responsible for the operations defined in `cogs/memory/embedding_providers/openai.py`.
+
+## Classes
+
+None
 
 ## Functions
 
-### `openai_provider(settings: MemoryConfig) -> Embeddings`
-OpenAI embedding provider factory. Plays a key role in the system logic.
+### `openai_provider(settings) -> Embeddings`
+OpenAI embedding provider factory.  Expects settings to provide:   - openai_api_key   - openai_model_name  Returns a langchain_core compatible Embeddings instance.

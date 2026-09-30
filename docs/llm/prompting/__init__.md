@@ -1,4 +1,12 @@
 # File: `llm/prompting/__init__.py`
 
 ## Overview
-Core logic and functionalities for __init__.py. This file is part of the llm subsystem and handles the primary operations for its respective domain.
+This file is part of the LLM integration and orchestration pipeline and handles its respective logic within the PigPig bot architecture. It is responsible for the operations defined in `llm/prompting/__init__.py`.
+
+## Classes
+
+None
+
+## Functions
+
+None

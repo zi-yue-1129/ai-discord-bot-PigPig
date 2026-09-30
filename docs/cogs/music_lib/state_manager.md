@@ -1,39 +1,38 @@
-# Music Library - State Manager
+# File: `cogs/music_lib/state_manager.py`
 
-**File:** [`cogs/music_lib/state_manager.py`](cogs/music_lib/state_manager.py)
+## Overview
+This file is part of the Discord bot commands and features (cogs) and handles its respective logic within the PigPig bot architecture. It is responsible for the operations defined in `cogs/music_lib/state_manager.py`.
 
-The `StateManager` is a simple yet crucial component of the music library. Its sole responsibility is to maintain the playback state for each server (guild) where the bot is active.
+## Classes
 
-## `PlayerState` Data Class
+### `PlayerState`
+Class representing PlayerState.
 
-This data class defines the structure for storing the state of a single server's music player. An instance of this class is created for each active guild.
+- **Attributes**:
+  - `current_song` (`Optional[Dict[str, Any]]`): Attribute current_song
+  - `last_played_song` (`Optional[Dict[str, Any]]`): Attribute last_played_song
+  - `current_message` (`Optional[discord.Message]`): Attribute current_message
+  - `current_view` (`Optional[Any]`): Attribute current_view
+  - `ui_messages` (`list`): Attribute ui_messages
+  - `autoplay` (`bool`): Attribute autoplay
+  - `player_loop_task` (`Optional[asyncio.Task]`): Attribute player_loop_task
 
-*   **Attributes:**
-    *   `current_song` (Optional[Dict]): A dictionary containing information about the song that is currently playing.
-    *   `last_played_song` (Optional[Dict]): A dictionary containing information about the last song that finished playing. This is used for the autoplay feature.
-    *   `current_message` (Optional[discord.Message]): The `discord.Message` object that displays the main player UI. This is stored so it can be updated.
-    *   `current_view` (Optional[MusicControlView]): The instance of the interactive view attached to the player message.
-    *   `ui_messages` (List[discord.Message]): A list of all messages sent by the music system (e.g., "Song added," "Queue finished"). This is used for cleanup.
-    *   `autoplay` (bool): A flag indicating whether autoplay is enabled for the server.
+- **Methods**:
+  - None
 
-## `StateManager` Class
+### `StateManager`
+Class representing StateManager.
 
-### `__init__(self)`
+- **Attributes**:
+  - `states` (`Dict[int, PlayerState]`): Instance attribute states
 
-Initializes the manager with an empty dictionary to hold the `PlayerState` for each guild.
+- **Methods**:
+  - `get_state(self, guild_id) -> PlayerState`: Get or create state for a guild.
+  - `update_state(self, guild_id, **kwargs) -> Any`: Update state attributes for a guild.
+  - `cancel_player_loop(self, guild_id) -> Any`: Cancel any running player loop task for a guild.
+  - `clear_state(self, guild_id) -> Any`: Clear state for a guild.
 
-### `get_state(self, guild_id: int) -> PlayerState`
+## Functions
 
-This is the primary method for accessing a server's state.
+None
 
-*   **Behavior:** It retrieves the `PlayerState` for the given `guild_id`. If no state exists for that guild yet, it creates a new, default `PlayerState` object, adds it to the internal dictionary, and then returns it. This ensures that a state object is always available on demand.
-
-### `update_state(self, guild_id: int, **kwargs)`
-
-A convenience method for updating one or more attributes of a guild's `PlayerState`.
-
-*   **Example:** `state_manager.update_state(guild_id, current_song=new_song, autoplay=True)`
-
-### `clear_state(self, guild_id: int)`
-
-Removes the `PlayerState` for a guild from memory. This is typically called when the bot leaves a voice channel or is stopped.

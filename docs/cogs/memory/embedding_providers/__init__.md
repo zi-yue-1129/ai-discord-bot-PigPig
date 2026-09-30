@@ -1,12 +1,20 @@
 # File: `cogs/memory/embedding_providers/__init__.py`
 
 ## Overview
-Core logic and functionalities for __init__.py. This file is part of the cogs subsystem and handles the primary operations for its respective domain.
+This file is part of the Discord bot commands and features (cogs) and handles its respective logic within the PigPig bot architecture. It is responsible for the operations defined in `cogs/memory/embedding_providers/__init__.py`.
+
+## Classes
+
+None
 
 ## Functions
 
-### `list_providers() -> List[str]`
-Return registered embedding provider names. Plays a key role in the system logic.
+### `_import_all_providers() -> None`
+Import all modules in this package so that registration decorators run. Provider modules should call register_embedding_provider when defined.
 
-### `get_provider_factory(name: str) -> Optional[Callable]`
-Return the factory callable for a given provider name, or None if not found. Plays a key role in the system logic.
+### `list_providers() -> List[str]`
+Return registered embedding provider names.
+
+### `get_provider_factory(name) -> Optional[Callable]`
+Return the factory callable for a given provider name, or None if not found.
+

@@ -1,9 +1,13 @@
 # File: `cogs/memory/embedding_providers/google.py`
 
 ## Overview
-Core logic and functionalities for google.py. This file is part of the cogs subsystem and handles the primary operations for its respective domain.
+This file is part of the Discord bot commands and features (cogs) and handles its respective logic within the PigPig bot architecture. It is responsible for the operations defined in `cogs/memory/embedding_providers/google.py`.
+
+## Classes
+
+None
 
 ## Functions
 
-### `google_genai_provider(settings: MemoryConfig) -> Embeddings`
-Google Generative AI embeddings provider using langchain_google_genai. Plays a key role in the system logic.
+### `google_genai_provider(settings) -> Embeddings`
+Google Generative AI embeddings provider using langchain_google_genai.  Expects settings to provide:   - google_api_key   - embedding_model_name  Returns a langchain_core compatible Embeddings instance.

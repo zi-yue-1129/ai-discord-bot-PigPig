@@ -1,35 +1,53 @@
 # File: `cogs/eat/db/tables.py`
 
 ## Overview
-Core logic and functionalities for tables.py. This file is part of the cogs subsystem and handles the primary operations for its respective domain.
+This file is part of the Discord bot commands and features (cogs) and handles its respective logic within the PigPig bot architecture. It is responsible for the operations defined in `cogs/eat/db/tables.py`.
 
 ## Classes
 
 ### `UserPref`
-Represents UserPref.
+Class representing UserPref.
+
+- **Attributes**:
+  - `__tablename__` (`Any`): Attribute __tablename__
+  - `id` (`Any`): Attribute id
+  - `discord_id` (`Any`): Attribute discord_id
+  - `model_uri` (`Any`): Attribute model_uri
+  - `last_update` (`Any`): Attribute last_update
+
+- **Methods**:
+  - None
 
 ### `SearchRecord`
-Represents SearchRecord.
+Class representing SearchRecord.
 
 - **Attributes**:
-  - `discord_id` (`Any`): Instance attribute.
-  - `keyword` (`Any`): Instance attribute.
-  - `title` (`Any`): Instance attribute.
-  - `tag` (`Any`): Instance attribute.
-  - `address` (`Any`): Instance attribute.
-  - `map_rate` (`Any`): Instance attribute.
-  - `self_rate` (`Any`): Instance attribute.
-  - `date` (`Any`): Instance attribute.
+  - `__tablename__` (`Any`): Attribute __tablename__
+  - `id` (`Any`): Attribute id
+  - `date` (`Any`): Attribute date
+  - `discord_id` (`Any`): Attribute discord_id
+  - `title` (`Any`): Attribute title
+  - `tag` (`Any`): Attribute tag
+  - `address` (`Any`): Attribute address
+  - `keyword` (`Any`): Attribute keyword
+  - `map_rate` (`Any`): Attribute map_rate
+  - `self_rate` (`Any`): Attribute self_rate
 
 - **Methods**:
-  - `__init__(discord_id: str, title: str, keyword: str, tag: str, address: str, map_rate: str, self_rate: float) -> Any`: Executes __init__ operation.
+  - None
 
 ### `Keywords`
-Represents Keywords.
+Class representing Keywords.
 
 - **Attributes**:
-  - `keyword` (`Any`): Instance attribute.
-  - `add_date` (`Any`): Instance attribute.
+  - `__tablename__` (`Any`): Attribute __tablename__
+  - `id` (`Any`): Attribute id
+  - `keyword` (`Any`): Attribute keyword
+  - `add_date` (`Any`): Attribute add_date
 
 - **Methods**:
-  - `__init__(keyword: String) -> Any`: Executes __init__ operation.
+  - None
+
+## Functions
+
+None

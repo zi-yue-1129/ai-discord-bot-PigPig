@@ -1,24 +1,27 @@
 # File: `cogs/eat/db/db.py`
 
 ## Overview
-Core logic and functionalities for db.py. This file is part of the cogs subsystem and handles the primary operations for its respective domain.
+This file is part of the Discord bot commands and features (cogs) and handles its respective logic within the PigPig bot architecture. It is responsible for the operations defined in `cogs/eat/db/db.py`.
 
 ## Classes
 
 ### `DB`
-Represents DB.
+Class representing DB.
 
 - **Attributes**:
-  - `engine` (`Any`): Instance attribute.
+  - `engine` (`Any`): Instance attribute engine
 
 - **Methods**:
-  - `__init__() -> None`: Executes __init__ operation.
-  - `getKeywords() -> list`: Executes getKeywords operation.
-  - `checkKeyword(keyword: String) -> Any`: Executes checkKeyword operation.
-  - `storeKeyword(keyword: str) -> None`: Executes storeKeyword operation.
-  - `storeSearchRecord(discord_id: str, title: str, keyword: str, map_rate: str, tag: str, map_address: str) -> int`: Executes storeSearchRecord operation.
-  - `getSearchRecoreds(discord_id: str) -> list`: Executes getSearchRecoreds operation.
-  - `updateRecordRate(id: int, new_rate: float) -> bool`: Executes updateRecordRate operation.
-  - `getRecentRecords(discord_id: str, days: int) -> list`: 取得最近 N 天內的搜尋記錄，用於避免重複推薦
-  - `getLikedRecords(discord_id: str) -> list`: 取得 self_rate >= 1 的記錄（用戶喜歡的）
-  - `getDislikedRecords(discord_id: str) -> list`: 取得 self_rate <= -1 的記錄（用戶不喜歡的）
+  - `getKeywords(self) -> list`: Method getKeywords.
+  - `checkKeyword(self, keyword) -> Any`: Method checkKeyword.
+  - `storeKeyword(self, keyword) -> None`: Method storeKeyword.
+  - `storeSearchRecord(self, discord_id, title, keyword, map_rate, tag, map_address) -> int`: Method storeSearchRecord.
+  - `getSearchRecoreds(self, discord_id) -> list`: Method getSearchRecoreds.
+  - `updateRecordRate(self, id, new_rate) -> bool`: Method updateRecordRate.
+  - `getRecentRecords(self, discord_id, days) -> list`: 取得最近 N 天內的搜尋記錄，用於避免重複推薦
+  - `getLikedRecords(self, discord_id) -> list`: 取得 self_rate >= 1 的記錄（用戶喜歡的）
+  - `getDislikedRecords(self, discord_id) -> list`: 取得 self_rate <= -1 的記錄（用戶不喜歡的）
+
+## Functions
+
+None

@@ -1,19 +1,22 @@
 # File: `cogs/eat/train/data_loader.py`
 
 ## Overview
-Core logic and functionalities for data_loader.py. This file is part of the cogs subsystem and handles the primary operations for its respective domain.
+This file is part of the Discord bot commands and features (cogs) and handles its respective logic within the PigPig bot architecture. It is responsible for the operations defined in `cogs/eat/train/data_loader.py`.
 
 ## Classes
 
 ### `DataLoader`
-Represents DataLoader.
+Class representing DataLoader.
 
 - **Attributes**:
-  - `db` (`Any`): Instance attribute.
+  - `db` (`Any`): Instance attribute db
 
 - **Methods**:
-  - `__init__(db: DB) -> None`: Executes __init__ operation.
-  - `loadingData(discord_id: str) -> Any`: Executes loadingData operation.
-  - `procressData(data: Any) -> Any`: Executes procressData operation.
-  - `genVocabularyList(data: Any) -> Any`: Executes genVocabularyList operation.
-  - `transform(data: Any, voc_length: Any, batch_size: Any) -> Any`: Executes transform operation.
+  - `loadingData(self, discord_id) -> Any`: Method loadingData.
+  - `procressData(self, data) -> Any`: Method procressData.
+  - `genVocabularyList(self, data) -> Any`: Method genVocabularyList.
+  - `transform(self, data, voc_length, batch_size) -> Any`: Method transform.
+
+## Functions
+
+None
