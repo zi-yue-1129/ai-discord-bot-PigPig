@@ -70,6 +70,30 @@ class EpisodicMemoryProvider:
             if event:
                 event.set()
 
+    async def delete_user(self, user_id: str) -> None:
+        """Delete all semantic memory vectors associated with a specific user and clear cache.
+
+        Args:
+            user_id: The Discord user ID string.
+        """
+        bot = getattr(self, "bot", None)
+        vector_manager = getattr(bot, "vector_manager", None)
+        if vector_manager and hasattr(vector_manager, "store"):
+            try:
+                if hasattr(vector_manager.store, "delete_vectors_by_user"):
+                    await vector_manager.store.delete_vectors_by_user(user_id)
+            except Exception as e:
+                _LOGGER.error("EpisodicMemoryProvider.delete_user: vector deletion failed", exception=e)
+
+        # Since user vectors could be present in any channel's context, invalidate the entire cache
+        # to ensure GDPR/privacy guarantees are strictly met.
+        self._cache.clear()
+
+        # Unblock all pending queries
+        for event in self._pending_queries.values():
+            event.set()
+        self._pending_queries.clear()
+
     async def get(self, message: discord.Message) -> Optional[str]:
         """Return formatted episodic context string, or None if nothing relevant.
 

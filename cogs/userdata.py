@@ -1034,19 +1034,21 @@ class UserDataCog(commands.Cog):
 
             success = await self.user_manager.delete_user_data(user_id)
             if success:
-                # Invalidate ProceduralMemoryProvider cache
+                # Invalidate ProceduralMemoryProvider cache and delete Episodic vectors
                 try:
                     orchestrator = getattr(self.bot, "orchestrator", None)
                     if orchestrator:
-                        provider = getattr(
-                            getattr(orchestrator, "context_manager", None),
-                            "procedural_provider",
-                            None,
-                        )
-                        if provider and hasattr(provider, "invalidate"):
-                            await provider.invalidate(str(user_id))
+                        context_manager = getattr(orchestrator, "context_manager", None)
+                        if context_manager:
+                            provider = getattr(context_manager, "procedural_provider", None)
+                            if provider and hasattr(provider, "invalidate"):
+                                await provider.invalidate(str(user_id))
+
+                            episodic_provider = getattr(context_manager, "episodic_provider", None)
+                            if episodic_provider and hasattr(episodic_provider, "delete_user"):
+                                await episodic_provider.delete_user(str(user_id))
                 except Exception as cache_err:
-                    self.logger.warning(f"Failed to invalidate procedural cache for {user_id}: {cache_err}")
+                    self.logger.warning(f"Failed to clear cache/vectors for {user_id}: {cache_err}")
 
 
                 return self._translate(
