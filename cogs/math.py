@@ -171,8 +171,17 @@ class MathCalculatorCog(commands.Cog):
                 ) if self.lang_manager else "Error: Expression too long."
                 return error_message
 
+
             # Use extracted expression
             expression = extracted
+
+            # Strict security validation before parsing
+            allowed_chars_pattern = re.compile(rf'^({tokens_pattern}|[0-9]+(?:\.[0-9]+)?|[()+\-*/,\s])+$', re.IGNORECASE)
+            if not allowed_chars_pattern.match(expression):
+                error_message = self.lang_manager.translate(
+                    guild_id, "commands", "math", "responses", "error_unsupported_elements"
+                ) if self.lang_manager else "Error: Expression contains unsupported elements."
+                return error_message
 
             # Safely parse expression
             sympy_expr = parse_expr(
