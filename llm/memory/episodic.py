@@ -56,6 +56,9 @@ class EpisodicMemoryProvider:
     async def invalidate(self, channel_id: str) -> None:
         """Invalidate all cached episodic queries for a specific channel.
 
+        In-flight results are also discarded. Their callers receive None, while
+        waiting callers may start a fresh search after invalidation.
+
         Args:
             channel_id: The Discord channel ID.
         """
@@ -126,6 +129,12 @@ class EpisodicMemoryProvider:
                 await func.report_error(e, "EpisodicMemoryProvider.get: vector search failed")
                 return None
 
+            # The event is this search's ownership token. Invalidation removes
+            # it, and a newer search may already own the same key. Never return
+            # or cache a result from the invalidated generation.
+            if self._pending_queries.get(cache_key) is not event:
+                return None
+
             if not fragments:
                 formatted_result = None
             else:
@@ -182,6 +191,8 @@ class EpisodicMemoryProvider:
             return formatted_result
         finally:
             # Always ensure the event is cleaned up and waiting tasks are notified
-            self._pending_queries.pop(cache_key, None)
+            # without removing a replacement search after invalidation, including
+            # when this search fails or is cancelled.
+            if self._pending_queries.get(cache_key) is event:
+                self._pending_queries.pop(cache_key, None)
             event.set()
-
