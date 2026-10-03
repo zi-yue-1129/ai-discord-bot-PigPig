@@ -174,14 +174,12 @@ class MathCalculatorCog(commands.Cog):
             # Use extracted expression
             expression = extracted
 
-            # Safely parse expression
-            sympy_expr = parse_expr(
-                expression,
-                transformations=transformations,
-                evaluate=True,
-                local_dict=local_dict,
-                global_dict={'__builtins__': {}},  # Disable global_dict for safety
-            )
+            # Prevent mathematical DoS from explosive exponentiation
+            if expression.count('**') > 2 or re.search(r'\*\*\s*[0-9]{5,}', expression):
+                error_message = self.lang_manager.translate(
+                    guild_id, "commands", "math", "responses", "error_too_long"
+                ) if self.lang_manager else "Error: Expression too complex."
+                return error_message
 
             # Define helper functions to process Python tuples/lists recursively
             def check_has(expr: Any, *args: Any) -> bool:
@@ -198,24 +196,52 @@ class MathCalculatorCog(commands.Cog):
                     return type(expr)(eval_numerical(item, prec) for item in expr)
                 return sympy.N(expr, prec)
 
-            # Check for undefined functions
-            from sympy.core.function import UndefinedFunction
-            if check_has(sympy_expr, UndefinedFunction):
-                error_message = self.lang_manager.translate(
-                    guild_id, "commands", "math", "responses", "error_undefined_function"
-                ) if self.lang_manager else "Error: Expression contains undefined functions."
-                return error_message
+            def _parse_and_eval():
+                # Safely parse expression
+                parsed_expr = parse_expr(
+                    expression,
+                    transformations=transformations,
+                    evaluate=True,
+                    local_dict=local_dict,
+                    global_dict={'__builtins__': {}},  # Disable global_dict for safety
+                )
 
-            # Check for unsupported elements
-            unsafe_types = (sympy.Symbol, sympy.Function)
-            if check_has(sympy_expr, *unsafe_types):
-                error_message = self.lang_manager.translate(
-                    guild_id, "commands", "math", "responses", "error_unsupported_elements"
-                ) if self.lang_manager else "Error: Expression contains unsupported elements."
-                return error_message
+                # Check for undefined functions
+                from sympy.core.function import UndefinedFunction
+                if check_has(parsed_expr, UndefinedFunction):
+                    raise ValueError("undefined_function")
 
-            # Calculate result with 15 digits of precision
-            result = eval_numerical(sympy_expr, 15)
+                # Check for unsupported elements
+                unsafe_types = (sympy.Symbol, sympy.Function)
+                if check_has(parsed_expr, *unsafe_types):
+                    raise ValueError("unsupported_elements")
+
+                # Calculate result with 15 digits of precision
+                return eval_numerical(parsed_expr, 15)
+
+            try:
+                loop = asyncio.get_running_loop()
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(None, _parse_and_eval),
+                    timeout=2.0
+                )
+            except asyncio.TimeoutError:
+                error_message = self.lang_manager.translate(
+                    guild_id, "commands", "math", "responses", "error_general"
+                ) if self.lang_manager else "Calculation error: The expression took too long to evaluate."
+                return error_message
+            except ValueError as ve:
+                if str(ve) == "undefined_function":
+                    error_message = self.lang_manager.translate(
+                        guild_id, "commands", "math", "responses", "error_undefined_function"
+                    ) if self.lang_manager else "Error: Expression contains undefined functions."
+                    return error_message
+                elif str(ve) == "unsupported_elements":
+                    error_message = self.lang_manager.translate(
+                        guild_id, "commands", "math", "responses", "error_unsupported_elements"
+                    ) if self.lang_manager else "Error: Expression contains unsupported elements."
+                    return error_message
+                raise
 
             # Format result string
             result_str = str(result)
