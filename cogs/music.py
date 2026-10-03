@@ -63,10 +63,7 @@ class YTMusic(commands.Cog):
 
         title = self.lang_manager.translate(str(guild_id), "commands", "mode", "responses", "success", mode=mode_name)
         embed = discord.Embed(title=f"✅ | {title}", color=discord.Color.blue())
-        await interaction.response.send_message(embed=embed)
-        message = await interaction.original_response()
-        state = self.state_manager.get_state(interaction.guild.id)
-        state.ui_messages.append(message)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="shuffle", description="切換隨機播放")
     async def shuffle(self, interaction: discord.Interaction):
@@ -83,10 +80,7 @@ class YTMusic(commands.Cog):
         status = self.lang_manager.translate(str(guild_id), "commands", "shuffle", "responses", status_key)
         title = self.lang_manager.translate(str(guild_id), "commands", "shuffle", "responses", "success", status=status)
         embed = discord.Embed(title=f"✅ | {title}", color=discord.Color.blue())
-        await interaction.response.send_message(embed=embed)
-        message = await interaction.original_response()
-        state = self.state_manager.get_state(interaction.guild.id)
-        state.ui_messages.append(message)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
     @app_commands.command(name="play", description="播放影片(網址或關鍵字) 或 刷新UI")
