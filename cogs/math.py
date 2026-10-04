@@ -174,48 +174,67 @@ class MathCalculatorCog(commands.Cog):
             # Use extracted expression
             expression = extracted
 
-            # Safely parse expression
-            sympy_expr = parse_expr(
-                expression,
-                transformations=transformations,
-                evaluate=True,
-                local_dict=local_dict,
-                global_dict={'__builtins__': {}},  # Disable global_dict for safety
-            )
-
-            # Define helper functions to process Python tuples/lists recursively
-            def check_has(expr: Any, *args: Any) -> bool:
-                """Recursively check if a SymPy expression or container of expressions contains targets."""
-                if isinstance(expr, (list, tuple, set)):
-                    return any(check_has(item, *args) for item in expr)
-                if hasattr(expr, 'has'):
-                    return bool(expr.has(*args))
-                return False
-
-            def eval_numerical(expr: Any, prec: int) -> Any:
-                """Recursively evaluate a SymPy expression or container of expressions numerically."""
-                if isinstance(expr, (list, tuple, set)):
-                    return type(expr)(eval_numerical(item, prec) for item in expr)
-                return sympy.N(expr, prec)
-
-            # Check for undefined functions
-            from sympy.core.function import UndefinedFunction
-            if check_has(sympy_expr, UndefinedFunction):
+            if expression.count('**') > 2:
                 error_message = self.lang_manager.translate(
-                    guild_id, "commands", "math", "responses", "error_undefined_function"
-                ) if self.lang_manager else "Error: Expression contains undefined functions."
+                    guild_id, "commands", "math", "responses", "error_general"
+                ) if self.lang_manager else "Error: Expression contains too many exponentiations."
                 return error_message
 
-            # Check for unsupported elements
-            unsafe_types = (sympy.Symbol, sympy.Function)
-            if check_has(sympy_expr, *unsafe_types):
+            def _sync_eval():
+                # Safely parse expression
+                sympy_expr = parse_expr(
+                    expression,
+                    transformations=transformations,
+                    evaluate=True,
+                    local_dict=local_dict,
+                    global_dict={'__builtins__': {}},  # Disable global_dict for safety
+                )
+
+                # Define helper functions to process Python tuples/lists recursively
+                def check_has(expr: Any, *args: Any) -> bool:
+                    """Recursively check if a SymPy expression or container of expressions contains targets."""
+                    if isinstance(expr, (list, tuple, set)):
+                        return any(check_has(item, *args) for item in expr)
+                    if hasattr(expr, 'has'):
+                        return bool(expr.has(*args))
+                    return False
+
+                def eval_numerical(expr: Any, prec: int) -> Any:
+                    """Recursively evaluate a SymPy expression or container of expressions numerically."""
+                    if isinstance(expr, (list, tuple, set)):
+                        return type(expr)(eval_numerical(item, prec) for item in expr)
+                    return sympy.N(expr, prec)
+
+                # Check for undefined functions
+                from sympy.core.function import UndefinedFunction
+                if check_has(sympy_expr, UndefinedFunction):
+                    return "error_undefined_function", None
+
+                # Check for unsupported elements
+                unsafe_types = (sympy.Symbol, sympy.Function)
+                if check_has(sympy_expr, *unsafe_types):
+                    return "error_unsupported_elements", None
+
+                # Calculate result with 15 digits of precision
+                return None, eval_numerical(sympy_expr, 15)
+
+            try:
+                loop = asyncio.get_running_loop()
+                err_key, result = await asyncio.wait_for(
+                    loop.run_in_executor(None, _sync_eval),
+                    timeout=2.0
+                )
+            except asyncio.TimeoutError:
                 error_message = self.lang_manager.translate(
-                    guild_id, "commands", "math", "responses", "error_unsupported_elements"
-                ) if self.lang_manager else "Error: Expression contains unsupported elements."
+                    guild_id, "commands", "math", "responses", "error_general"
+                ) if self.lang_manager else "Error: Calculation timed out."
                 return error_message
 
-            # Calculate result with 15 digits of precision
-            result = eval_numerical(sympy_expr, 15)
+            if err_key:
+                error_message = self.lang_manager.translate(
+                    guild_id, "commands", "math", "responses", err_key
+                ) if self.lang_manager else f"Error: Expression contains unsupported elements."
+                return error_message
 
             # Format result string
             result_str = str(result)
