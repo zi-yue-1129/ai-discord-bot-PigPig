@@ -268,8 +268,9 @@ class EventSummarizationService:
             
             # Process each group into event summaries
             event_summaries = []
-            for message_group in grouped_messages:
-                summary_list = await self._process_message_group(message_group, previous_summary)
+            tasks = [self._process_message_group(mg, previous_summary) for mg in grouped_messages]
+            results = await asyncio.gather(*tasks)
+            for summary_list in results:
                 if summary_list:
                     event_summaries.extend(summary_list)
             
@@ -323,9 +324,11 @@ class EventSummarizationService:
             if not llm_response:
                 log.warning("No LLM response received for message group")
                 return None
-            for fragment in llm_response.fragments:
-                # Create EventSummary from LLM response and message metadata
-                event_summary = await self._create_event_summary(messages, fragment)
+
+            tasks = [self._create_event_summary(messages, fragment) for fragment in llm_response.fragments]
+            results = await asyncio.gather(*tasks)
+
+            for event_summary in results:
                 if event_summary:
                     memory_list.append(event_summary)
 
