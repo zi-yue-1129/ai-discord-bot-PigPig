@@ -266,10 +266,18 @@ class EventSummarizationService:
             # Group messages into events (initial implementation treats all as single event)
             grouped_messages = await self._group_messages(messages)
             
-            # Process each group into event summaries
+            # Process each group into event summaries concurrently with a semaphore
+            semaphore = asyncio.Semaphore(5)
+
+            async def bounded_process(group):
+                async with semaphore:
+                    return await self._process_message_group(group, previous_summary)
+
+            tasks = [bounded_process(message_group) for message_group in grouped_messages]
+            results = await asyncio.gather(*tasks)
+
             event_summaries = []
-            for message_group in grouped_messages:
-                summary_list = await self._process_message_group(message_group, previous_summary)
+            for summary_list in results:
                 if summary_list:
                     event_summaries.extend(summary_list)
             
