@@ -1,0 +1,11 @@
+**What was found:**
+The `ProceduralStorage.get_users_info` method, which is called during short-term memory caching and message orchestration, performed synchronous SQLite database operations (`conn.execute` and `cursor.fetchall()`) directly inside an asynchronous function.
+
+**Where it is:**
+`cogs/memory/db/procedural_storage.py`, around lines 87-154.
+
+**Why it matters:**
+Synchronous database calls in async functions block the main asyncio event loop. In a Discord bot receiving concurrent messages, blocking the loop for I/O causes severe N+1 latency bottlenecks, delaying responses for all users and causing potential timeouts or skipped heartbeats.
+
+**What was done:**
+I extracted the synchronous SQL queries and iteration logic into a new internal method `_get_users_info_sync`. I then modified the `get_users_info` method to execute this synchronous method via `await asyncio.to_thread()`, properly offloading the blocking I/O to a background thread and freeing the event loop.
