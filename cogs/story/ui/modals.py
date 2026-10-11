@@ -114,7 +114,7 @@ class WorldCreateModal(discord.ui.Modal):
             
         except Exception as e:
             self.logger.error(f"創建世界時發生錯誤: {e}", exc_info=True)
-            await func.report_error(self.story_manager.bot, e)
+            await func.report_error(e)
             await interaction.followup.send(
                 "❌ 創建世界時發生錯誤，請稍後再試。",
                 ephemeral=True
@@ -123,7 +123,7 @@ class WorldCreateModal(discord.ui.Modal):
     async def on_error(self, interaction: discord.Interaction, error: Exception):
         """處理 Modal 錯誤"""
         self.logger.error(f"WorldCreateModal 錯誤: {error}", exc_info=True)
-        await func.report_error(self.story_manager.bot, error)
+        await func.report_error(error)
         try:
             if not interaction.response.is_done():
                 await interaction.response.send_message(
@@ -235,7 +235,7 @@ class CharacterCreateModal(discord.ui.Modal):
             
         except Exception as e:
             self.logger.error(f"創建角色時發生錯誤: {e}", exc_info=True)
-            await func.report_error(self.story_manager.bot, e)
+            await func.report_error(e)
             await interaction.followup.send(
                 "❌ 創建角色時發生錯誤，請稍後再試。",
                 ephemeral=True
@@ -244,7 +244,7 @@ class CharacterCreateModal(discord.ui.Modal):
     async def on_error(self, interaction: discord.Interaction, error: Exception):
         """處理 Modal 錯誤"""
         self.logger.error(f"CharacterCreateModal 錯誤: {error}", exc_info=True)
-        await func.report_error(self.story_manager.bot, error)
+        await func.report_error(error)
         try:
             if not interaction.response.is_done():
                 await interaction.response.send_message(
@@ -355,7 +355,7 @@ class StoryStartModal(discord.ui.Modal):
 
         except Exception as e:
             self.logger.error(f"[DEBUG] 準備 NPC 選擇時發生錯誤: {e}", exc_info=True)
-            await func.report_error(self.bot, e)
+            await func.report_error(e)
             try:
                 await interaction.followup.send(
                     "❌ 準備 NPC 選擇介面時發生錯誤，請稍後再試。",
@@ -367,7 +367,7 @@ class StoryStartModal(discord.ui.Modal):
     async def on_error(self, interaction: discord.Interaction, error: Exception):
         """處理 Modal 錯誤"""
         self.logger.error(f"StoryStartModal 錯誤: {error}", exc_info=True)
-        await func.report_error(self.bot, error)
+        await func.report_error(error)
         if not interaction.response.is_done():
             await interaction.response.send_message("❌ 處理請求時發生錯誤", ephemeral=True)
 
@@ -407,7 +407,7 @@ class InterventionModal(discord.ui.Modal):
 
         except Exception as e:
             self.logger.error(f"Error submitting intervention for channel {interaction.channel_id}: {e}", exc_info=True)
-            await func.report_error(self.manager.bot, e)
+            await func.report_error(e)
             await interaction.followup.send(
                 "❌ 發送干預指令時發生錯誤，請稍後再試。",
                 ephemeral=True
@@ -416,6 +416,6 @@ class InterventionModal(discord.ui.Modal):
     async def on_error(self, interaction: discord.Interaction, error: Exception):
         """Handles errors in the modal."""
         self.logger.error(f"InterventionModal error: {error}", exc_info=True)
-        await func.report_error(self.manager.bot, error)
+        await func.report_error(error)
         if not interaction.response.is_done():
             await interaction.response.send_message("❌ 處理請求時發生錯誤。", ephemeral=True)

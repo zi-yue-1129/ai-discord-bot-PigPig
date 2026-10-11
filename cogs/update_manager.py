@@ -53,7 +53,7 @@ class UpdateManagerCog(commands.Cog):
             self.logger.info("更新管理 Cog 載入完成")
         except Exception as e:
             self.logger.error(f"Cog 載入時發生錯誤: {e}")
-            await func.report_error(self.bot, e, f"UpdateManagerCog Cog 載入時發生錯誤")
+            await func.report_error(e, f"UpdateManagerCog Cog 載入時發生錯誤")
     
     def _get_translation(self, guild_id: str, *keys, **kwargs) -> str:
         """取得翻譯文字的安全方法"""
@@ -128,7 +128,7 @@ class UpdateManagerCog(commands.Cog):
                 
                 # 只有擁有者才顯示更新按鈕
                 if self.permission_checker.check_update_permission(interaction.user.id):
-                    view = UpdateActionView(self.update_manager, guild_id, self._get_translation)
+                    view = UpdateActionView(self.update_manager, guild_id, self._get_translation, is_owner=self.permission_checker.check_update_permission)
                     await interaction.edit_original_response(embed=embed, view=view)
                 else:
                     await interaction.edit_original_response(embed=embed)
@@ -144,7 +144,7 @@ class UpdateManagerCog(commands.Cog):
                 
         except Exception as e:
             self.logger.error(f"檢查更新時發生錯誤: {e}")
-            await func.report_error(self.bot, e, f"檢查更新時發生錯誤")
+            await func.report_error(e, f"檢查更新時發生錯誤")
             error_title = self._get_translation(guild_id, "commands", "update_manager", "commands", "check_update", "error", "title")
             error_desc = self._get_translation(guild_id, "commands", "update_manager", "commands", "check_update", "error", "description")
             embed = discord.Embed(
@@ -205,7 +205,7 @@ class UpdateManagerCog(commands.Cog):
                     return
                 
                 # 創建確認視圖
-                view = UpdateConfirmView(self.update_manager, check_result, guild_id, self._get_translation)
+                view = UpdateConfirmView(self.update_manager, check_result, guild_id, self._get_translation, is_owner=self.permission_checker.check_update_permission)
                 confirm_title = self._get_translation(guild_id, "commands", "update_manager", "commands", "update_now", "confirm", "title")
                 confirm_desc = self._get_translation(
                     guild_id, "commands", "update_now", "confirm", "description",
@@ -223,7 +223,7 @@ class UpdateManagerCog(commands.Cog):
                 
             else:
                 # 強制更新確認
-                view = UpdateConfirmView(self.update_manager, None, guild_id, self._get_translation, force=True)
+                view = UpdateConfirmView(self.update_manager, None, guild_id, self._get_translation, force=True, is_owner=self.permission_checker.check_update_permission)
                 force_title = self._get_translation(guild_id, "commands", "update_manager", "commands", "update_now", "force_confirm", "title")
                 force_desc = self._get_translation(guild_id, "commands", "update_manager", "commands", "update_now", "force_confirm", "description")
                 embed = discord.Embed(
@@ -239,7 +239,7 @@ class UpdateManagerCog(commands.Cog):
             
         except Exception as e:
             self.logger.error(f"準備更新時發生錯誤: {e}")
-            await func.report_error(self.bot, e, f"準備更新時發生錯誤")
+            await func.report_error(e, f"準備更新時發生錯誤")
             error_title = self._get_translation(guild_id, "commands", "update_manager", "commands", "update_now", "error", "title")
             error_desc = self._get_translation(guild_id, "commands", "update_manager", "commands", "update_now", "error", "description")
             embed = discord.Embed(
@@ -271,7 +271,7 @@ class UpdateManagerCog(commands.Cog):
             
         except Exception as e:
             self.logger.error(f"獲取更新狀態時發生錯誤: {e}")
-            await func.report_error(self.bot, e, f"獲取更新狀態時發生錯誤")
+            await func.report_error(e, f"獲取更新狀態時發生錯誤")
             error_title = self._get_translation(guild_id, "commands", "update_manager", "commands", "update_status", "error", "title")
             error_desc = self._get_translation(guild_id, "commands", "update_manager", "commands", "update_status", "error", "description")
             embed = discord.Embed(
@@ -401,20 +401,40 @@ class UpdateManagerCog(commands.Cog):
         return embed
 
 
-class UpdateActionView(discord.ui.View):
-    """更新操作視圖"""
-    
-    def __init__(self, update_manager, guild_id: str, get_translation_func):
-        super().__init__(timeout=300)
-        self.update_manager = update_manager
+class _OwnerOnlyView(discord.ui.View):
+    """A view whose buttons only the bot owner may press.
+
+    Update messages are visible to the whole channel, so the buttons must not trust
+    whoever happens to click them.
+    """
+
+    def __init__(self, *, guild_id: str, get_translation_func, is_owner, timeout: float = 300) -> None:
+        super().__init__(timeout=timeout)
         self.guild_id = guild_id
         self.get_translation = get_translation_func
+        self._is_owner = is_owner
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Rejects everyone but the bot owner and tells them why, privately."""
+        if self._is_owner(interaction.user.id):
+            return True
+        denied = self.get_translation(self.guild_id, "commands", "update_manager", "permissions", "owner_only_update")
+        await interaction.response.send_message(denied, ephemeral=True)
+        return False
+
+
+class UpdateActionView(_OwnerOnlyView):
+    """更新操作視圖"""
+    
+    def __init__(self, update_manager, guild_id: str, get_translation_func, *, is_owner):
+        super().__init__(guild_id=guild_id, get_translation_func=get_translation_func, is_owner=is_owner)
+        self.update_manager = update_manager
     
     @discord.ui.button(label="Update Now", style=discord.ButtonStyle.success, emoji="🚀")
     async def update_now(self, interaction: discord.Interaction, button: discord.ui.Button):
         """立即更新按鈕"""
         # 創建確認視圖
-        view = UpdateConfirmView(self.update_manager, None, self.guild_id, self.get_translation)
+        view = UpdateConfirmView(self.update_manager, None, self.guild_id, self.get_translation, is_owner=self._is_owner)
         confirm_title = self.get_translation(self.guild_id, "commands", "update_manager", "views", "update_action", "confirm", "title")
         confirm_desc = self.get_translation(self.guild_id, "commands", "update_manager", "views", "update_action", "confirm", "description")
         embed = discord.Embed(
@@ -441,15 +461,13 @@ class UpdateActionView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=None)
 
 
-class UpdateConfirmView(discord.ui.View):
+class UpdateConfirmView(_OwnerOnlyView):
     """更新確認視圖"""
     
-    def __init__(self, update_manager, version_info=None, guild_id: str = None, get_translation_func=None, force=False):
-        super().__init__(timeout=300)
+    def __init__(self, update_manager, version_info=None, guild_id: str = None, get_translation_func=None, force=False, *, is_owner):
+        super().__init__(guild_id=guild_id, get_translation_func=get_translation_func, is_owner=is_owner)
         self.update_manager = update_manager
         self.version_info = version_info
-        self.guild_id = guild_id
-        self.get_translation = get_translation_func
         self.force = force
     
     @discord.ui.button(label="Confirm Update", style=discord.ButtonStyle.danger, emoji="✅")
@@ -509,7 +527,7 @@ class UpdateConfirmView(discord.ui.View):
                 
         except Exception as e:
             # 處理未預期的錯誤
-            await func.report_error(self.update_manager.bot, e, f"執行更新時發生嚴重錯誤")
+            await func.report_error(e, f"執行更新時發生嚴重錯誤")
             error_title = self.get_translation(self.guild_id, "commands", "update_manager", "views", "update_confirm", "failed", "title")
             error_desc = self.get_translation(self.guild_id, "commands", "update_manager", "views", "update_confirm", "failed", "description", error="執行更新時發生嚴重錯誤，已回報給開發者。")
             embed = discord.Embed(

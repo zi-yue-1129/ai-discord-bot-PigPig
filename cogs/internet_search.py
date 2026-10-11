@@ -51,6 +51,10 @@ from llm.utils.send_message import safe_edit_message
 from function import func
 from addons.logging import get_logger
 
+# Network calls that have no timeout of their own are bounded here.
+YOUTUBE_SEARCH_TIMEOUT_SECONDS = 15
+GEMINI_TIMEOUT_SECONDS = 60
+
 def install_driver():
     """Install Chrome driver using ChromeDriverManager."""
     return ChromeDriverManager().install()
@@ -276,7 +280,7 @@ class InternetSearchCog(commands.Cog):
                     config=config
                 )
 
-            response = await asyncio.to_thread(call_gemini)
+            response = await asyncio.wait_for(asyncio.to_thread(call_gemini), timeout=GEMINI_TIMEOUT_SECONDS)
 
             if not response:
                 raise RuntimeError("Failed to extract text from Gemini grounding response")
@@ -397,7 +401,10 @@ class InternetSearchCog(commands.Cog):
             guild_id = str(ctx.guild.id)
 
         try:
-            results = YoutubeSearch(query, max_results=5).to_dict()
+            results = await asyncio.wait_for(
+                asyncio.to_thread(lambda: YoutubeSearch(query, max_results=5).to_dict()),
+                timeout=YOUTUBE_SEARCH_TIMEOUT_SECONDS,
+            )
             if not results:
                 return self.lang_manager.translate(
                     guild_id, "commands", "internet_search", "responses", "no_videos_found"

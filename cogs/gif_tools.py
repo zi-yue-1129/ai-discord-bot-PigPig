@@ -20,6 +20,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import asyncio
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -34,6 +35,8 @@ from function import func
 
 # Module-level logger
 log = get_logger(server_id="Bot", source=__name__)
+
+TENOR_TIMEOUT_SECONDS = 10
 
 class GifTools(commands.Cog):
     """GIF 搜尋與管理工具。"""
@@ -76,7 +79,7 @@ class GifTools(commands.Cog):
                 guild_id, "commands", "gif_tools","searching_gif", query=query
             ) if self.lang_manager else f"搜尋 GIF: {query}"
             self.logger.info(search_log)
-            response = requests.get(url, params=params)
+            response = await asyncio.to_thread(requests.get, url, params=params, timeout=TENOR_TIMEOUT_SECONDS)
             
             if response.status_code == 200:
                 data = json.loads(response.content)
