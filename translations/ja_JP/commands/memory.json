@@ -11,6 +11,11 @@
         "results_found": "関連するメモリを{len}件見つかりました：\n\n",
         "no_results": "一致するメモリが見つかりませんでした。",
         "not_implemented": "検索機能はストレージバックエンドでまだ実装されていません。開発者にお問い合わせください。",
-        "error": "メモリ検索中にエラーが発生しました、エラーがログに記録されました。"
+        "error": "メモリ検索中にエラーが発生しました、エラーがログに記録されました。",
+        "result_header": "**結果 {index}:**",
+        "result_content": "内容：{content}",
+        "result_score": "類似度：{score}",
+        "result_time": "時間：{time}",
+        "more_results": "... 他 {count} 件の結果"
     }
 }

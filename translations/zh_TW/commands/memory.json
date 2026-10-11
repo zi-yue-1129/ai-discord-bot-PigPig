@@ -11,6 +11,11 @@
         "results_found": "找到 {len} 筆相關記憶：\n\n",
         "no_results": "找不到符合條件的記憶。",
         "not_implemented": "搜尋功能尚未在儲存後端實現。請聯繫開發者。",
-        "error": "搜尋記憶時發生錯誤，已記錄錯誤日誌。"
+        "error": "搜尋記憶時發生錯誤，已記錄錯誤日誌。",
+        "result_header": "**結果 {index}:**",
+        "result_content": "內容：{content}",
+        "result_score": "相似度：{score}",
+        "result_time": "時間：{time}",
+        "more_results": "... 及其他 {count} 筆結果"
     }
 }

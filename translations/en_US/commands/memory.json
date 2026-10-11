@@ -11,6 +11,11 @@
         "results_found": "Found {len} related memories:\n\n",
         "no_results": "No matching memories found.",
         "not_implemented": "Search functionality is not yet implemented in the storage backend. Please contact the developer.",
-        "error": "An error occurred while searching memory, error has been logged."
+        "error": "An error occurred while searching memory, error has been logged.",
+        "result_header": "**Result {index}:**",
+        "result_content": "Content: {content}",
+        "result_score": "Similarity: {score}",
+        "result_time": "Time: {time}",
+        "more_results": "... and {count} more results"
     }
 }
