@@ -513,8 +513,13 @@ class YouTubeManager:
                     log.error(f"[音樂] 清理部分下載檔案失敗: {cleanup_err}")
             return None, "下載失敗，請稍後再試"
 
-    def get_thumbnail_url(self, video_id):
-        return f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
+    def get_thumbnail_url(self, video_id: str) -> str:
+        """Returns a thumbnail URL that exists for every video.
+
+        ``maxresdefault.jpg`` is missing for videos uploaded in low resolution, and the
+        URL ends up in the channel history, where a 404 breaks later model calls.
+        """
+        return f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
 
     async def get_related_videos(self, video_id: str, title: str, author: str, ctx: PlaybackContext, limit: int = 5, exclude_ids: Optional[Set[str]] = None) -> tuple[List[Dict[str, Any]], Optional[str]]:
         """Get related videos for a YouTube video.
