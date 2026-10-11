@@ -9,10 +9,12 @@ from typing import Optional
 if typing.TYPE_CHECKING:
     from ..manager import StoryManager
 
+from function import func
 from ..models import StoryWorld, StoryCharacter, StoryInstance, Location
+from .i18n import StoryTextMixin
 
 
-class WorldCreateModal(discord.ui.Modal):
+class WorldCreateModal(StoryTextMixin, discord.ui.Modal):
     """
     世界創建 Modal
     
@@ -20,37 +22,40 @@ class WorldCreateModal(discord.ui.Modal):
     """
     
     def __init__(self, manager: "StoryManager", guild_id: int):
-        super().__init__(title="🌍 創建新的故事世界")
+        self._init_i18n(manager.language_manager, guild_id)
+        super().__init__(title=self._t("story", "modals", "world_title"))
         self.story_manager = manager
         self.story_db = manager._get_db(guild_id)
         self.guild_id = guild_id
         self.logger = log
 
+        # Class-level inputs are deep-copied per modal, so setting text here is per-guild safe.
+        self.world_name.label = self._t("story", "modals", "world_name_label")
+        self.world_name.placeholder = self._t("story", "modals", "world_name_placeholder")
+        self.background.label = self._t("story", "modals", "background_label")
+        self.background.placeholder = self._t("story", "modals", "background_placeholder")
+        self.first_location_name.label = self._t("story", "modals", "first_location_label")
+        self.first_location_name.placeholder = self._t("story", "modals", "first_location_placeholder")
+        self.location_description.label = self._t("story", "modals", "location_description_label")
+        self.location_description.placeholder = self._t("story", "modals", "location_description_placeholder")
+
     world_name = discord.ui.TextInput(
-        label="世界名稱",
-        placeholder="輸入你的世界名稱（例如：中土世界、賽博朋克 2077）",
         max_length=50,
         required=True
     )
 
     background = discord.ui.TextInput(
-        label="世界背景",
-        placeholder="描述這個世界的背景故事、設定和特色...",
         style=discord.TextStyle.paragraph,
         max_length=1000,
         required=True
     )
 
     first_location_name = discord.ui.TextInput(
-        label="初始地點名稱",
-        placeholder="為你的世界設定第一個地點（例如：起始的村莊）",
         max_length=50,
         required=True
     )
 
     location_description = discord.ui.TextInput(
-        label="地點描述",
-        placeholder="描述這個地點的環境、特色...",
         style=discord.TextStyle.paragraph,
         max_length=1000,
         required=True
@@ -67,7 +72,7 @@ class WorldCreateModal(discord.ui.Modal):
             existing_world = self.story_db.get_world(self.world_name.value)
             if existing_world:
                 await interaction.followup.send(
-                    f"❌ 名為 `{self.world_name.value}` 的世界已經存在。請選擇其他名稱。",
+                    self._t("story", "modals", "world_exists", world_name=self.world_name.value),
                     ephemeral=True
                 )
                 return
@@ -90,22 +95,22 @@ class WorldCreateModal(discord.ui.Modal):
             
             # 成功回應
             embed = discord.Embed(
-                title="✅ 世界創建成功！",
-                description=f"**{self.world_name.value}** 已成功創建。",
+                title=self._t("story", "modals", "world_created_title"),
+                description=self._t("story", "modals", "world_created_description", world_name=self.world_name.value),
                 color=discord.Color.green()
             )
             embed.add_field(
-                name="🌍 世界名稱",
+                name=self._t("story", "modals", "field_world_name"),
                 value=self.world_name.value,
                 inline=False
             )
             embed.add_field(
-                name="📖 背景故事",
+                name=self._t("story", "modals", "field_background"),
                 value=self.background.value[:500] + ("..." if len(self.background.value) > 500 else ""),
                 inline=False
             )
             embed.add_field(
-                name="📍 初始地點",
+                name=self._t("story", "modals", "field_initial_location"),
                 value=f"**{self.first_location_name.value}**: {self.location_description.value[:400]}...",
                 inline=False
             )
@@ -116,7 +121,7 @@ class WorldCreateModal(discord.ui.Modal):
             self.logger.error(f"創建世界時發生錯誤: {e}", exc_info=True)
             await func.report_error(e)
             await interaction.followup.send(
-                "❌ 創建世界時發生錯誤，請稍後再試。",
+                self._t("story", "modals", "world_create_error"),
                 ephemeral=True
             )
     
@@ -127,14 +132,14 @@ class WorldCreateModal(discord.ui.Modal):
         try:
             if not interaction.response.is_done():
                 await interaction.response.send_message(
-                    "❌ 處理請求時發生錯誤",
+                    self._t("story", "modals", "request_error"),
                     ephemeral=True
                 )
         except:
             pass
 
 
-class CharacterCreateModal(discord.ui.Modal):
+class CharacterCreateModal(StoryTextMixin, discord.ui.Modal):
     """
     角色創建 Modal
     
@@ -142,23 +147,24 @@ class CharacterCreateModal(discord.ui.Modal):
     """
     
     def __init__(self, manager: "StoryManager", guild_id: int, name: str = "", description: str = ""):
-        super().__init__(title="👤 創建新角色")
+        self._init_i18n(manager.language_manager, guild_id)
+        super().__init__(title=self._t("story", "modals", "character_title"))
         self.story_manager = manager
         self.character_db = manager.character_db
         self.guild_id = guild_id
         self.logger = log
 
         self.character_name = discord.ui.TextInput(
-            label="角色名稱",
-            placeholder="輸入你的角色名稱",
+            label=self._t("story", "modals", "character_name_label"),
+            placeholder=self._t("story", "modals", "character_name_placeholder"),
             max_length=50,
             required=True,
             default=name
         )
         
         self.description = discord.ui.TextInput(
-            label="角色描述",
-            placeholder="描述角色的外觀、背景、性格等...",
+            label=self._t("story", "modals", "character_description_label"),
+            placeholder=self._t("story", "modals", "character_description_placeholder"),
             style=discord.TextStyle.paragraph,
             max_length=800,
             required=True,
@@ -166,17 +172,17 @@ class CharacterCreateModal(discord.ui.Modal):
         )
 
         self.webhook_url = discord.ui.TextInput(
-            label="角色 Webhook 網址 (選填)",
-            placeholder="請貼上 Discord Webhook 的 URL...",
+            label=self._t("story", "modals", "webhook_label"),
+            placeholder=self._t("story", "modals", "webhook_placeholder"),
             required=False,
             style=discord.TextStyle.short
         )
 
         self.privacy_input = discord.ui.TextInput(
-            label="是否公開此角色？(預設為是)",
-            placeholder="請輸入 '是' 或 '否'...",
+            label=self._t("story", "modals", "privacy_label"),
+            placeholder=self._t("story", "modals", "privacy_placeholder"),
             required=False,
-            default="是"
+            default=self._t("story", "modals", "privacy_yes")
         )
         
         self.add_item(self.character_name)
@@ -193,7 +199,7 @@ class CharacterCreateModal(discord.ui.Modal):
 
             # 獲取創作者 ID 和公開狀態
             creator_id = interaction.user.id
-            is_public = self.privacy_input.value.strip().lower() != '否'
+            is_public = self.privacy_input.value.strip().lower() != self._t("story", "modals", "privacy_no").lower()
 
             # 創建新角色
             new_character = StoryCharacter(
@@ -211,22 +217,22 @@ class CharacterCreateModal(discord.ui.Modal):
             
             # 成功回應
             embed = discord.Embed(
-                title="✅ 角色創建成功！",
-                description=f"**{self.character_name.value}** 已成功創建。",
+                title=self._t("story", "modals", "character_created_title"),
+                description=self._t("story", "modals", "character_created_description", character_name=self.character_name.value),
                 color=discord.Color.green()
             )
             embed.add_field(
-                name="👤 角色名稱",
+                name=self._t("story", "views", "field_character_name"),
                 value=self.character_name.value,
                 inline=True
             )
             embed.add_field(
-                name="🏢 所屬伺服器",
+                name=self._t("story", "modals", "field_guild"),
                 value=interaction.guild.name,
                 inline=True
             )
             embed.add_field(
-                name="📝 角色描述",
+                name=self._t("story", "views", "field_character_description"),
                 value=self.description.value[:300] + ("..." if len(self.description.value) > 300 else ""),
                 inline=False
             )
@@ -237,7 +243,7 @@ class CharacterCreateModal(discord.ui.Modal):
             self.logger.error(f"創建角色時發生錯誤: {e}", exc_info=True)
             await func.report_error(e)
             await interaction.followup.send(
-                "❌ 創建角色時發生錯誤，請稍後再試。",
+                self._t("story", "modals", "character_create_error"),
                 ephemeral=True
             )
     
@@ -248,14 +254,14 @@ class CharacterCreateModal(discord.ui.Modal):
         try:
             if not interaction.response.is_done():
                 await interaction.response.send_message(
-                    "❌ 處理請求時發生錯誤",
+                    self._t("story", "modals", "request_error"),
                     ephemeral=True
                 )
         except:
             pass
 
 
-class StoryStartModal(discord.ui.Modal):
+class StoryStartModal(StoryTextMixin, discord.ui.Modal):
     """
     故事開始 Modal
 
@@ -263,7 +269,8 @@ class StoryStartModal(discord.ui.Modal):
     """
 
     def __init__(self, story_manager: "StoryManager", bot: commands.Bot, guild_id: int, channel_id: int, world_name: str):
-        super().__init__(title="🎬 設定故事初始狀態")
+        self._init_i18n(story_manager.language_manager, guild_id)
+        super().__init__(title=self._t("story", "modals", "start_title"))
         self.story_manager = story_manager
         self.bot = bot
         self.guild_id = guild_id
@@ -271,21 +278,22 @@ class StoryStartModal(discord.ui.Modal):
         self.world_name = world_name
         self.logger = log
 
+        self.initial_date.label = self._t("story", "modals", "initial_date_label")
+        self.initial_date.placeholder = self._t("story", "modals", "initial_date_placeholder")
+        self.initial_time.label = self._t("story", "modals", "initial_time_label")
+        self.initial_time.placeholder = self._t("story", "modals", "initial_time_placeholder")
+        self.initial_location.label = self._t("story", "modals", "initial_location_label")
+        self.initial_location.placeholder = self._t("story", "modals", "initial_location_placeholder")
+
     initial_date = discord.ui.TextInput(
-        label="初始日期 (選填)",
-        placeholder="留空讓 AI 決定故事的開始日期",
         required=False
     )
 
     initial_time = discord.ui.TextInput(
-        label="初始時間 (選填)",
-        placeholder="留空讓 AI 決定故事的開始時間",
         required=False
     )
 
     initial_location = discord.ui.TextInput(
-        label="初始地點",
-        placeholder="例如：寧靜的森林小徑上",
         required=True,
         style=discord.TextStyle.paragraph
     )
@@ -295,7 +303,7 @@ class StoryStartModal(discord.ui.Modal):
         立即回應互動以防止超時，並在背景準備 NPC 選擇介面。
         """
         # 立即回應，告訴使用者我們正在處理
-        await interaction.response.send_message("⏳ 正在準備 NPC 選擇介面，請稍候...", ephemeral=True)
+        await interaction.response.send_message(self._t("story", "modals", "preparing_npc"), ephemeral=True)
         
         # 在背景執行耗時的操作
         self.bot.loop.create_task(self._prepare_and_send_npc_select(interaction))
@@ -347,7 +355,7 @@ class StoryStartModal(discord.ui.Modal):
             # 使用 followup.send 發送最終的介面
             self.logger.info(f"[DEBUG] 準備發送 followup 訊息...")
             await interaction.followup.send(
-                "請選擇要一同參與故事的 NPC：",
+                self._t("story", "modals", "select_npc_prompt"),
                 view=view,
                 ephemeral=True
             )
@@ -358,7 +366,7 @@ class StoryStartModal(discord.ui.Modal):
             await func.report_error(e)
             try:
                 await interaction.followup.send(
-                    "❌ 準備 NPC 選擇介面時發生錯誤，請稍後再試。",
+                    self._t("story", "modals", "npc_prepare_error"),
                     ephemeral=True
                 )
             except Exception as followup_error:
@@ -369,22 +377,25 @@ class StoryStartModal(discord.ui.Modal):
         self.logger.error(f"StoryStartModal 錯誤: {error}", exc_info=True)
         await func.report_error(error)
         if not interaction.response.is_done():
-            await interaction.response.send_message("❌ 處理請求時發生錯誤", ephemeral=True)
+            await interaction.response.send_message(self._t("story", "modals", "request_error"), ephemeral=True)
 
 
-class InterventionModal(discord.ui.Modal):
+class InterventionModal(StoryTextMixin, discord.ui.Modal):
     """
     A modal for users to submit an OOC intervention to the story director.
     """
 
-    def __init__(self, manager: "StoryManager"):
-        super().__init__(title="🎬 故事干預指令")
+    def __init__(self, manager: "StoryManager", guild_id: int):
+        self._init_i18n(manager.language_manager, guild_id)
+        super().__init__(title=self._t("story", "modals", "intervention_title"))
         self.manager = manager
+        self.guild_id = guild_id
         self.logger = log
 
+        self.intervention_text.label = self._t("story", "modals", "intervention_label")
+        self.intervention_text.placeholder = self._t("story", "modals", "intervention_placeholder")
+
     intervention_text = discord.ui.TextInput(
-        label="給導演的指示",
-        placeholder="請輸入你希望故事接下來如何發展的指示...\n例如：讓天氣突然變壞，並安排一個神秘的陌生人登場。",
         style=discord.TextStyle.paragraph,
         max_length=1000,
         required=True,
@@ -400,7 +411,7 @@ class InterventionModal(discord.ui.Modal):
             self.manager.interventions[interaction.channel_id] = self.intervention_text.value
 
             await interaction.followup.send(
-                "✅ 你的干預指令已成功發送給導演。它將在下一次玩家發言後生效。",
+                self._t("story", "modals", "intervention_success"),
                 ephemeral=True
             )
             self.logger.info(f"Intervention submitted for channel {interaction.channel_id}: {self.intervention_text.value}")
@@ -409,7 +420,7 @@ class InterventionModal(discord.ui.Modal):
             self.logger.error(f"Error submitting intervention for channel {interaction.channel_id}: {e}", exc_info=True)
             await func.report_error(e)
             await interaction.followup.send(
-                "❌ 發送干預指令時發生錯誤，請稍後再試。",
+                self._t("story", "modals", "intervention_error"),
                 ephemeral=True
             )
 
@@ -418,4 +429,4 @@ class InterventionModal(discord.ui.Modal):
         self.logger.error(f"InterventionModal error: {error}", exc_info=True)
         await func.report_error(error)
         if not interaction.response.is_done():
-            await interaction.response.send_message("❌ 處理請求時發生錯誤。", ephemeral=True)
+            await interaction.response.send_message(self._t("story", "modals", "request_error_period"), ephemeral=True)

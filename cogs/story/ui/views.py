@@ -7,6 +7,7 @@ logger = log
 from typing import List, Optional, TYPE_CHECKING
 
 from ..models import StoryInstance, StoryWorld, StoryCharacter
+from .i18n import StoryTextMixin
 from .modals import WorldCreateModal, CharacterCreateModal
 
 if TYPE_CHECKING:
@@ -14,7 +15,7 @@ if TYPE_CHECKING:
     from ..manager import StoryManager
 
 
-class InitialStoryView(discord.ui.View):
+class InitialStoryView(StoryTextMixin, discord.ui.View):
     """
     初始故事視圖
     
@@ -26,6 +27,7 @@ class InitialStoryView(discord.ui.View):
     """
     
     def __init__(self, manager: "StoryManager", channel_id: int, guild_id: int, ui_manager: "UIManager"):
+        self._init_i18n(manager.language_manager, guild_id)
         super().__init__(timeout=300)  # 5分鐘超時
         self.story_manager = manager
         self.ui_manager = ui_manager
@@ -33,6 +35,16 @@ class InitialStoryView(discord.ui.View):
         self.guild_id = guild_id
         self.selected_world: Optional[str] = None
         self.logger = log
+
+        # Decorated items are created per view instance, so they can carry guild-specific text.
+        self.world_select.placeholder = self._t("story", "views", "world_select_placeholder")
+        self.world_select.options = [
+            discord.SelectOption(label=self._t("story", "views", "loading_option"), value="loading")
+        ]
+        self.create_world_button.label = self._t("story", "views", "create_world_button")
+        self.create_character_button.label = self._t("story", "views", "create_character_button")
+        self.load_default_character_button.label = self._t("story", "views", "load_default_button")
+        self.start_story_button.label = self._t("story", "views", "start_story_button")
         
     async def on_timeout(self):
         """視圖超時處理"""
@@ -40,17 +52,14 @@ class InitialStoryView(discord.ui.View):
         for item in self.children:
             item.disabled = True
     
-    @discord.ui.select(
-        placeholder="🌍 選擇一個世界來開始故事...",
-        options=[discord.SelectOption(label="載入中...", value="loading")]
-    )
+    @discord.ui.select(options=[discord.SelectOption(label="...", value="loading")])
     async def world_select(self, interaction: discord.Interaction, select: discord.ui.Select):
         """世界選擇選單"""
         self.logger.info(f"[DEBUG] world_select 被觸發 - 選擇的值: {select.values}")
         try:
             if select.values[0] == "loading":
                 self.logger.info(f"[DEBUG] 選擇了 loading 選項")
-                await interaction.response.send_message("⏳ 正在載入世界列表...", ephemeral=True)
+                await interaction.response.send_message(self._t("story", "views", "loading_worlds"), ephemeral=True)
                 return
                 
             self.selected_world = select.values[0]
@@ -76,8 +85,8 @@ class InitialStoryView(discord.ui.View):
             self.logger.info(f"[DEBUG] 世界資料: {world}")
             
             embed = discord.Embed(
-                title=f"🌍 已選擇世界：{self.selected_world}",
-                description=world.attributes.get('description', '無描述')[:500] + ("..." if len(world.attributes.get('description', '')) > 500 else ""),
+                title=self._t("story", "views", "world_selected_title", world_name=self.selected_world),
+                description=world.attributes.get('description', self._t("story", "menu", "no_description"))[:500] + ("..." if len(world.attributes.get('description', '')) > 500 else ""),
                 color=discord.Color.blue()
             )
             
@@ -88,9 +97,9 @@ class InitialStoryView(discord.ui.View):
         except Exception as e:
             self.logger.error(f"[DEBUG] 世界選擇錯誤: {e}", exc_info=True)
             if not interaction.response.is_done():
-                await interaction.response.send_message("❌ 載入世界資訊時發生錯誤", ephemeral=True)
+                await interaction.response.send_message(self._t("story", "views", "world_info_error"), ephemeral=True)
     
-    @discord.ui.button(label="🌍 創建新世界", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(style=discord.ButtonStyle.primary, row=0)
     async def create_world_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         """創建世界按鈕"""
         try:
@@ -104,7 +113,7 @@ class InitialStoryView(discord.ui.View):
         except Exception as e:
             self.logger.error(f"創建世界按鈕錯誤: {e}", exc_info=True)
     
-    @discord.ui.button(label="👤 創建角色", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(style=discord.ButtonStyle.secondary, row=1)
     async def create_character_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         """創建角色按鈕"""
         try:
@@ -115,7 +124,7 @@ class InitialStoryView(discord.ui.View):
         except Exception as e:
             self.logger.error(f"創建角色按鈕錯誤: {e}", exc_info=True)
 
-    @discord.ui.button(label="📥 從預設載入角色", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(style=discord.ButtonStyle.secondary, row=1)
     async def load_default_character_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         """從預設載入角色按鈕"""
         try:
@@ -123,10 +132,9 @@ class InitialStoryView(discord.ui.View):
         except Exception as e:
             self.logger.error(f"載入預設角色按鈕錯誤: {e}", exc_info=True)
             if not interaction.response.is_done():
-                await interaction.response.send_message("❌ 載入預設角色時發生錯誤", ephemeral=True)
+                await interaction.response.send_message(self._t("story", "views", "load_default_error"), ephemeral=True)
     
     @discord.ui.button(
-        label="🎬 開始故事",
         style=discord.ButtonStyle.success,
         disabled=True,
         custom_id="start_story"
@@ -140,7 +148,7 @@ class InitialStoryView(discord.ui.View):
             if not self.selected_world:
                 self.logger.warning(f"[DEBUG] 沒有選擇世界，selected_world: {self.selected_world}")
                 await interaction.response.send_message(
-                    "❌ 請先選擇一個世界",
+                    self._t("story", "views", "select_world_first"),
                     ephemeral=True
                 )
                 return
@@ -150,7 +158,7 @@ class InitialStoryView(discord.ui.View):
             channel_manager = interaction.client.get_cog('ChannelManager')
             if not channel_manager:
                 self.logger.error(f"[DEBUG] 找不到 ChannelManager")
-                await interaction.response.send_message("❌ 系統錯誤：無法找到頻道管理器", ephemeral=True)
+                await interaction.response.send_message(self._t("story", "menu", "channel_manager_missing"), ephemeral=True)
                 return
             
             self.logger.info(f"[DEBUG] 檢查頻道權限...")
@@ -163,7 +171,7 @@ class InitialStoryView(discord.ui.View):
             if not is_allowed or channel_mode != 'story':
                 self.logger.warning(f"[DEBUG] 頻道模式不正確 - is_allowed: {is_allowed}, channel_mode: {channel_mode}")
                 await interaction.response.send_message(
-                    "❌ 請先由管理員使用 `/set_channel_mode` 將此頻道設定為 **故事模式**",
+                    self._t("story", "views", "channel_mode_required"),
                     ephemeral=True
                 )
                 return
@@ -177,7 +185,7 @@ class InitialStoryView(discord.ui.View):
             if existing_instance and existing_instance.is_active:
                 self.logger.warning(f"[DEBUG] 頻道已有活躍故事")
                 await interaction.response.send_message(
-                    "❌ 這個頻道已經有一個正在進行的故事了！",
+                    self._t("story", "views", "story_already_active"),
                     ephemeral=True
                 )
                 return
@@ -200,7 +208,7 @@ class InitialStoryView(discord.ui.View):
             self.logger.error(f"[DEBUG] 開始故事按鈕錯誤: {e}", exc_info=True)
             if not interaction.response.is_done():
                 await interaction.response.send_message(
-                    "❌ 準備開始故事時發生錯誤，請稍後再試",
+                    self._t("story", "views", "start_prepare_error"),
                     ephemeral=True
                 )
     
@@ -217,13 +225,13 @@ class InitialStoryView(discord.ui.View):
                     options.append(discord.SelectOption(
                         label=world.world_name,
                         value=world.world_name,
-                        description=world.attributes.get('description', '無描述')[:100]
+                        description=world.attributes.get('description', self._t("story", "menu", "no_description"))[:100]
                     ))
             else:
                 options.append(discord.SelectOption(
-                    label="無可用世界",
+                    label=self._t("story", "menu", "no_worlds_option"),
                     value="none",
-                    description="請先創建一個世界"
+                    description=self._t("story", "menu", "no_worlds_option_description")
                 ))
             
             # 找到世界選擇組件並更新
@@ -236,7 +244,7 @@ class InitialStoryView(discord.ui.View):
             self.logger.error(f"重新整理世界選單錯誤: {e}", exc_info=True)
 
 
-class ActiveStoryView(discord.ui.View):
+class ActiveStoryView(StoryTextMixin, discord.ui.View):
     """
     進行中故事視圖
     
@@ -247,11 +255,15 @@ class ActiveStoryView(discord.ui.View):
     """
     
     def __init__(self, manager: "StoryManager", story_instance: "StoryInstance"):
+        self._init_i18n(manager.language_manager, story_instance.guild_id)
         super().__init__(timeout=None)
         self.story_manager = manager
         self.story_instance = story_instance
         self.logger = log
-        
+
+        self.join_story_button.label = self._t("story", "views", "join_button")
+        self.end_story_button.label = self._t("story", "views", "end_button")
+
         # 根據故事狀態設定按鈕的初始狀態
         self._update_pause_button_state()
         self._update_narration_button_state()
@@ -261,26 +273,24 @@ class ActiveStoryView(discord.ui.View):
         for item in self.children:
             if isinstance(item, discord.ui.Button) and item.custom_id == 'toggle_narration':
                 if self.story_instance.narration_enabled:
-                    item.label = "🔇 關閉旁白"
+                    item.label = self._t("story", "views", "narration_off_button")
                     item.style = discord.ButtonStyle.danger
                 else:
-                    item.label = "🔊 開啟旁白"
+                    item.label = self._t("story", "views", "narration_on_button")
                     item.style = discord.ButtonStyle.success
                 break
 
     def _update_pause_button_state(self):
         """更新暫停/恢復按鈕的狀態"""
-        for item in self.children:
-            if isinstance(item, discord.ui.Button) and hasattr(item.callback, '__name__') and item.callback.__name__ == 'pause_story_button':
-                if self.story_instance.is_active:
-                    item.label = "⏸️ 暫停故事"
-                    item.style = discord.ButtonStyle.secondary
-                else:
-                    item.label = "▶️ 恢復故事"
-                    item.style = discord.ButtonStyle.success
-                break
+        item = self.pause_story_button
+        if self.story_instance.is_active:
+            item.label = self._t("story", "views", "pause_button")
+            item.style = discord.ButtonStyle.secondary
+        else:
+            item.label = self._t("story", "views", "resume_button")
+            item.style = discord.ButtonStyle.success
     
-    @discord.ui.button(label="🎭 加入故事", style=discord.ButtonStyle.primary)
+    @discord.ui.button(style=discord.ButtonStyle.primary)
     async def join_story_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         """加入故事按鈕"""
         try:
@@ -296,8 +306,7 @@ class ActiveStoryView(discord.ui.View):
             
             if not user_characters:
                 await interaction.followup.send(
-                    f"❌ 你在這個伺服器中還沒有創建任何角色。\n"
-                    f"請先使用 `/story` 選單中的 '創建角色' 按鈕來創建一個。",
+                    self._t("story", "views", "no_character"),
                     ephemeral=True
                 )
                 return
@@ -307,7 +316,7 @@ class ActiveStoryView(discord.ui.View):
             
             if character_to_join.character_id in self.story_instance.active_character_ids:
                 await interaction.followup.send(
-                    f"✅ 你的角色 **{character_to_join.name}** 已經在故事中了！",
+                    self._t("story", "views", "already_in_story", character_name=character_to_join.name),
                     ephemeral=True
                 )
                 return
@@ -319,22 +328,22 @@ class ActiveStoryView(discord.ui.View):
             
             # 發送成功訊息到頻道
             embed = discord.Embed(
-                title="🎭 新角色加入！",
-                description=f"**{character_to_join.name}** 加入了冒險！",
+                title=self._t("story", "views", "joined_title"),
+                description=self._t("story", "views", "joined_description", character_name=character_to_join.name),
                 color=discord.Color.green()
             )
             embed.add_field(
-                name="👤 角色名稱",
+                name=self._t("story", "views", "field_character_name"),
                 value=character_to_join.name,
                 inline=True
             )
             embed.add_field(
-                name="🎮 操控者",
+                name=self._t("story", "views", "field_controller"),
                 value=interaction.user.mention,
                 inline=True
             )
             embed.add_field(
-                name="📝 角色描述",
+                name=self._t("story", "views", "field_character_description"),
                 value=character_to_join.description[:300] + ("..." if len(character_to_join.description) > 300 else ""),
                 inline=False
             )
@@ -342,18 +351,18 @@ class ActiveStoryView(discord.ui.View):
             await interaction.channel.send(embed=embed)
             
             await interaction.followup.send(
-                f"✅ **{character_to_join.name}** 已成功加入故事！",
+                self._t("story", "views", "joined_success", character_name=character_to_join.name),
                 ephemeral=True
             )
             
         except Exception as e:
             self.logger.error(f"加入故事錯誤: {e}", exc_info=True)
             await interaction.followup.send(
-                "❌ 加入故事時發生錯誤，請稍後再試",
+                self._t("story", "views", "join_error"),
                 ephemeral=True
             )
     
-    @discord.ui.button(label="⏸️ 暫停故事", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(style=discord.ButtonStyle.secondary)
     async def pause_story_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         """暫停故事按鈕（管理員專用）"""
         try:
@@ -367,15 +376,15 @@ class ActiveStoryView(discord.ui.View):
             if self.story_instance.is_active:
                 # 暫停故事
                 self.story_instance.is_active = False
-                button.label = "▶️ 恢復故事"
+                button.label = self._t("story", "views", "resume_button")
                 button.style = discord.ButtonStyle.success
-                message = "⏸️ 故事已暫停"
+                message = self._t("story", "views", "paused_message")
             else:
                 # 恢復故事
                 self.story_instance.is_active = True
-                button.label = "⏸️ 暫停故事"
+                button.label = self._t("story", "views", "pause_button")
                 button.style = discord.ButtonStyle.secondary
-                message = "▶️ 故事已恢復"
+                message = self._t("story", "views", "resumed_message")
             
             db = self.story_manager._get_db(interaction.guild_id)
             db.save_story_instance(self.story_instance)
@@ -386,7 +395,7 @@ class ActiveStoryView(discord.ui.View):
         except Exception as e:
             self.logger.error(f"暫停故事錯誤: {e}", exc_info=True)
     
-    @discord.ui.button(label="...", style=discord.ButtonStyle.secondary, custom_id="toggle_narration")
+    @discord.ui.button(style=discord.ButtonStyle.secondary, custom_id="toggle_narration")
     async def toggle_narration_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         """切換旁白功能的按鈕"""
         try:
@@ -394,7 +403,7 @@ class ActiveStoryView(discord.ui.View):
             db = self.story_manager._get_db(interaction.guild_id)
             instance = db.get_story_instance(self.story_instance.channel_id)
             if not instance:
-                await interaction.response.send_message("❌ 找不到故事實例。", ephemeral=True)
+                await interaction.response.send_message(self._t("story", "views", "instance_not_found"), ephemeral=True)
                 return
 
             # 反轉旁白狀態
@@ -411,14 +420,17 @@ class ActiveStoryView(discord.ui.View):
             await interaction.response.edit_message(view=self)
             
             # 發送確認訊息
-            status = "開啟" if instance.narration_enabled else "關閉"
-            await interaction.followup.send(f"✅ 旁白功能已**{status}**。", ephemeral=True)
+            if instance.narration_enabled:
+                narration_message = self._t("story", "views", "narration_enabled")
+            else:
+                narration_message = self._t("story", "views", "narration_disabled")
+            await interaction.followup.send(narration_message, ephemeral=True)
 
         except Exception as e:
             self.logger.error(f"切換旁白錯誤: {e}", exc_info=True)
-            await interaction.followup.send("❌ 切換旁白時發生錯誤。", ephemeral=True)
+            await interaction.followup.send(self._t("story", "views", "narration_error"), ephemeral=True)
 
-    @discord.ui.button(label="🔚 結束故事", style=discord.ButtonStyle.danger)
+    @discord.ui.button(style=discord.ButtonStyle.danger)
     async def end_story_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         """結束故事按鈕（管理員專用）"""
         try:
@@ -441,20 +453,20 @@ class ActiveStoryView(discord.ui.View):
             await interaction.edit_original_response(view=self)
             
             embed = discord.Embed(
-                title="🔚 故事結束",
-                description=f"**{self.story_instance.world_name}** 的冒險篇章已經落下帷幕。",
+                title=self._t("story", "views", "ended_title"),
+                description=self._t("story", "views", "ended_description", world_name=self.story_instance.world_name),
                 color=discord.Color.red()
             )
-            embed.set_footer(text="感謝所有參與者的精彩演出！")
+            embed.set_footer(text=self._t("story", "views", "ended_footer"))
             
             await interaction.channel.send(embed=embed)
-            await interaction.followup.send("✅ 故事已結束", ephemeral=True)
+            await interaction.followup.send(self._t("story", "views", "ended_message"), ephemeral=True)
             
         except Exception as e:
             self.logger.error(f"結束故事錯誤: {e}", exc_info=True)
 
 
-class NPCSelectView(discord.ui.View):
+class NPCSelectView(StoryTextMixin, discord.ui.View):
     """
     NPC 選擇視圖
     
@@ -481,6 +493,8 @@ class NPCSelectView(discord.ui.View):
         
         bot = manager.bot
         character_db = manager.character_db
+        language_manager = manager.language_manager
+        guild_key = str(interaction.guild_id)
         logger.info(f"[DEBUG] 獲取到 bot: {bot is not None}, character_db: {character_db is not None}")
         
         # 獲取可選擇的角色列表
@@ -497,7 +511,7 @@ class NPCSelectView(discord.ui.View):
         options = []
         for i, char in enumerate(characters):
             logger.info(f"[DEBUG] 處理角色 {i+1}/{len(characters)}: {char.name}")
-            creator_name = "未知"
+            creator_name = language_manager.translate(guild_key, "story", "views", "unknown_creator")
             if char.creator_id:
                 try:
                     logger.info(f"[DEBUG] 嘗試獲取創作者資訊 - creator_id: {char.creator_id}")
@@ -509,7 +523,8 @@ class NPCSelectView(discord.ui.View):
                 except Exception as e:
                     logger.error(f"[DEBUG] 獲取創作者資訊時發生錯誤: {e}", exc_info=True)
             
-            description = f"創作者: {creator_name}\n{char.description or ''}"
+            creator_line = language_manager.translate(guild_key, "story", "views", "creator_line", creator_name=creator_name)
+            description = f"{creator_line}\n{char.description or ''}"
             logger.info(f"[DEBUG] 創建選項 - label: {char.name}, value: {char.character_id}")
             options.append(discord.SelectOption(
                 label=char.name,
@@ -522,9 +537,13 @@ class NPCSelectView(discord.ui.View):
         # 創建並添加預設旁白選項
         logger.info(f"[DEBUG] 創建預設旁白選項...")
         default_narrator_option = discord.SelectOption(
-            label="預設旁白 (系統人格)",
+            label=language_manager.translate(guild_key, "story", "views", "default_narrator_label"),
             value="_DEFAULT_NARRATOR_",
-            description=system_prompt[:100] if system_prompt else "使用當前頻道的系統設定",
+            description=(
+                system_prompt[:100]
+                if system_prompt
+                else language_manager.translate(guild_key, "story", "views", "default_narrator_description")
+            ),
             default=True
         )
         options.insert(0, default_narrator_option)
@@ -555,6 +574,7 @@ class NPCSelectView(discord.ui.View):
         characters: List[StoryCharacter],
         options: List[discord.SelectOption],
     ):
+        self._init_i18n(manager.language_manager, guild_id)
         super().__init__(timeout=300)
         self.story_manager = manager
         self.guild_id = guild_id
@@ -572,13 +592,14 @@ class NPCSelectView(discord.ui.View):
 
         self.npc_select = discord.ui.Select(
             custom_id="npc_selector:select_menu",
-            placeholder="選擇要參與故事的 NPC (可複選)...",
+            placeholder=self._t("story", "views", "npc_select_placeholder"),
             min_values=min_val,
             max_values=max_val,
             options=options
         )
         self.npc_select.callback = self.npc_select_callback
         self.add_item(self.npc_select)
+        self.confirm_button.label = self._t("story", "views", "confirm_button")
 
     async def npc_select_callback(self, interaction: discord.Interaction):
         """處理 NPC 選擇的回調"""
@@ -587,7 +608,7 @@ class NPCSelectView(discord.ui.View):
         await interaction.response.defer()
         self.logger.info(f"[DEBUG] NPC 選擇已確認: {self.npc_select.values}")
 
-    @discord.ui.button(label="✅ 確認開始", style=discord.ButtonStyle.success, row=1, custom_id="npc_selector:confirm_button")
+    @discord.ui.button(style=discord.ButtonStyle.success, row=1, custom_id="npc_selector:confirm_button")
     async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         """確認選擇並將邏輯委派給 StoryManager 開始故事"""
         self.logger.info("[DEBUG] confirm_button pressed.")
@@ -597,7 +618,7 @@ class NPCSelectView(discord.ui.View):
 
             if not self.npc_select.values:
                 self.logger.warning("[DEBUG] No values selected in npc_select.")
-                await interaction.followup.send("請至少選擇一個 NPC 或保留預設旁白來開始故事。", ephemeral=True)
+                await interaction.followup.send(self._t("story", "views", "select_at_least_one"), ephemeral=True)
                 return
 
             self.logger.info(f"[DEBUG] Raw selected values: {self.npc_select.values}")
@@ -627,8 +648,8 @@ class NPCSelectView(discord.ui.View):
 
         except ValueError:
             self.logger.error("無法將角色 ID 從字串轉換為整數", exc_info=True)
-            await interaction.followup.send("處理角色選擇時發生內部錯誤，請聯繫管理員。", ephemeral=True)
+            await interaction.followup.send(self._t("story", "views", "character_selection_error"), ephemeral=True)
         except Exception as e:
             self.logger.error("Error in NPCSelectView confirm_button", exc_info=True)
             if not interaction.response.is_done():
-                 await interaction.followup.send("❌ 開始故事時發生嚴重錯誤，請聯繫管理員。", ephemeral=True)
+                 await interaction.followup.send(self._t("story", "views", "start_story_error"), ephemeral=True)
