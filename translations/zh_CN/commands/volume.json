@@ -1,0 +1,5 @@
+{
+    "responses": {
+        "success": "音量已设置为 {percent}%。"
+    }
+}

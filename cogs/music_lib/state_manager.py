@@ -14,6 +14,7 @@ class PlayerState:
     autoplay: bool = False
     player_loop_task: Optional[asyncio.Task] = None
     consecutive_failures: int = 0
+    volume: float = 1.0
 
 
 class StateManager:

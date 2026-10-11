@@ -15,6 +15,7 @@ from .music_lib.audio_manager import AudioManager
 from .music_lib.state_manager import StateManager
 from .music_lib.queue_manager import QueueManager, PlayMode
 from .music_lib.context import PlaybackContext, user_shares_voice_channel
+from .music_lib.prefetch import Prefetcher
 from .music_lib.service import MusicService, classify_query
 from .music_lib.ui_manager import UIManager
 from .music_lib.ui.song_select import SongSelectView
@@ -44,6 +45,11 @@ class YTMusic(commands.Cog):
         self.lang_manager: Optional[LanguageManager] = None # Initialize lang_manager
         self.disconnect_timers = {}
         self.service = MusicService(self)
+        self.prefetcher = Prefetcher(
+            get_youtube=lambda: self.youtube,
+            queue_manager=self.queue_manager,
+            get_folder=lambda guild_id: self._get_guild_folder(guild_id)[1],
+        )
 
     async def setup_hook(self):
         """Initialize async components and LanguageManager."""
@@ -99,6 +105,55 @@ class YTMusic(commands.Cog):
         state = self.state_manager.get_state(interaction.guild.id)
         state.ui_messages.append(message)
 
+
+    async def _reply_service_result(self, interaction: discord.Interaction, result: Any, success_key: str, **format_args: Any) -> None:
+        """Answer a slash command from a service result.
+
+        Args:
+            interaction: The command interaction (not answered yet).
+            result: The ``ActionResult`` returned by the service.
+            success_key: Translation key under ``commands.<name>.responses`` is chosen by the caller.
+            **format_args: Values substituted into the success message.
+        """
+        guild_id = str(interaction.guild.id)
+        if result.ok:
+            title = self.lang_manager.translate(guild_id, "commands", *success_key.split("."), **format_args)
+            embed = discord.Embed(title=f"✅ | {title}", color=discord.Color.blue())
+            await interaction.response.send_message(embed=embed)
+            return
+        if result.reason == "not_in_bot_channel":
+            text = self.lang_manager.translate(guild_id, "system", "music", "controls", "not_in_channel")
+        else:
+            text = self.lang_manager.translate(guild_id, "commands", "queue_tools", "errors", result.reason)
+        await interaction.response.send_message(embed=discord.Embed(title=f"❌ | {text}", color=discord.Color.red()), ephemeral=True)
+
+    @app_commands.command(name="volume", description="調整音樂音量 (0-100)")
+    @app_commands.describe(percent="音量百分比 (0-100)")
+    async def volume(self, interaction: discord.Interaction, percent: app_commands.Range[int, 0, 100]):
+        """音量命令"""
+        if not self.lang_manager:
+            self.lang_manager = self.bot.get_cog("LanguageManager")
+        result = await self.service.set_volume(PlaybackContext.from_interaction(interaction), percent)
+        await self._reply_service_result(interaction, result, "volume.responses.success", percent=percent)
+
+    @app_commands.command(name="queue_remove", description="從待播清單移除一首歌")
+    @app_commands.describe(position="歌曲在待播清單中的位置 (1 是下一首)")
+    async def queue_remove(self, interaction: discord.Interaction, position: app_commands.Range[int, 1, 50]):
+        """移除待播歌曲命令"""
+        if not self.lang_manager:
+            self.lang_manager = self.bot.get_cog("LanguageManager")
+        result = await self.service.remove_from_queue(PlaybackContext.from_interaction(interaction), position)
+        title = result.data.get("title", "") if result.ok else ""
+        await self._reply_service_result(interaction, result, "queue_tools.responses.removed", title=title, position=position)
+
+    @app_commands.command(name="queue_clear", description="清空待播清單 (目前播放的歌曲不受影響)")
+    async def queue_clear(self, interaction: discord.Interaction):
+        """清空待播清單命令"""
+        if not self.lang_manager:
+            self.lang_manager = self.bot.get_cog("LanguageManager")
+        result = await self.service.clear_queue(PlaybackContext.from_interaction(interaction))
+        count = result.data.get("removed", 0) if result.ok else 0
+        await self._reply_service_result(interaction, result, "queue_tools.responses.cleared", count=count)
 
     @app_commands.command(name="play", description="播放影片(網址或關鍵字) 或 刷新UI")
     async def play(self, interaction: discord.Interaction, query: Optional[str] = None):
@@ -346,7 +401,7 @@ class YTMusic(commands.Cog):
                 voice_client.stop()
 
             song = state.current_song
-            audio_source = self.audio_manager.create_audio_source(song)
+            audio_source = self.audio_manager.create_audio_source(song, volume=state.volume)
 
             message = await self.ui_manager.update_player_ui(
                 ctx,
@@ -405,10 +460,9 @@ class YTMusic(commands.Cog):
                 next_song['file_path'] = potential_path
                 return next_song
 
-            logger.info(f"歌曲 '{next_song['title']}' 未下載，開始下載...")
-            downloaded_info, error = await self.youtube.download_audio(next_song['url'], folder, ctx)
+            logger.info(f"歌曲 '{next_song['title']}' 未下載，開始下載（或等待預先下載完成）...")
+            _, error = await self.prefetcher.ensure_downloaded(ctx, next_song)
             if not error:
-                next_song.update(downloaded_info)
                 return next_song
 
             logger.error(f"下載失敗: {next_song['title']} - {error}")
@@ -432,7 +486,7 @@ class YTMusic(commands.Cog):
         if voice_client.is_playing():
             voice_client.stop()
 
-        audio_source = self.audio_manager.create_audio_source(song)
+        audio_source = self.audio_manager.create_audio_source(song, volume=self.state_manager.get_state(guild_id).volume)
         message = await self.ui_manager.update_player_ui(
             ctx,
             song,
@@ -444,6 +498,7 @@ class YTMusic(commands.Cog):
 
         voice_client.play(audio_source)
         self.state_manager.update_state(guild_id, consecutive_failures=0)
+        self.prefetcher.schedule(ctx)
         if not song.get('is_live'):
             self.state_manager.cancel_player_loop(guild_id)
             task = self.bot.loop.create_task(self._player_loop(ctx, song))
@@ -837,7 +892,10 @@ class YTMusic(commands.Cog):
 
         # Cancel any running player loop and clear queue and state
         self.state_manager.cancel_player_loop(guild_id)
+        await self.prefetcher.cancel(guild_id)
         self.queue_manager.clear_queue(guild_id)
+        _, folder = self._get_guild_folder(guild_id)
+        await self.audio_manager.cleanup_guild_files(guild_id, folder)
         self.state_manager.update_state(guild_id, current_song=None, last_played_song=None, current_message=None, current_view=None, ui_messages=[])
         logger.info(f"[音樂] 伺服器 ID: {guild_id}, 已清理語音會話。")
 
