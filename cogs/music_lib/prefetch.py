@@ -49,6 +49,7 @@ class Prefetcher:
         self._workers: Dict[int, asyncio.Task] = {}
         self._inflight: Dict[Tuple[int, str], asyncio.Task] = {}
         self._failed: Dict[int, Set[str]] = {}
+        self._current: Dict[int, asyncio.Task] = {}
 
     # ------------------------------------------------------------------ public
     def schedule(self, ctx: PlaybackContext) -> None:
@@ -89,9 +90,49 @@ class Prefetcher:
             self._failed.get(ctx.guild.id, set()).discard(song["video_id"])
         return info, error
 
+    def download_current(self, ctx: PlaybackContext, song: Dict[str, Any]) -> asyncio.Task:
+        """Downloads the song that is already playing from its stream, in the background.
+
+        When the download finishes, ``song`` carries its ``file_path`` (used to loop it,
+        to resume after a dropped stream and to delete the file afterwards).
+
+        Args:
+            ctx: The playback context.
+            song: The playing queue entry; updated in place.
+
+        Returns:
+            The background task (also reachable through :meth:`current_download`).
+        """
+        task = asyncio.create_task(self._download_current(ctx, song))
+        self._current[ctx.guild.id] = task
+        return task
+
+    def current_download(self, guild_id: int) -> Optional[asyncio.Task]:
+        """Returns the guild's background download of the playing song, if any."""
+        return self._current.get(guild_id)
+
+    async def wait_current_download(self, guild_id: int) -> None:
+        """Waits until the guild's background download of the playing song has ended."""
+        task = self._current.get(guild_id)
+        if task is not None:
+            await asyncio.wait([task])
+
+    async def _download_current(self, ctx: PlaybackContext, song: Dict[str, Any]) -> None:
+        """Runs the background download of the playing song and logs a failure."""
+        try:
+            _, error = await self.ensure_downloaded(ctx, song)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Best effort: the song keeps playing from its stream without a local copy.
+            log.error("Background download of '%s' failed", song.get("title"), exc_info=True)
+            return
+        if error:
+            log.warning("Background download of '%s' failed (%s); it plays from the stream only.", song.get("title"), error)
+
     async def cancel(self, guild_id: int) -> None:
         """Stops the guild's worker and any download it started."""
-        tasks = [self._workers.pop(guild_id, None)]
+        tasks = [self._workers.pop(guild_id, None), self._current.pop(guild_id, None)]
         tasks.extend(task for (guild, _), task in list(self._inflight.items()) if guild == guild_id)
         pending = [task for task in tasks if task is not None and not task.done()]
         for task in pending:

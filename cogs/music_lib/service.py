@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlparse
 import discord
 
 from addons.logging import get_logger
-from addons.settings import MusicAISettings
+from addons.settings import MusicAISettings, StreamingSettings
 
 from .context import PlaybackContext, user_shares_voice_channel
 from .queue_manager import PlayMode
@@ -106,11 +106,13 @@ class MusicService:
     Args:
         cog: The ``YTMusic`` cog providing the queue, state and player internals.
         settings: AI-related music settings.
+        streaming: First-song streaming settings.
     """
 
-    def __init__(self, cog: Any, settings: MusicAISettings) -> None:
+    def __init__(self, cog: Any, settings: MusicAISettings, streaming: Optional[StreamingSettings] = None) -> None:
         self._cog = cog
         self.settings = settings
+        self.streaming = streaming if streaming is not None else StreamingSettings()
 
     # ------------------------------------------------------------------ helpers
     def _refresh_buttons(self, guild_id: int) -> Optional[Any]:
@@ -182,8 +184,16 @@ class MusicService:
         cog = self._cog
         guild_id = ctx.guild.id
         _, folder = cog._get_guild_folder(guild_id)
+        voice_client = ctx.guild.voice_client
+        nothing_playing = not (voice_client.is_playing() or voice_client.is_paused())
         if cog.queue_manager.get_queue(guild_id).qsize() == 0:
-            video_info, error = await cog.youtube.download_audio(url, folder, ctx)
+            video_info = None
+            error = None
+            if self.streaming.enabled and nothing_playing:
+                # Start from the stream URL: the download continues in the background while it plays.
+                video_info, error = await cog.youtube.resolve_stream(url, ctx)
+            if video_info is None and error is None:
+                video_info, error = await cog.youtube.download_audio(url, folder, ctx)
         else:
             video_info, error = await cog.youtube.get_video_info_without_download(url, ctx)
         if error:

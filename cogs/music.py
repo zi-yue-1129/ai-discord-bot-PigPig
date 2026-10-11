@@ -48,7 +48,9 @@ class YTMusic(commands.Cog):
         self.ui_manager = bot.ui_manager
         self.lang_manager: Optional[LanguageManager] = None # Initialize lang_manager
         self.disconnect_timers = {}
-        self.service = MusicService(self, music_config.ai)
+        # Background tasks that delete a finished song's file once its download completes.
+        self._cleanup_tasks: set = set()
+        self.service = MusicService(self, music_config.ai, music_config.streaming)
         self.prefetcher = Prefetcher(
             get_youtube=lambda: self.youtube,
             queue_manager=self.queue_manager,
@@ -456,7 +458,7 @@ class YTMusic(commands.Cog):
             if not next_song:
                 return None
 
-            if next_song.get('is_live') or next_song.get('file_path'):
+            if next_song.get('is_live') or next_song.get('file_path') or next_song.get('stream_url'):
                 return next_song
 
             # --- Download Logic: Ensure song is downloaded before playing ---
@@ -506,6 +508,8 @@ class YTMusic(commands.Cog):
         voice_client.play(audio_source)
         self.state_manager.update_state(guild_id, consecutive_failures=0)
         self.prefetcher.schedule(ctx)
+        if song.get('stream_url') and not song.get('file_path') and not song.get('is_live'):
+            self.prefetcher.download_current(ctx, song)
         if not song.get('is_live'):
             self.state_manager.cancel_player_loop(guild_id)
             task = self.bot.loop.create_task(self._player_loop(ctx, song))
@@ -535,6 +539,8 @@ class YTMusic(commands.Cog):
                 file_path = song.get('file_path')
                 if file_path:
                     await self.audio_manager.delete_file(guild_id, file_path)
+                elif song.get('stream_url'):
+                    self._delete_when_downloaded(guild_id, song)
 
             # Add more songs from playlist if needed
             queue = self.queue_manager.get_queue(guild_id)
@@ -559,6 +565,26 @@ class YTMusic(commands.Cog):
 
         # play_next handles its own failures and gives up after a bounded number of retries.
         await self.play_next(ctx)
+
+    def _delete_when_downloaded(self, guild_id: int, song: dict) -> None:
+        """Deletes a streamed song's file once its background download has finished.
+
+        The song may end before the download does; deleting right away would find no file
+        and leave it behind.
+        """
+        download = self.prefetcher.current_download(guild_id)
+        if download is None or download.done():
+            return
+        task = asyncio.get_running_loop().create_task(self._remove_after(guild_id, song, download))
+        self._cleanup_tasks.add(task)
+        task.add_done_callback(self._cleanup_tasks.discard)
+
+    async def _remove_after(self, guild_id: int, song: dict, download: asyncio.Task) -> None:
+        """Waits for ``download`` to end and deletes the file it produced."""
+        await asyncio.wait([download])
+        file_path = song.get('file_path')
+        if file_path:
+            await self.audio_manager.delete_file(guild_id, file_path)
 
     async def _trigger_autoplay(self, ctx: PlaybackContext, guild_id: int, notify: bool = False) -> int:
         """根據最後播放的歌曲觸發自動播放，精確填充推薦歌曲至5首，並排除重複。
