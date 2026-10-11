@@ -65,6 +65,10 @@ class QueueManager:
         """Set the server's playlist."""
         self.guild_playlists[guild_id] = video_infos
 
+    def extend_playlist(self, guild_id: int, video_infos: List[Dict[str, Any]]) -> None:
+        """Appends songs to the buffered playlist instead of replacing what is still buffered."""
+        self.guild_playlists.setdefault(guild_id, []).extend(video_infos)
+
     async def get_next_playlist_songs(self, guild_id: int, count: int = 1, youtube_manager=None, folder: Optional[str] = None, interaction=None) -> List[Dict[str, Any]]:
         """Get the next song from the playlist."""
         if guild_id not in self.guild_playlists:
@@ -277,8 +281,15 @@ class QueueManager:
 
         # 1. Check if the song already exists
         video_id = item.get('video_id')
-        if any(song.get('video_id') == video_id for song in q._queue):
-            logger.info(f"Song '{item.get('title')}' already exists in the queue, skipping add.")
+        existing = next((song for song in q._queue if song.get('video_id') == video_id), None)
+        if existing is not None:
+            # A request for a song that is already queued (for example one the bot recommended)
+            # makes it the requester's song and plays it next.
+            logger.info(f"Song '{item.get('title')}' already exists in the queue, moving it to the front.")
+            if existing.get('file_path') and not item.get('file_path'):
+                item['file_path'] = existing['file_path']
+            q._queue.remove(existing)
+            q._queue.appendleft(item)
             return True
 
         # 2. Handle queue full scenarios

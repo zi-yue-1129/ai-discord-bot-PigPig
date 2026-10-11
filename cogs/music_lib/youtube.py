@@ -24,6 +24,25 @@ async def check_ffmpeg(ffmpeg_path='/usr/bin/ffmpeg'):
         log.error(f"FFmpeg 無法使用或運作異常: {ffmpeg_path}")
         return False
 
+# YoutubeSearch has no timeout of its own and can retry forever on a consent or captcha page.
+SEARCH_TIMEOUT_SECONDS = 15
+
+
+def parse_view_count(value: Any) -> int:
+    """Turns a view count such as ``"1,234,567 views"`` (or an int) into a number.
+
+    Args:
+        value: The ``views`` field of a search result.
+
+    Returns:
+        The count, or 0 when there is none ("No views", ``None``).
+    """
+    if isinstance(value, int):
+        return value
+    digits = re.sub(r"[^\d]", "", str(value or ""))
+    return int(digits) if digits else 0
+
+
 class YouTubeManager:
     def __init__(self, time_limit=1800):
         self.time_limit = time_limit
@@ -110,8 +129,9 @@ class YouTubeManager:
 
     async def search_videos(self, query, max_results=10):
         try:
-            results = await asyncio.to_thread(
-                lambda: YoutubeSearch(query, max_results=max_results).to_dict()
+            results = await asyncio.wait_for(
+                asyncio.to_thread(lambda: YoutubeSearch(query, max_results=max_results).to_dict()),
+                timeout=SEARCH_TIMEOUT_SECONDS,
             )
             
             for result in results:
@@ -675,7 +695,7 @@ class YouTubeManager:
                     author_results.extend(process_search_results(results))
                 
                 if author_results:
-                    author_results.sort(key=lambda x: x.get('views', 0), reverse=True)
+                    author_results.sort(key=lambda x: parse_view_count(x.get('views', 0)), reverse=True)
                     num_to_add = min(limit - len(final_results), len(author_results))
                     
                     top_half = author_results[:num_to_add // 2]

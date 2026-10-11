@@ -41,6 +41,8 @@ FAILURE_REASONS = (
     "playback_not_started",
 )
 
+# How long the bot stays in the channel after a request that could not be served.
+FAILED_PLAY_DISCONNECT_SECONDS = 60
 _YOUTUBE_HOSTS = ("youtube.com", "youtu.be")
 _SEARCH_CANDIDATES = 3
 # Songs queued immediately from a playlist; the rest wait in the playlist buffer.
@@ -172,7 +174,11 @@ class MusicService:
                 f"Nothing was played: the bot is already playing in the voice channel "
                 f"'{_channel_name(voice_client.channel)}' and the requester is not in it.",
             )
-        await voice_client.move_to(voice_state.channel)
+        try:
+            await voice_client.move_to(voice_state.channel)
+        except (discord.ClientException, discord.HTTPException, asyncio.TimeoutError):
+            log.error("Failed to move to the requester's channel in guild %s", ctx.guild.id, exc_info=True)
+            return _fail("voice_connect_failed", "The bot could not move to the requester's voice channel.")
         return None
 
     async def _keep_connected(self, ctx: PlaybackContext) -> None:
@@ -240,7 +246,7 @@ class MusicService:
         for info in remaining:
             info["added_by"] = ctx.user.id
         if remaining:
-            cog.queue_manager.set_playlist(guild_id, remaining)
+            cog.queue_manager.extend_playlist(guild_id, remaining)
         return added, len(video_infos), None
 
     # --------------------------------------------------------------------- play
@@ -259,6 +265,21 @@ class MusicService:
             return problem
         await self._keep_connected(ctx)
 
+        result = await self._queue_and_start(ctx, query)
+        if not result.ok:
+            await self._leave_soon_if_idle(ctx)
+        return result
+
+    async def _leave_soon_if_idle(self, ctx: PlaybackContext) -> None:
+        """Starts a short idle timer when a request failed and left the bot with nothing to do."""
+        voice_client = ctx.guild.voice_client
+        queue_manager = self._cog.queue_manager
+        if (voice_client is not None and voice_client.is_connected() and self._cog._is_idle(voice_client)
+                and queue_manager.is_queue_empty(ctx.guild.id)):
+            await self._cog._start_disconnect_timer(ctx.guild.id, FAILED_PLAY_DISCONNECT_SECONDS)
+
+    async def _queue_and_start(self, ctx: PlaybackContext, query: str) -> ActionResult:
+        """Queues what ``query`` names and starts playback when nothing is playing."""
         kind = classify_query(query)
         data: Dict[str, Any]
         info: Dict[str, Any] = {}
@@ -267,6 +288,7 @@ class MusicService:
             if failure:
                 return failure
             data = {"kind": "playlist", "added": len(added or []), "total": total,
+                    "buffered": total - len(added or []),
                     "titles": [info["title"] for info in added or []]}
         else:
             queued, failure = await self._queue_video_or_search(ctx, query, kind)
@@ -373,7 +395,8 @@ class MusicService:
             await view.update_button_state()
         if state.autoplay:
             asyncio.create_task(self._cog._trigger_autoplay(ctx, guild_id))
-        return ActionResult(ok=True, detail="Skipped.", data={"skipped": skipped, "next": upcoming})
+        more_coming = self._cog.queue_manager.has_playlist_songs(guild_id) or state.autoplay
+        return ActionResult(ok=True, detail="Skipped.", data={"skipped": skipped, "next": upcoming, "more_coming": more_coming})
 
     async def pause(self, ctx: PlaybackContext, *, refresh_buttons: bool = True) -> ActionResult:
         """Pauses playback and starts the idle-disconnect timer."""
@@ -499,6 +522,7 @@ class MusicService:
         if removed is None:
             size = len(self._cog.queue_manager.get_queue_snapshot(guild_id))
             return _fail("invalid_position", f"Position must be between 1 and {size}.")
+        await self._cog.prefetcher.cancel_song(guild_id, removed.get("video_id"))
         await self._discard_files(guild_id, [removed])
         return ActionResult(ok=True, detail="Removed.", data={"title": removed["title"], "position": position})
 

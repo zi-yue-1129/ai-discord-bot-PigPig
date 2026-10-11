@@ -1,5 +1,7 @@
 {
     "responses": {
-        "success": "キューがシャッフルされました。"
+        "success": "シャッフル：{status}",
+        "enabled": "オン",
+        "disabled": "オフ"
     }
 }

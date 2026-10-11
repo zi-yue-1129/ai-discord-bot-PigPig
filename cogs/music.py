@@ -95,6 +95,7 @@ class YTMusic(commands.Cog):
         message = await interaction.original_response()
         state = self.state_manager.get_state(interaction.guild.id)
         state.ui_messages.append(message)
+        await self._refresh_player_buttons(guild_id)
 
     @app_commands.command(name="shuffle", description="切換隨機播放")
     async def shuffle(self, interaction: discord.Interaction):
@@ -117,7 +118,13 @@ class YTMusic(commands.Cog):
         message = await interaction.original_response()
         state = self.state_manager.get_state(interaction.guild.id)
         state.ui_messages.append(message)
+        await self._refresh_player_buttons(guild_id)
 
+    async def _refresh_player_buttons(self, guild_id: int) -> None:
+        """Redraws the control buttons so the loop and shuffle states match the settings."""
+        view = self.ui_manager.get_current_view(guild_id)
+        if view:
+            await view.update_button_state()
 
     async def _reply_service_result(self, interaction: discord.Interaction, result: Any, success_key: str, **format_args: Any) -> None:
         """Answer a slash command from a service result.
@@ -479,7 +486,16 @@ class YTMusic(commands.Cog):
             if not next_song:
                 return None
 
-            if next_song.get('is_live') or next_song.get('file_path') or next_song.get('stream_url'):
+            if next_song.get('is_live'):
+                return next_song
+            file_path = next_song.get('file_path')
+            if file_path and await asyncio.to_thread(os.path.exists, file_path):
+                return next_song
+            if file_path:
+                # The file is gone (an earlier copy of the same song deleted it): fetch it again.
+                next_song['file_path'] = None
+                next_song['stream_url'] = None
+            elif next_song.get('stream_url'):
                 return next_song
 
             # --- Download Logic: Ensure song is downloaded before playing ---
@@ -559,7 +575,12 @@ class YTMusic(commands.Cog):
             # 只有在非循環且非直播的模式下才刪除檔案
             if play_mode not in [PlayMode.LOOP_SINGLE, PlayMode.LOOP_QUEUE] and not song.get('is_live'):
                 file_path = song.get('file_path')
-                if file_path:
+                still_needed = any(
+                    queued.get('file_path') == file_path for queued in self.queue_manager.get_queue_snapshot(guild_id)
+                )
+                if file_path and still_needed:
+                    logger.info(f"[音樂] 檔案 {file_path} 仍被佇列中的同一首歌使用，保留。")
+                elif file_path:
                     await self.audio_manager.delete_file(guild_id, file_path)
                 elif song.get('stream_url'):
                     self._delete_when_downloaded(guild_id, song)
@@ -855,7 +876,13 @@ class YTMusic(commands.Cog):
             return
 
         queue_text = await self.get_queue_text(guild_id)
-        view.current_embed.set_field_at(4, name=self.lang_manager.translate(str(guild_id), "system", "music", "player", "queue"), value=queue_text, inline=False)
+        queue_name = self.lang_manager.translate(str(guild_id), "system", "music", "player", "queue")
+        embed = view.current_embed
+        position = next((index for index, field in enumerate(embed.fields) if field.name == queue_name), None)
+        if position is None:
+            embed.add_field(name=queue_name, value=queue_text, inline=False)
+        else:
+            embed.set_field_at(position, name=queue_name, value=queue_text, inline=False)
         await view.update_embed(interaction, view.current_embed.title, view.current_embed.color)
 
     async def handle_toggle_autoplay(self, interaction: discord.Interaction):

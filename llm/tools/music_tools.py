@@ -52,6 +52,11 @@ def _in_channel(data: dict) -> str:
 def _format_queued(result: ActionResult) -> str:
     """Describes exactly what a successful ``play`` did."""
     data = result.data
+    if data.get("kind") == "playlist" and not data.get("added"):
+        return (
+            f"Added {data.get('total')} songs from the playlist{_in_channel(data)}; "
+            "they play after the current queue."
+        )
     if data.get("kind") == "playlist":
         titles = ", ".join(data.get("titles", [])[:5])
         return (
@@ -179,6 +184,8 @@ class MusicTools:
             upcoming = result.data.get("next")
             if upcoming:
                 return f"Skipped {skipped}. Up next: '{upcoming}'."
+            if result.data.get("more_coming"):
+                return f"Skipped {skipped}. More songs will load from the playlist or autoplay."
             return f"Skipped {skipped}. The queue is now empty."
 
         @tool

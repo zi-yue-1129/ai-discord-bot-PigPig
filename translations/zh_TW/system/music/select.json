@@ -3,5 +3,9 @@
     "placeholder": "選擇要播放的歌曲",
     "processing": "⏳ | 處理中",
     "processing_desc": "正在處理您的選擇，請稍候...",
-    "added": "✅ | 已添加到播放清單： {title}"
+    "added": "✅ | 已添加到播放清單： {title}",
+    "timeout": "⏱️ | 選擇已逾時",
+    "queue_full": "❌ | 待播清單已滿",
+    "wait_message": "請等幾首歌播完後再試。",
+    "error": "❌ | 選擇歌曲時發生錯誤"
 }

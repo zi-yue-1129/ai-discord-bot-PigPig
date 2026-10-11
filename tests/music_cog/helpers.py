@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, List, Optional
 
+
+# Downloaded songs point at real (empty) files: the player checks that a file exists before
+# playing it and downloads the song again when it does not.
+SONG_DIR = Path(tempfile.mkdtemp(prefix="music-test-songs-"))
 
 BOT_USER_ID = 1
 REQUESTER_ID = 42
@@ -142,12 +148,14 @@ def make_member(user_id: int, voice_channel: Optional[object]) -> SimpleNamespac
 
 
 def make_song(index: int, *, added_by: int = REQUESTER_ID) -> dict:
-    """Builds a downloaded (ready to play) song entry."""
+    """Builds a downloaded (ready to play) song entry whose file exists."""
+    audio_file = SONG_DIR / f"song-{index}.mp3"
+    audio_file.touch()
     return {
         "title": f"song {index}",
         "url": f"https://youtu.be/v{index}",
         "video_id": f"v{index}",
-        "file_path": f"/tmp/does-not-matter-{index}.mp3",
+        "file_path": str(audio_file),
         "duration": 120,
         "author": "artist",
         "added_by": added_by,

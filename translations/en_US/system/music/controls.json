@@ -18,5 +18,6 @@
             }
         }
     },
-    "not_in_channel": "You need to be in the same voice channel as the bot to control the music"
+    "not_in_channel": "You need to be in the same voice channel as the bot to control the music",
+    "no_songs": "❌ There is nothing to play!"
 }

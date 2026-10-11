@@ -156,6 +156,19 @@ class Prefetcher:
             await asyncio.gather(*pending, return_exceptions=True)
         self._failed.pop(guild_id, None)
 
+    async def cancel_song(self, guild_id: int, video_id: str) -> None:
+        """Stops the background download of one song (it left the queue).
+
+        Args:
+            guild_id: The guild whose download is cancelled.
+            video_id: The song's video id.
+        """
+        task = self._inflight.get((guild_id, video_id))
+        self._failed.get(guild_id, set()).discard(video_id)
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
     # ----------------------------------------------------------------- internals
     def _next_target(self, guild_id: int) -> Optional[Dict[str, Any]]:
         """Returns the first entry among the next downloadable songs that is missing its file.

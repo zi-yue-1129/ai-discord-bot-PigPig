@@ -415,7 +415,7 @@ async def test_skip_reports_the_next_song(
 
     result = await service.skip(ctx)
 
-    assert result.data == {"skipped": "song 0", "next": "song 1"}
+    assert result.data == {"skipped": "song 0", "next": "song 1", "more_coming": False}
 
 
 @pytest.mark.asyncio
