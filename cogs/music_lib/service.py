@@ -297,8 +297,17 @@ class MusicService:
         results = await self._cog.youtube.search_videos(query, max_results=5)
         if not results:
             return None, _fail("no_results", f"No results found for {query!r}.")
+        # The search already reports each duration (0 means unknown, e.g. a live stream), so
+        # videos over the limit are dropped here instead of costing a yt-dlp probe each.
+        time_limit = self._cog.youtube.time_limit
+        playable = [r for r in results if not r.get("duration") or r["duration"] <= time_limit]
+        if not playable:
+            return None, _fail(
+                "no_results",
+                f"Every result for {query!r} is longer than the {time_limit // 60} minutes limit.",
+            )
         failure: Optional[ActionResult] = None
-        for candidate in results[:_SEARCH_CANDIDATES]:
+        for candidate in playable[:_SEARCH_CANDIDATES]:
             info, failure = await self.enqueue_video(ctx, candidate["url"])
             if info is not None:
                 return info, None

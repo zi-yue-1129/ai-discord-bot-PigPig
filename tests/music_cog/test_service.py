@@ -24,6 +24,7 @@ class FakeYouTube:
     """YouTube manager stand-in that never touches the network."""
 
     def __init__(self) -> None:
+        self.time_limit = 1800
         self.search_results: List[dict] = [make_song(100), make_song(101)]
         self.playlist: List[dict] = [make_song(200 + i) for i in range(8)]
         self.error: Optional[str] = None
@@ -451,3 +452,46 @@ async def test_a_refused_request_names_the_channel_the_bot_is_in(
     result = await service.skip(outsider)
 
     assert "Music Room" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_search_skips_results_longer_than_the_limit_without_probing_them(
+    service: MusicService, ctx: PlaybackContext, youtube: FakeYouTube,
+    played: List[PlaybackContext],
+) -> None:
+    too_long = make_song(100) | {"duration": 3000}
+    fine = make_song(101) | {"duration": 200}
+    youtube.search_results = [too_long, fine]
+
+    result = await service.play(ctx, "稻香")
+
+    assert result.ok
+    assert youtube.downloaded == [fine["url"]]
+
+
+@pytest.mark.asyncio
+async def test_search_keeps_results_whose_duration_is_unknown_such_as_live_streams(
+    service: MusicService, ctx: PlaybackContext, youtube: FakeYouTube,
+    played: List[PlaybackContext],
+) -> None:
+    live = make_song(100) | {"duration": 0}
+    youtube.search_results = [live]
+
+    await service.play(ctx, "lofi radio")
+
+    assert youtube.downloaded == [live["url"]]
+
+
+@pytest.mark.asyncio
+async def test_search_where_everything_is_too_long_reports_it(
+    service: MusicService, ctx: PlaybackContext, youtube: FakeYouTube,
+    played: List[PlaybackContext],
+) -> None:
+    youtube.search_results = [make_song(100) | {"duration": 9000}]
+
+    result = await service.play(ctx, "完整專輯")
+
+    assert not result.ok
+    assert result.reason == "no_results"
+    assert "30 minutes" in result.detail
+    assert youtube.downloaded == []

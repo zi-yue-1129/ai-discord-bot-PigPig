@@ -158,6 +158,8 @@ def idle_service(cog: YTMusic, monkeypatch: pytest.MonkeyPatch) -> MusicService:
     """A service whose YouTube lookups succeed instantly."""
 
     class QuickYouTube:
+        time_limit = 1800
+
         async def search_videos(self, query: str, max_results: int = 10) -> List[dict]:
             return [make_song(100)]
 
