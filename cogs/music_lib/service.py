@@ -348,6 +348,7 @@ class MusicService:
         view = self._refresh_buttons(guild_id)
         if view:
             view.stop_progress_updater()
+        self._cog.mark_user_stop(guild_id)
         voice_client.stop()
         if view and refresh_buttons:
             await view.update_button_state()

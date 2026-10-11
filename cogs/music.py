@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -50,6 +51,8 @@ class YTMusic(commands.Cog):
         self.disconnect_timers = {}
         # Background tasks that delete a finished song's file once its download completes.
         self._cleanup_tasks: set = set()
+        # Monotonic clock used to measure how long a song has really played (replaced in tests).
+        self._clock = time.monotonic
         self.service = MusicService(self, music_config.ai, music_config.streaming)
         self.prefetcher = Prefetcher(
             get_youtube=lambda: self.youtube,
@@ -407,6 +410,7 @@ class YTMusic(commands.Cog):
         """Handle single song loop playback"""
         try:
             if voice_client.is_playing():
+                self.mark_user_stop(guild_id)
                 voice_client.stop()
 
             song = state.current_song
@@ -493,8 +497,13 @@ class YTMusic(commands.Cog):
         guild_id = ctx.guild.id
         await self._cancel_disconnect_timer(guild_id)
         if voice_client.is_playing():
+            self.mark_user_stop(guild_id)
             voice_client.stop()
 
+        # A file is preferred; otherwise the song plays from its stream and may need a resume.
+        file_path = song.get('file_path')
+        has_file = bool(file_path) and await asyncio.to_thread(os.path.exists, file_path)
+        song['streaming'] = bool(song.get('stream_url')) and not has_file and not song.get('is_live')
         audio_source = self.audio_manager.create_audio_source(song, volume=self.state_manager.get_state(guild_id).volume)
         message = await self.ui_manager.update_player_ui(
             ctx,
@@ -506,7 +515,7 @@ class YTMusic(commands.Cog):
         self.state_manager.update_state(guild_id, current_message=message, current_song=song, last_played_song=song)
 
         voice_client.play(audio_source)
-        self.state_manager.update_state(guild_id, consecutive_failures=0)
+        self.state_manager.update_state(guild_id, consecutive_failures=0, user_stopped=False)
         self.prefetcher.schedule(ctx)
         if song.get('stream_url') and not song.get('file_path') and not song.get('is_live'):
             self.prefetcher.download_current(ctx, song)
@@ -718,6 +727,7 @@ class YTMusic(commands.Cog):
             return
 
         if voice_client.is_playing() or voice_client.is_paused():
+            self.mark_user_stop(interaction.guild.id)
             voice_client.stop()
             view = self.ui_manager.get_current_view(interaction.guild.id)
             if view:
@@ -1039,11 +1049,24 @@ class YTMusic(commands.Cog):
                         if view:
                             await view.update_button_state()
 
-    async def _player_loop(self, ctx: PlaybackContext, song: dict) -> None:
-        """Monitors the player and handles song completion."""
+    def mark_user_stop(self, guild_id: int) -> None:
+        """Records that playback is being stopped on purpose (skip, previous, replacement)."""
+        self.state_manager.update_state(guild_id, user_stopped=True)
+
+    async def _player_loop(self, ctx: PlaybackContext, song: dict, start_offset: float = 0.0) -> None:
+        """Monitors the player and handles song completion.
+
+        Args:
+            ctx: The playback context.
+            song: The song being played.
+            start_offset: Seconds of the song that were already played before this loop
+                started (non-zero after a resume).
+        """
         guild_id = ctx.guild.id
         logger.info(f"[{guild_id}] Player loop started for '{song['title']}'.")
 
+        played = float(start_offset)
+        last_tick = self._clock()
         await asyncio.sleep(2)  # Wait for playback to start
 
         while True:
@@ -1052,7 +1075,9 @@ class YTMusic(commands.Cog):
                 logger.warning(f"[{guild_id}] Player loop exiting: voice client disconnected.")
                 return
 
+            now = self._clock()
             if voice_client.is_paused():
+                last_tick = now
                 await asyncio.sleep(1)
                 continue
 
@@ -1060,15 +1085,74 @@ class YTMusic(commands.Cog):
                 logger.info(f"[{guild_id}] Player loop detected song has finished.")
                 break
 
+            played += now - last_tick
+            last_tick = now
             await asyncio.sleep(1)
 
         state = self.state_manager.get_state(guild_id)
         # Ensure we are still on the same song before triggering after_play
         if state.current_song and state.current_song['video_id'] == song['video_id']:
+            if await self._resume_dropped_stream(ctx, song, played):
+                return
             logger.info(f"[{guild_id}] 歌曲 '{song['title']}' 播放完畢，觸發 _handle_after_play。")
             await self._handle_after_play(ctx, song)
         else:
             logger.info(f"[{guild_id}] Player loop for '{song['title']}' exiting without action. (Song might have been skipped).")
+
+    async def _resume_dropped_stream(self, ctx: PlaybackContext, song: dict, played: float) -> bool:
+        """Continues a streamed song from its downloaded file when the stream ended early.
+
+        Args:
+            ctx: The playback context.
+            song: The song whose player loop saw playback end.
+            played: Seconds of the song that were played so far.
+
+        Returns:
+            True when playback was resumed (a new player loop owns the song now); False
+            when the song really ended, was stopped on purpose, or cannot be resumed.
+        """
+        guild_id = ctx.guild.id
+        state = self.state_manager.get_state(guild_id)
+        stopped_on_purpose = state.user_stopped
+        self.state_manager.update_state(guild_id, user_stopped=False)
+
+        settings = self.service.streaming
+        duration = song.get('duration') or 0
+        if stopped_on_purpose or not settings.enabled or not song.get('streaming'):
+            return False
+        if duration <= 0 or played + settings.drop_tolerance_seconds >= duration:
+            return False
+        if song.get('resumes', 0) >= settings.max_resumes:
+            return False
+
+        song['resumes'] = song.get('resumes', 0) + 1
+        logger.warning(f"[{guild_id}] 串流在 {played:.0f}/{duration} 秒中斷，改用下載檔接續播放 '{song['title']}'。")
+
+        file_path = song.get('file_path')
+        if not (file_path and await asyncio.to_thread(os.path.exists, file_path)):
+            _, error = await self.prefetcher.ensure_downloaded(ctx, song)
+            file_path = song.get('file_path')
+            if error or not (file_path and await asyncio.to_thread(os.path.exists, file_path)):
+                logger.error(f"[{guild_id}] 無法接續播放 '{song['title']}': {error or '找不到下載檔'}")
+                return False
+
+        # The listener may have skipped or stopped while the download finished.
+        voice_client = self.get_voice_client(guild_id)
+        current = state.current_song
+        if state.user_stopped or not voice_client or not voice_client.is_connected():
+            return False
+        if not current or current['video_id'] != song['video_id']:
+            return False
+
+        audio_source = self.audio_manager.create_audio_source(song, volume=state.volume, start_offset=played)
+        voice_client.play(audio_source)
+        song['streaming'] = False
+        view = self.ui_manager.get_current_view(guild_id)
+        if view:
+            view.current_position = int(played)
+        task = asyncio.get_running_loop().create_task(self._player_loop(ctx, song, played))
+        self.state_manager.update_state(guild_id, player_loop_task=task)
+        return True
 
 
 async def setup(bot):

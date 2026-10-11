@@ -15,6 +15,9 @@ class PlayerState:
     player_loop_task: Optional[asyncio.Task] = None
     consecutive_failures: int = 0
     volume: float = 1.0
+    # Set when playback was stopped on purpose (skip, previous, replace), so a player
+    # loop that sees the stream end does not mistake it for a dropped connection.
+    user_stopped: bool = False
 
 
 class StateManager:
