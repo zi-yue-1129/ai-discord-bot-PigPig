@@ -203,8 +203,9 @@ class BotInfo(commands.Cog):
             await func.report_error(e, "getting bot info")
             try:
                 await interaction.edit_original_response(content="❌ Error getting bot info.")
-            except Exception:
-                pass
+            except discord.HTTPException:
+                # The interaction may have expired; the original error was already reported above.
+                log.error("Could not edit the botinfo response after an error", exc_info=True)
 
 async def setup(bot):
     """Set up the BotInfo cog."""
