@@ -24,6 +24,10 @@ from function import func
 
 # Playback attempts that may fail back-to-back before the player gives up.
 MAX_CONSECUTIVE_FAILURES = 3
+# How long a paused player may sit idle before the bot leaves the voice channel.
+PAUSED_DISCONNECT_SECONDS = 300
+# How long the "queue finished" message stays before the bot leaves the voice channel.
+QUEUE_END_DISCONNECT_SECONDS = 10
 
 
 class PlaybackAbortedError(RuntimeError):
@@ -378,6 +382,9 @@ class YTMusic(commands.Cog):
         embed = discord.Embed(title=f"🌟 | {title}", color=discord.Color.blue())
         await self._send_channel_message(ctx, embed=embed)
         self.state_manager.update_state(guild_id, current_song=None, current_message=None, consecutive_failures=0)
+        # The announcement promises a disconnect: keep it for a moment so it can be read, then
+        # leave the channel and remove the messages. A new song cancels the timer.
+        await self._start_disconnect_timer(guild_id, QUEUE_END_DISCONNECT_SECONDS)
 
     async def _abort_playback(self, ctx: PlaybackContext) -> None:
         """Give up after repeated failures: stop the player and tell the channel."""
@@ -906,23 +913,33 @@ class YTMusic(commands.Cog):
             del self.disconnect_timers[guild_id]
             logger.info(f"[音樂] 伺服器 ID: {guild_id}, 已取消閒置斷線計時器。")
 
-    async def _start_disconnect_timer(self, guild_id: int):
-        """Starts the disconnect timer for a guild."""
+    async def _start_disconnect_timer(self, guild_id: int, delay: float = PAUSED_DISCONNECT_SECONDS):
+        """Starts the idle-disconnect timer for a guild.
+
+        Args:
+            guild_id: The guild to disconnect from.
+            delay: Seconds to wait before disconnecting.
+        """
         await self._cancel_disconnect_timer(guild_id) # Cancel any existing timer
-        
-        logger.info(f"[音樂] 伺服器 ID: {guild_id}, 播放器已暫停，啟動 5 分鐘閒置斷線計時器。")
-        self.disconnect_timers[guild_id] = self.bot.loop.create_task(
-            self._disconnect_after_delay(guild_id)
+
+        logger.info(f"[音樂] 伺服器 ID: {guild_id}, 啟動 {delay:g} 秒閒置斷線計時器。")
+        self.disconnect_timers[guild_id] = asyncio.get_running_loop().create_task(
+            self._disconnect_after_delay(guild_id, delay)
         )
 
-    async def _disconnect_after_delay(self, guild_id: int):
-        """Disconnects the bot after a 5-minute delay if it's still paused."""
-        await asyncio.sleep(300) # 5 minutes
-        
+    async def _disconnect_after_delay(self, guild_id: int, delay: float = PAUSED_DISCONNECT_SECONDS):
+        """Disconnects the bot after ``delay`` seconds unless a song is playing again.
+
+        Args:
+            guild_id: The guild to disconnect from.
+            delay: Seconds to wait before checking.
+        """
+        await asyncio.sleep(delay)
+
         voice_client = self.get_voice_client(guild_id)
-        if voice_client and voice_client.is_connected() and voice_client.is_paused():
-            logger.info(f"[音樂] 伺服器 ID: {guild_id}, 閒置超過 5 分鐘，自動斷線。")
-            
+        if voice_client and voice_client.is_connected() and not voice_client.is_playing():
+            logger.info(f"[音樂] 伺服器 ID: {guild_id}, 閒置超過 {delay:g} 秒，自動斷線。")
+
             # Find a channel to send the message
             state = self.state_manager.get_state(guild_id)
             channel = None

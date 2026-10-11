@@ -194,3 +194,52 @@ async def test_toggle_playback_from_another_channel_is_rejected(
     await cog.handle_toggle_playback(interaction)
 
     assert voice_client.pause_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_a_finished_queue_schedules_the_disconnect_it_announces(
+    cog: YTMusic, ctx: PlaybackContext, voice_client: FakeVoiceClient
+) -> None:
+    """The channel is told the bot is disconnecting, so it must actually do so."""
+    await cog._announce_queue_finished(ctx)
+
+    timer = cog.disconnect_timers[GUILD_ID]
+    assert not timer.done()
+    timer.cancel()
+
+
+@pytest.mark.asyncio
+async def test_the_idle_disconnect_leaves_the_channel_and_removes_the_messages(
+    cog: YTMusic, ctx: PlaybackContext, text_channel: FakeChannel, voice_client: FakeVoiceClient
+) -> None:
+    await cog._announce_queue_finished(ctx)
+    cog.disconnect_timers[GUILD_ID].cancel()
+    announcement = text_channel.sent[0]
+
+    await cog._disconnect_after_delay(GUILD_ID, delay=0)
+
+    assert voice_client.disconnected
+    assert announcement.deleted
+    assert GUILD_ID not in cog.disconnect_timers
+
+
+@pytest.mark.asyncio
+async def test_the_idle_disconnect_does_not_interrupt_a_song_that_started_meanwhile(
+    cog: YTMusic, ctx: PlaybackContext, voice_client: FakeVoiceClient
+) -> None:
+    voice_client.playing = True
+
+    await cog._disconnect_after_delay(GUILD_ID, delay=0)
+
+    assert not voice_client.disconnected
+
+
+@pytest.mark.asyncio
+async def test_a_paused_player_is_still_disconnected_after_the_idle_delay(
+    cog: YTMusic, ctx: PlaybackContext, voice_client: FakeVoiceClient
+) -> None:
+    voice_client.paused = True
+
+    await cog._disconnect_after_delay(GUILD_ID, delay=0)
+
+    assert voice_client.disconnected
