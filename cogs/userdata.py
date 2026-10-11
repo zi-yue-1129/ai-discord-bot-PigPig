@@ -48,6 +48,7 @@ from cogs.memory.users.manager import SQLiteUserManager
 from cogs.memory.users.models import UserInfo
 from cogs.memory.db.knowledge_storage import KnowledgeStorage
 from function import func
+from addons.discord_text import reply_in_chunks
 from llm.model_manager import ModelManager
 from llm.utils.model_init import create_model_instance
 from llm.utils.send_message import safe_edit_message
@@ -66,6 +67,11 @@ FALLBACK_TRANSLATIONS = {
     "data_created": "Got it! I've remembered it!\nMy new memory:\n{data}",
     "clear_success": "I have forgotten everything about you.",
     "clear_failed": "Failed to clear your memory or you had no memory stored.",
+    "clear_confirm": "This will permanently erase everything I remember about you. Continue?",
+    "clear_confirm_button": "Erase",
+    "clear_cancel_button": "Cancel",
+    "clear_cancelled": "Cancelled. Your memory is unchanged.",
+    "clear_not_yours": "This confirmation is not for you.",
     "sqlite_not_available": "Personal memory system not initialized",
     "invalid_action": "Invalid action. Please use 'read', 'save', or 'clear'.",
     "database_error": "Database operation error: {error}",
@@ -113,6 +119,45 @@ class UserDataResponse(BaseModel):
         default_factory=list,
         description="Names the user wants to be called"
     )
+
+
+class ClearMemoryConfirmView(discord.ui.View):
+    """Asks the user to confirm before their memory is erased (it cannot be undone)."""
+
+    def __init__(self, cog: Any, *, user_id: int, guild_id: str) -> None:
+        super().__init__(timeout=60)
+        self.cog = cog
+        self.user_id = user_id
+        self.guild_id = guild_id
+        self.confirm.label = self._text("clear_confirm_button")
+        self.cancel.label = self._text("clear_cancel_button")
+
+    def _text(self, key: str) -> str:
+        """Returns a translated response text."""
+        return self.cog._translate(self.guild_id, "commands", "userdata", "responses", key, fallback_key=key)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Only the user who asked may answer."""
+        if interaction.user.id == self.user_id:
+            return True
+        await interaction.response.send_message(self._text("clear_not_yours"), ephemeral=True)
+        return False
+
+    @discord.ui.button(style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """Erases the memory."""
+        await interaction.response.edit_message(content=self._text("updating"), view=None)
+        self.stop()
+        result = await self.cog.manage_user_data(
+            context=interaction, user=interaction.user, user_data='', action='clear'
+        )
+        await interaction.edit_original_response(content=result)
+
+    @discord.ui.button(style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """Keeps the memory."""
+        await interaction.response.edit_message(content=self._text("clear_cancelled"), view=None)
+        self.stop()
 
 
 class UserDataCog(commands.Cog):
@@ -779,7 +824,7 @@ class UserDataCog(commands.Cog):
             action='save'
         )
         
-        await interaction.edit_original_response(content=result)
+        await reply_in_chunks(interaction, result, ephemeral=True)
 
     @memory_group.command(
         name="clear",
@@ -794,16 +839,12 @@ class UserDataCog(commands.Cog):
         if not self.lang_manager:
             self.lang_manager = LanguageManager.get_instance(self.bot)
 
-        await interaction.response.defer(thinking=True, ephemeral=True)
-
-        result = await self.manage_user_data(
-            context=interaction,
-            user=interaction.user,
-            user_data='',
-            action='clear'
+        guild_id = str(interaction.guild_id) if interaction.guild_id else "0"
+        prompt = self._translate(
+            guild_id, "commands", "userdata", "responses", "clear_confirm", fallback_key="clear_confirm"
         )
-
-        await interaction.edit_original_response(content=result)
+        view = ClearMemoryConfirmView(self, user_id=interaction.user.id, guild_id=guild_id)
+        await interaction.response.send_message(prompt, view=view, ephemeral=True)
 
     @memory_group.command(
         name="show",
@@ -827,7 +868,7 @@ class UserDataCog(commands.Cog):
             action='read'
         )
         
-        await interaction.edit_original_response(content=result)
+        await reply_in_chunks(interaction, result, ephemeral=True)
 
     @knowledge_group.command(
         name="show",

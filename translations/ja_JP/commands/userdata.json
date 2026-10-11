@@ -22,7 +22,12 @@
             "clear_success": "ユーザー <@{user_id}> のデータを消去しました。",
             "clear_failed": "ユーザー <@{user_id}> のデータを消去できませんでした、またはデータがありませんでした。",
             "invalid_action": "無効なアクションです。「読み取り」「保存」または「クリア」を使用してください。",
-            "no_data_provided": "覚える内容を教えてください。"
+            "no_data_provided": "覚える内容を教えてください。",
+            "clear_confirm": "私があなたについて覚えていることをすべて完全に削除します。続けますか？",
+            "clear_confirm_button": "削除",
+            "clear_cancel_button": "キャンセル",
+            "clear_cancelled": "キャンセルしました。記憶は変更されていません。",
+            "clear_not_yours": "この確認はあなた宛てではありません。"
         },
         "errors": {
             "sqlite_not_available": "個人メモリシステムが初期化されていません",

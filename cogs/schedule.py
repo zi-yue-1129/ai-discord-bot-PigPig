@@ -9,6 +9,7 @@ from typing import Optional
 from .language_manager import LanguageManager
 from addons.logging import get_logger
 from function import func
+from addons.discord_text import reply_in_chunks
 
 logger = get_logger(server_id="Bot", source="schedule")
 
@@ -95,7 +96,7 @@ class ScheduleManager(commands.Cog):
         try:
             target_user_id = target_user.id if target_user else interaction.user.id
             result = await self._core_query_schedule(interaction, query_type.value, target_user_id, time, day.value if day else None)
-            await interaction.edit_original_response(content=result)
+            await reply_in_chunks(interaction, result)
         except Exception as e:
             await func.report_error(e, "querying schedule")
             error_msg = self.lang_manager.translate(
@@ -198,7 +199,7 @@ class ScheduleManager(commands.Cog):
         for day, events in schedule.items():
             # 嘗試翻譯星期名稱
             translated_day = self.lang_manager.translate(
-                guild_id, "commands", "query_schedule", "choices", "weekdays", day
+                guild_id, "commands", "schedule", "query_schedule", "choices", "weekdays", day
             ) if self.lang_manager else day
             
             day_header = self.lang_manager.translate(

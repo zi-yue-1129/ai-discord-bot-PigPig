@@ -51,7 +51,13 @@ def _needs_isolation(module: Any) -> bool:
         return True
     module_file = getattr(module, "__file__", None)
     if module_file is None:
-        return False
+        # A namespace package (a project folder without ``__init__.py``) has no file. If it
+        # stayed cached while its parent package was reverted, importing it again would
+        # fail with ``KeyError`` for the parent, so it is isolated like other project modules.
+        package_paths = getattr(module, "__path__", None)
+        return package_paths is not None and any(
+            Path(entry).resolve().is_relative_to(_PROJECT_ROOT) for entry in list(package_paths)
+        )
     return Path(module_file).resolve().is_relative_to(_PROJECT_ROOT)
 
 
