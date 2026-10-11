@@ -228,6 +228,33 @@ class StreamingSettings:
     max_resumes: int = 2
 
 
+@dataclass(frozen=True)
+class AutoplaySettings:
+    """Autoplay recommendations (``autoplay:`` block of music.yaml).
+
+    Attributes:
+        use_mix: Whether to take candidates from the YouTube Mix of the current song.
+        candidate_pool: How many Mix entries to read.
+        min_duration_seconds: Shorter songs are not recommended.
+        max_per_author: Cap on songs by one author in one recommendation batch.
+        history_size: How many recently played songs per guild are never recommended again.
+        skip_penalty_window_seconds: Skipping a recommendation within this time counts against its author.
+        banned_keywords: Titles containing any of these (case-insensitive) are not recommended.
+    """
+
+    use_mix: bool = True
+    candidate_pool: int = 25
+    min_duration_seconds: int = 60
+    max_per_author: int = 2
+    history_size: int = 50
+    skip_penalty_window_seconds: int = 15
+    banned_keywords: tuple = ("1 hour", "10 hours", "slowed", "nightcore", "reaction", "8d audio")
+
+    def __post_init__(self) -> None:
+        # YAML gives a list; keep the field immutable like the rest of the dataclass.
+        object.__setattr__(self, "banned_keywords", tuple(self.banned_keywords))
+
+
 class MusicConfig:
     """Configuration object mapped from config/music.yaml"""
 
@@ -240,6 +267,7 @@ class MusicConfig:
         # Unknown keys raise TypeError so a typo in music.yaml is not silently ignored.
         self.ai: MusicAISettings = MusicAISettings(**(data.get("ai") or {}))
         self.streaming: StreamingSettings = StreamingSettings(**(data.get("streaming") or {}))
+        self.autoplay: AutoplaySettings = AutoplaySettings(**(data.get("autoplay") or {}))
 
 class PromptConfig:
     """Configuration object mapped from config/prompt/*.yaml"""

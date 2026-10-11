@@ -42,3 +42,13 @@ streaming:
   enabled: true                      # false = download the whole song before playing it
   drop_tolerance_seconds: 10         # ending this early counts as a dropped stream and is resumed
   max_resumes: 2                     # resume attempts per song before giving up
+
+# Autoplay recommendations. Every key is optional; these are the defaults.
+autoplay:
+  use_mix: true                      # take candidates from the YouTube Mix of the current song (false = keyword search only)
+  candidate_pool: 25                 # Mix entries to read
+  min_duration_seconds: 60           # shorter songs are not recommended
+  max_per_author: 2                  # at most this many songs by one author per batch
+  history_size: 50                   # recently played songs per guild that are never recommended again
+  skip_penalty_window_seconds: 15    # skipping a recommendation this quickly counts against its author
+  banned_keywords: ["1 hour", "10 hours", "slowed", "nightcore", "reaction", "8d audio"]

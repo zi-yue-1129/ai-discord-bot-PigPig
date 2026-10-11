@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlparse
 import discord
 
 from addons.logging import get_logger
-from addons.settings import MusicAISettings, StreamingSettings
+from addons.settings import MusicAISettings, StreamingSettings, music_config
 
 from .context import PlaybackContext, user_shares_voice_channel
 from .queue_manager import PlayMode
@@ -396,6 +396,7 @@ class MusicService:
             view.stop_progress_updater()
         self._cog.mark_user_stop(guild_id)
         self._cog.state_manager.update_state(guild_id, force_next=True)
+        self._record_quick_skip(guild_id, state)
         voice_client.stop()
         if view and refresh_buttons:
             await view.update_button_state()
@@ -403,6 +404,15 @@ class MusicService:
             asyncio.create_task(self._cog._trigger_autoplay(ctx, guild_id))
         more_coming = self._cog.queue_manager.has_playlist_songs(guild_id) or state.autoplay
         return ActionResult(ok=True, detail="Skipped.", data={"skipped": skipped, "next": upcoming, "more_coming": more_coming})
+
+    def _record_quick_skip(self, guild_id: int, state: Any) -> None:
+        """Counts a skipped recommendation against its author when it was skipped right away."""
+        song = state.current_song
+        if not song or song.get("added_by") != self._cog.bot.user.id or not song.get("author"):
+            return
+        played = self._cog._clock() - state.song_started_at
+        if played <= music_config.autoplay.skip_penalty_window_seconds:
+            self._cog.taste_for(guild_id).record_skip(song["author"])
 
     async def pause(self, ctx: PlaybackContext, *, refresh_buttons: bool = True) -> ActionResult:
         """Pauses playback and starts the idle-disconnect timer."""

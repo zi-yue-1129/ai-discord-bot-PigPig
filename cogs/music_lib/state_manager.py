@@ -22,6 +22,8 @@ class PlayerState:
     force_next: bool = False
     # Set when the bot paused the player because the voice channel emptied (not the user).
     auto_paused: bool = False
+    # Monotonic time the current song started (used to tell a quick skip from a late one).
+    song_started_at: float = 0.0
 
 
 class StateManager:

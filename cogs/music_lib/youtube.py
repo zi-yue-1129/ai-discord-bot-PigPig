@@ -11,6 +11,7 @@ from youtube_search import YoutubeSearch
 from addons.settings import music_config
 from addons.logging import get_logger
 from .context import PlaybackContext
+from .recommender import TasteMemory, filter_candidates, rank_candidates
 
 log = get_logger(source=__name__, server_id="system")
 
@@ -26,6 +27,8 @@ async def check_ffmpeg(ffmpeg_path='/usr/bin/ffmpeg'):
 
 # YoutubeSearch has no timeout of its own and can retry forever on a consent or captcha page.
 SEARCH_TIMEOUT_SECONDS = 15
+# Reading a YouTube Mix takes about a second; give up well before autoplay feels stuck.
+MIX_TIMEOUT_SECONDS = 20
 
 
 def parse_view_count(value: Any) -> int:
@@ -46,6 +49,8 @@ def parse_view_count(value: Any) -> int:
 class YouTubeManager:
     def __init__(self, time_limit=1800):
         self.time_limit = time_limit
+        # Seeded so recommendation jitter is reproducible.
+        self._rng = random.Random(20240601)
         try:
             self.settings = music_config
             self.ffmpeg_config = self.settings.ffmpeg
@@ -630,7 +635,53 @@ class YouTubeManager:
         """
         return f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
 
-    async def get_related_videos(self, video_id: str, title: str, author: str, ctx: PlaybackContext, limit: int = 5, exclude_ids: Optional[Set[str]] = None) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    async def get_mix_candidates(self, video_id: str, limit: int = 25) -> List[Dict[str, Any]]:
+        """Reads the YouTube Mix (auto-generated radio playlist) that starts from a video.
+
+        Args:
+            video_id: The seed video.
+            limit: How many Mix entries to read.
+
+        Returns:
+            Song-like dicts in Mix order (``video_id``, ``title``, ``url``, ``duration``,
+            ``author``, ``views``, ``is_live``); empty when the Mix cannot be read in time.
+        """
+        options: Dict[str, Any] = {"quiet": True, "no_warnings": True, "extract_flat": True, "playlistend": limit}
+        cookies_path = self.settings.youtube_cookies_path
+        if os.path.exists(cookies_path):
+            options["cookiefile"] = cookies_path
+        url = f"https://www.youtube.com/watch?v={video_id}&list=RD{video_id}"
+
+        def read_mix() -> Dict[str, Any]:
+            with yt_dlp.YoutubeDL(options) as ydl:
+                return ydl.extract_info(url, download=False)
+
+        try:
+            info = await asyncio.wait_for(asyncio.to_thread(read_mix), timeout=MIX_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            log.warning(f"讀取 YouTube Mix 逾時 (video_id: {video_id})")
+            return []
+        except (yt_dlp.utils.YoutubeDLError, OSError) as e:
+            log.warning(f"讀取 YouTube Mix 失敗 (video_id: {video_id}): {e}")
+            return []
+
+        candidates = []
+        for entry in (info or {}).get("entries") or []:
+            entry_id = entry.get("id")
+            if not entry_id:
+                continue
+            candidates.append({
+                "video_id": entry_id,
+                "title": entry.get("title") or "未知標題",
+                "url": f"https://youtube.com/watch?v={entry_id}",
+                "duration": int(entry.get("duration") or 0),
+                "author": entry.get("channel") or entry.get("uploader") or "未知上傳者",
+                "views": entry.get("view_count") or 0,
+                "is_live": entry.get("live_status") == "is_live" or bool(entry.get("is_live")),
+            })
+        return candidates
+
+    async def get_related_videos(self, video_id: str, title: str, author: str, ctx: PlaybackContext, limit: int = 5, exclude_ids: Optional[Set[str]] = None, taste: Optional[TasteMemory] = None) -> tuple[List[Dict[str, Any]], Optional[str]]:
         """Get related videos for a YouTube video.
 
         Args:
@@ -640,6 +691,7 @@ class YouTubeManager:
             ctx: Where playback was requested and by whom.
             limit: The maximum number of recommendations.
             exclude_ids: A set of video IDs to exclude.
+            taste: The guild's taste memory (requests and skips) used to rank candidates.
 
         Returns:
             A tuple of (related_videos, error_message).
@@ -649,6 +701,45 @@ class YouTubeManager:
         
         final_results = []
         exclude_ids.add(video_id)
+
+        def build_song(video: Dict[str, Any]) -> Dict[str, Any]:
+            return {
+                "file_path": None,
+                "title": video.get('title', '未知標題'),
+                "url": video.get('url'),
+                "stream_url": None,
+                "duration": video.get('duration', 0),
+                "video_id": video.get('video_id'),
+                "author": video.get('author', '未知上傳者'),
+                "views": video.get('views', 0),
+                "requester": ctx.user,
+                "user_avatar": ctx.user.display_avatar.url,
+                "is_live": False,
+            }
+
+        autoplay = self.settings.autoplay
+        if autoplay.use_mix:
+            log.info("策略零: 使用 YouTube Mix...")
+            mix = await self.get_mix_candidates(video_id, limit=autoplay.candidate_pool)
+            acceptable = filter_candidates(
+                mix,
+                exclude_ids=exclude_ids,
+                min_duration=autoplay.min_duration_seconds,
+                max_duration=self.time_limit,
+                banned_keywords=autoplay.banned_keywords,
+            )
+            picked = rank_candidates(
+                acceptable,
+                seed_author=author or "",
+                taste=taste if taste is not None else TasteMemory(history_size=autoplay.history_size),
+                max_per_author=autoplay.max_per_author,
+                limit=limit,
+                rng=self._rng,
+            ) if acceptable else []
+            for candidate in picked:
+                final_results.append(build_song(candidate))
+                exclude_ids.add(candidate["video_id"])
+            log.info(f"策略零找到 {len(final_results)} 首歌曲")
 
         def process_search_results(results):
             processed = []
@@ -676,7 +767,7 @@ class YouTubeManager:
                     exclude_ids.add(video_id_res)
             return processed
 
-        if author and author != '未知上傳者':
+        if len(final_results) < limit and author and author != '未知上傳者':
             log.info(f"策略一: 搜尋藝人 '{author}' 的歌曲...")
             try:
                 clean_author = re.sub(r'\s*-\s*(topic|vevo|official).*$', '', author, flags=re.IGNORECASE).strip()

@@ -8,7 +8,7 @@ from addons.logging import get_logger
 log = get_logger(source=__name__, server_id="system")
 logger = log
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional, Any
+from typing import Any, Dict, Optional
 
 from addons.settings import music_config
 from .music_lib.youtube import YouTubeManager
@@ -17,6 +17,7 @@ from .music_lib.state_manager import StateManager
 from .music_lib.queue_manager import QueueManager, PlayMode
 from .music_lib.context import PlaybackContext, user_shares_voice_channel
 from .music_lib.prefetch import Prefetcher
+from .music_lib.recommender import TasteMemory
 from .music_lib.service import MusicService, classify_query
 from .music_lib.ui_manager import UIManager
 from .music_lib.ui.song_select import SongSelectView
@@ -53,12 +54,20 @@ class YTMusic(commands.Cog):
         self._cleanup_tasks: set = set()
         # Monotonic clock used to measure how long a song has really played (replaced in tests).
         self._clock = time.monotonic
+        # What each guild plays, requests and skips; guides autoplay recommendations.
+        self._taste: Dict[int, TasteMemory] = {}
         self.service = MusicService(self, music_config.ai, music_config.streaming)
         self.prefetcher = Prefetcher(
             get_youtube=lambda: self.youtube,
             queue_manager=self.queue_manager,
             get_folder=lambda guild_id: self._get_guild_folder(guild_id)[1],
         )
+
+    def taste_for(self, guild_id: int) -> TasteMemory:
+        """Returns the taste memory of a guild, creating it on first use."""
+        if guild_id not in self._taste:
+            self._taste[guild_id] = TasteMemory(history_size=music_config.autoplay.history_size)
+        return self._taste[guild_id]
 
     async def setup_hook(self):
         """Initialize async components and LanguageManager."""
@@ -539,7 +548,14 @@ class YTMusic(commands.Cog):
             self.youtube,
             music_cog=self
         )
-        self.state_manager.update_state(guild_id, current_message=message, current_song=song, last_played_song=song)
+        self.state_manager.update_state(
+            guild_id, current_message=message, current_song=song, last_played_song=song, song_started_at=self._clock()
+        )
+        taste = self.taste_for(guild_id)
+        if song.get('video_id'):
+            taste.record_played(song['video_id'])
+        if song.get('added_by') != self.bot.user.id and song.get('author'):
+            taste.record_request(song['author'])
 
         voice_client.play(audio_source)
         song['resumes'] = 0
@@ -670,12 +686,13 @@ class YTMusic(commands.Cog):
             return 0
 
         # 建立一個包含當前歌曲和佇列中所有歌曲ID的集合，以供排除
-        exclude_ids = {s.get('video_id') for s in queue_snapshot if s.get('video_id')}
+        taste = self.taste_for(guild_id)
+        exclude_ids = {s.get('video_id') for s in queue_snapshot if s.get('video_id')} | taste.played_ids()
         if state.current_song and state.current_song.get('video_id'):
             exclude_ids.add(state.current_song.get('video_id'))
 
         related_videos, error = await self.youtube.get_related_videos(
-            video_id, title, author, ctx, limit=needed, exclude_ids=exclude_ids
+            video_id, title, author, ctx, limit=needed, exclude_ids=exclude_ids, taste=taste
         )
         if error:
             logger.warning(f"無法獲取推薦影片: {error}")
