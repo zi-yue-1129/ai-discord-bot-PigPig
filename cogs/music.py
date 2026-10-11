@@ -15,6 +15,7 @@ from .music_lib.audio_manager import AudioManager
 from .music_lib.state_manager import StateManager
 from .music_lib.queue_manager import QueueManager, PlayMode
 from .music_lib.context import PlaybackContext, user_shares_voice_channel
+from .music_lib.service import MusicService, classify_query
 from .music_lib.ui_manager import UIManager
 from .music_lib.ui.song_select import SongSelectView
 from cogs.language_manager import LanguageManager # Import LanguageManager
@@ -42,6 +43,7 @@ class YTMusic(commands.Cog):
         self.ui_manager = bot.ui_manager
         self.lang_manager: Optional[LanguageManager] = None # Initialize lang_manager
         self.disconnect_timers = {}
+        self.service = MusicService(self)
 
     async def setup_hook(self):
         """Initialize async components and LanguageManager."""
@@ -154,15 +156,13 @@ class YTMusic(commands.Cog):
         # 如果有提供查詢，將音樂加入播放清單
         logger.info(f"[音樂] 伺服器 ID： {interaction.guild.name}, 使用者名稱： {interaction.user.name}, 使用者輸入： {query}")
         
-        # 檢查是否為URL
-        if "youtube.com" in query or "youtu.be" in query:
-            # 檢查是否為播放清單
-            if "list" in query:
-                await self._handle_playlist(interaction, query)
-            else:
-                is_valid = await self._handle_single_video(interaction, query)
-                if not is_valid:
-                    return
+        query_kind = classify_query(query)
+        if query_kind == "playlist":
+            await self._handle_playlist(interaction, query.strip())
+        elif query_kind == "video":
+            is_valid = await self._handle_single_video(interaction, query.strip())
+            if not is_valid:
+                return
         else:
             await self._handle_search(interaction, query)
             return
@@ -175,37 +175,17 @@ class YTMusic(commands.Cog):
     async def _handle_playlist(self, interaction: discord.Interaction, url: str):
         """Handle playlist URL"""
         guild_id = interaction.guild.id
-        _, folder = self._get_guild_folder(guild_id)
-        video_infos, error = await self.youtube.download_playlist(url, folder, PlaybackContext.from_interaction(interaction))
-        
-        if error:
-            title = self.lang_manager.translate(str(guild_id), "commands", "play", "errors", "playlist_download_failed", error=error)
+        ctx = PlaybackContext.from_interaction(interaction)
+        added_songs, total, failure = await self.service.enqueue_playlist(ctx, url)
+
+        if failure:
+            title = self.lang_manager.translate(str(guild_id), "commands", "play", "errors", "playlist_download_failed", error=failure.detail)
             embed = discord.Embed(title=f"❌ | {title}", color=discord.Color.red())
             await interaction.edit_original_response(embed=embed)
             return
-            
-        # Attribute ownership to the user for all playlist items
-        if video_infos:
-            for video_info in video_infos:
-                video_info['added_by'] = interaction.user.id
-            
-        # Add initial songs to queue
-        queue_size = self.queue_manager.get_queue(interaction.guild.id).qsize()
-        songs_to_add = min(5 - queue_size, len(video_infos))
-        added_songs = video_infos[:songs_to_add]
-        
-        for video_info in added_songs:
-            video_info['added_by'] = interaction.user.id
-            await self.queue_manager.add_to_queue(interaction.guild.id, video_info)
-            
-        # Save remaining songs to playlist
-        remaining_songs = video_infos[songs_to_add:]
-        if remaining_songs:
-            self.queue_manager.set_playlist(interaction.guild.id, remaining_songs)
-            
-        # Create embed for added songs
+
         description = "\n".join([f"🎵 {info['title']}" for info in added_songs])
-        title = self.lang_manager.translate(str(guild_id), "commands", "play", "responses", "playlist_added", count=len(added_songs), total=len(video_infos))
+        title = self.lang_manager.translate(str(guild_id), "commands", "play", "responses", "playlist_added", count=len(added_songs), total=total)
         embed = discord.Embed(
             title=f"✅ | {title}",
             description=description,
@@ -215,44 +195,25 @@ class YTMusic(commands.Cog):
 
     async def _handle_single_video(self, interaction: discord.Interaction, url: str) -> bool:
         """Handle single video URL"""
-        guild_id = interaction.guild.id
-        guild_id_str = str(guild_id)
-        queue = self.queue_manager.get_queue(guild_id)
-        
-        _, folder = self._get_guild_folder(guild_id)
-        should_download = queue.qsize() == 0
-        
-        if should_download:
-            video_info, error = await self.youtube.download_audio(url, folder, PlaybackContext.from_interaction(interaction))
-        else:
-            video_info, error = await self.youtube.get_video_info_without_download(url, PlaybackContext.from_interaction(interaction))
-            
-        if error:
-            title = self.lang_manager.translate(guild_id_str, "commands", "play", "errors", "video_info_failed", error=error)
+        guild_id_str = str(interaction.guild.id)
+        video_info, failure = await self.service.enqueue_video(PlaybackContext.from_interaction(interaction), url)
+
+        if failure and failure.reason == "queue_full":
+            title = self.lang_manager.translate(guild_id_str, "commands", "play", "errors", "queue_full_title")
+            desc = self.lang_manager.translate(guild_id_str, "commands", "play", "errors", "queue_full_desc")
+            embed = discord.Embed(title=f"❌ | {title}", description=desc, color=discord.Color.red())
+            await interaction.edit_original_response(embed=embed)
+            return False
+        if failure:
+            title = self.lang_manager.translate(guild_id_str, "commands", "play", "errors", "video_info_failed", error=failure.detail)
             embed = discord.Embed(title=f"❌ | {title}", color=discord.Color.red())
             await interaction.edit_original_response(embed=embed)
             return False
-            
-        video_info['added_by'] = interaction.user.id
-        
-        # 將歌曲加入佇列並檢查結果
-        success = await self.queue_manager.add_to_front_of_queue(guild_id, video_info)
-        
-        if success:
-            title = self.lang_manager.translate(guild_id_str, "commands", "play", "responses", "song_added", title=video_info['title'])
-            embed = discord.Embed(title=f"✅ | {title}", color=discord.Color.blue())
-            await interaction.edit_original_response(embed=embed)
-            return True
-        else:
-            title = self.lang_manager.translate(guild_id_str, "commands", "play", "errors", "queue_full_title")
-            desc = self.lang_manager.translate(guild_id_str, "commands", "play", "errors", "queue_full_desc")
-            embed = discord.Embed(
-                title=f"❌ | {title}",
-                description=desc,
-                color=discord.Color.red()
-            )
-            await interaction.edit_original_response(embed=embed)
-            return False
+
+        title = self.lang_manager.translate(guild_id_str, "commands", "play", "responses", "song_added", title=video_info['title'])
+        embed = discord.Embed(title=f"✅ | {title}", color=discord.Color.blue())
+        await interaction.edit_original_response(embed=embed)
+        return True
 
     async def _handle_search(self, interaction: discord.Interaction, query: str):
         """Handle search query"""
@@ -618,6 +579,23 @@ class YTMusic(commands.Cog):
     def get_lang_manager(self) -> Optional[LanguageManager]:
         return self.lang_manager
 
+    async def _reply_control_denied(self, interaction: discord.Interaction, result: Any) -> None:
+        """Tell the user why a control was refused (ephemeral).
+
+        Args:
+            interaction: The interaction that triggered the control.
+            result: The failed ``ActionResult`` returned by the service.
+        """
+        guild_id = str(interaction.guild.id)
+        if result.reason == "not_in_bot_channel":
+            text = self.lang_manager.translate(guild_id, "system", "music", "controls", "not_in_channel")
+        else:
+            text = self.lang_manager.translate(guild_id, "system", "music", "controls", "no_music")
+        if interaction.response.is_done():
+            await interaction.followup.send(text, ephemeral=True)
+        else:
+            await interaction.response.send_message(text, ephemeral=True)
+
     async def _ensure_can_control(self, interaction: discord.Interaction) -> bool:
         """Check that the user sits in the bot's voice channel before changing playback.
 
@@ -661,52 +639,46 @@ class YTMusic(commands.Cog):
                 )
 
     async def handle_toggle_playback(self, interaction: discord.Interaction):
-        if not await self._ensure_can_control(interaction):
-            return
         guild_id = interaction.guild.id
         voice_client = self.get_voice_client(guild_id)
         view = self.ui_manager.get_current_view(guild_id)
         if not voice_client or not view:
             return
 
+        ctx = PlaybackContext.from_interaction(interaction)
         if voice_client.is_playing():
-            voice_client.pause()
-            await self._start_disconnect_timer(guild_id)
-            await view.update_embed(interaction, self.lang_manager.translate(str(guild_id), "system", "music", "controls", "paused", user=interaction.user.name))
+            result = await self.service.pause(ctx, refresh_buttons=False)
+            message_key = "paused"
         elif voice_client.is_paused():
-            voice_client.resume()
-            await self._cancel_disconnect_timer(guild_id)
-            await view.update_embed(interaction, self.lang_manager.translate(str(guild_id), "system", "music", "controls", "resumed", user=interaction.user.name))
-        
+            result = await self.service.resume(ctx, refresh_buttons=False)
+            message_key = "resumed"
+        else:
+            return
+
+        if not result.ok:
+            await self._reply_control_denied(interaction, result)
+            return
+        await view.update_embed(interaction, self.lang_manager.translate(str(guild_id), "system", "music", "controls", message_key, user=interaction.user.name))
         await view.update_button_state()
 
     async def handle_skip(self, interaction: discord.Interaction):
-        if not await self._ensure_can_control(interaction):
-            return
-        voice_client = self.get_voice_client(interaction.guild.id)
+        guild_id = interaction.guild.id
+        voice_client = self.get_voice_client(guild_id)
         if not voice_client:
-            await interaction.response.send_message(self.lang_manager.translate(str(interaction.guild.id), "system", "music", "controls", "no_music"), ephemeral=True)
+            await interaction.response.send_message(self.lang_manager.translate(str(guild_id), "system", "music", "controls", "no_music"), ephemeral=True)
             return
-        
-        view = self.ui_manager.get_current_view(interaction.guild.id)
-        if view:
-            view.stop_progress_updater()
 
-        voice_client.stop()
-        
+        result = await self.service.skip(PlaybackContext.from_interaction(interaction), refresh_buttons=False)
+        if not result.ok:
+            await self._reply_control_denied(interaction, result)
+            return
+
+        view = self.ui_manager.get_current_view(guild_id)
         if view:
-            await view.update_embed(interaction, self.lang_manager.translate(str(interaction.guild.id), "system", "music", "controls", "skipped", user=interaction.user.name))
+            await view.update_embed(interaction, self.lang_manager.translate(str(guild_id), "system", "music", "controls", "skipped", user=interaction.user.name))
             await view.update_button_state()
 
-        # Check and trigger autoplay after skipping
-        state = self.state_manager.get_state(interaction.guild.id)
-        if state.autoplay:
-            # 使用 create_task 在背景觸發自動播放，避免阻塞當前的 skip 操作
-            asyncio.create_task(self._trigger_autoplay(PlaybackContext.from_interaction(interaction), interaction.guild.id))
-
     async def handle_stop(self, interaction: discord.Interaction):
-        if not await self._ensure_can_control(interaction):
-            return
         guild_id = interaction.guild.id
         voice_client = self.get_voice_client(guild_id)
 
@@ -714,13 +686,15 @@ class YTMusic(commands.Cog):
             await interaction.response.send_message(self.lang_manager.translate(str(guild_id), "system", "music", "controls", "no_music"), ephemeral=True)
             return
 
-        await self._cancel_disconnect_timer(guild_id)
-        await self._cleanup_voice_session(guild_id)
-        
+        result = await self.service.stop(PlaybackContext.from_interaction(interaction))
+        if not result.ok:
+            await self._reply_control_denied(interaction, result)
+            return
+
         # Send a final confirmation message
         stopped_text = self.lang_manager.translate(str(guild_id), "system", "music", "controls", "stopped", user=interaction.user.name)
         embed = discord.Embed(title=f"{stopped_text}", color=discord.Color.red())
-        
+
         # Check if the interaction is already responded to
         if not interaction.response.is_done():
             await interaction.response.send_message(embed=embed, ephemeral=True)
