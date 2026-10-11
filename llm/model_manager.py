@@ -11,6 +11,7 @@ from langchain.agents.middleware import ModelFallbackMiddleware
 
 from addons import settings
 from function import func
+from llm.utils.model_init import create_model_instance
 
 
 class ModelManager:
@@ -87,11 +88,20 @@ class ModelManager:
             raise err
         return priorities
 
-    def get_model(self, agent_type: str) -> Tuple[str, ModelFallbackMiddleware]:
-        """公開方法，回傳 (primary_model, ModelFallbackMiddleware)。
+    def get_model(
+        self, agent_type: str, *, guild_id: str = "0",
+    ) -> Tuple[str, ModelFallbackMiddleware]:
+        """Return the primary identifier and instrumented fallback middleware.
 
-        若找不到對應的 model_priorities，會丟出 ValueError 以避免呼叫端誤解包 None。
-        同時在發生錯誤時會使用 func.report_error 上報錯誤以便集中化日誌管理。
+        Args:
+            agent_type: Configured model priority category.
+            guild_id: Guild context for fallback models, or ``0`` when absent.
+
+        Returns:
+            The primary identifier and middleware using recorded model instances.
+
+        Raises:
+            ValueError: No priorities are configured for the category.
         """
         # 先解析 priorities 並記錄，便於後續排查
         priorities = self._resolve_priority_list(agent_type)
@@ -108,7 +118,11 @@ class ModelManager:
 
         try:
             primary = priorities[0]
-            fallback_mw = ModelFallbackMiddleware(*priorities[1:])  # type: ignore[arg-type]
+            fallback_models = [
+                create_model_instance(model_name, guild_id=guild_id)
+                for model_name in priorities[1:]
+            ]
+            fallback_mw = ModelFallbackMiddleware(*fallback_models)
             return primary, fallback_mw
         except Exception as e:
             try:

@@ -12,7 +12,6 @@ from datetime import timezone
 import discord
 from pydantic import BaseModel, Field
 from langchain.agents import create_agent
-from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage
 
 from function import func
@@ -325,7 +324,10 @@ class EventSummarizationService:
             message_data = await self._prepare_message_data(messages)
             
             # Get LLM response using the episodic memory extractor
-            llm_response = await self._get_llm_summary(message_data, previous_summary)
+            guild_id = str(messages[0].guild.id) if messages[0].guild else "0"
+            llm_response = await self._get_llm_summary(
+                message_data, previous_summary, guild_id=guild_id,
+            )
             
             if not llm_response:
                 log.warning("No LLM response received for message group")
@@ -368,7 +370,10 @@ class EventSummarizationService:
         
         return message_data
 
-    async def _get_llm_summary(self, message_data: List[Dict[str, Any]], previous_summary: str = "") -> Optional[MemoryFragmentList]:
+    async def _get_llm_summary(
+        self, message_data: List[Dict[str, Any]], previous_summary: str = "",
+        *, guild_id: str = "0",
+    ) -> Optional[MemoryFragmentList]:
         """
         Get event summary from LLM using the episodic memory extractor prompt with structured output.
         
@@ -377,6 +382,7 @@ class EventSummarizationService:
         Args:
             message_data: Prepared message data for LLM processing
             previous_summary: Context from previous events
+            guild_id: Guild context for model statistics, or ``0`` if absent.
             
         Returns:
             MemoryFragmentList object or None if failed
@@ -412,7 +418,8 @@ class EventSummarizationService:
                     
                     # Create the model instance with zero retries and a bounded timeout
                     model_instance = create_model_instance(
-                        current_model, max_retries=0, timeout=LLM_CALL_TIMEOUT_SECONDS
+                        current_model, guild_id=guild_id,
+                        max_retries=0, timeout=LLM_CALL_TIMEOUT_SECONDS
                     )
 
                     from langchain_core.messages import SystemMessage
@@ -431,7 +438,9 @@ class EventSummarizationService:
                         
                         try:
                             # Instantiate model object from string
-                            model_instance = self._create_llm_instance(current_model, force_json=True)
+                            model_instance = self._create_llm_instance(
+                                current_model, force_json=True, guild_id=guild_id,
+                            )
                             
                             schema_str = '{"fragments": [{"query_key": "string", "query_keywords": ["string"], "query_value": "string", "start_message_id": 1, "end_message_id": 2, "entities": [{"name": "string", "type": "string", "description": "string"}]}]}'
                             fallback_messages = list(full_messages)
@@ -502,13 +511,16 @@ class EventSummarizationService:
             await func.report_error(e, "EventSummarizationService/_get_llm_summary")
             return None
 
-    def _create_llm_instance(self, model_name: str, force_json: bool = False) -> Any:
+    def _create_llm_instance(
+        self, model_name: str, force_json: bool = False, *, guild_id: str = "0",
+    ) -> Any:
         """
         Create a LangChain model instance from a model name string.
         
         Args:
             model_name: Model identifier (e.g. 'ollama:gpt-oss:20b')
             force_json: Whether to force the model into JSON mode if supported
+            guild_id: Guild context for model statistics, or ``0`` if absent.
             
         Returns:
             LangChain chat model instance
@@ -528,7 +540,6 @@ class EventSummarizationService:
                 # vLLM exposes an OpenAI-compatible API; route through the openai provider
                 from addons.tokens import tokens
                 vllm_base_url = getattr(self.settings, "vllm_url", "http://localhost:8181")
-                model_name = f"openai:{model_name[len('vllm:'):]}"
                 kwargs.update({
                     "base_url": f"{vllm_base_url}/v1",
                     "api_key": tokens.vllm_api_key,
@@ -579,8 +590,8 @@ class EventSummarizationService:
                 kwargs["max_retries"] = 0
                 kwargs["timeout"] = LLM_CALL_TIMEOUT_SECONDS
 
-            # Use centralized init_chat_model
-            return init_chat_model(model_name, **kwargs)
+            # Use the same recording hook for structured and raw fallback calls.
+            return create_model_instance(model_name, guild_id=guild_id, **kwargs)
                 
         except Exception as e:
             log.error(f"Failed to create LLM instance for {model_name}: {e}")

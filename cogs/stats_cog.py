@@ -1,8 +1,8 @@
 """StatsCog: real-time user statistics tracking and historical log migration.
 
-Listens for on_message events to update per-user stats in the user_stats
-table, and runs a low-priority background task on cog load to ingest
-historical NDJSON log files.
+Records prefix and application command attempts in the dashboard statistics
+database. Listens for on_message events to update per-user stats in the
+user_stats table, and migrates historical NDJSON logs in the background.
 """
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import discord
 from discord.ext import commands
 
 from addons.logging import get_logger
@@ -54,11 +55,11 @@ class StatsCog(commands.Cog):
             else:
                 logger.warning(
                     "procedural_storage has no 'db' attribute; "
-                    "StatsCog will not track stats."
+                    "StatsCog will not track cumulative user stats."
                 )
         else:
             logger.warning(
-                "Bot has no procedural_storage; StatsCog will not track stats."
+                "Bot has no procedural_storage; StatsCog will not track cumulative user stats."
             )
 
     async def cog_load(self) -> None:
@@ -74,6 +75,59 @@ class StatsCog(commands.Cog):
         if self._migration_task and not self._migration_task.done():
             self._migration_task.cancel()
             logger.info("Background log migration task cancelled.")
+
+    @commands.Cog.listener()
+    async def on_command(self, ctx: commands.Context) -> None:
+        """Record prefix command attempts before checks or execution finish.
+
+        Args:
+            ctx: Invocation context. Hybrid slash invocations are recorded by
+                on_interaction instead. Guild ID ``0`` denotes direct messages.
+        """
+        if ctx.interaction is not None or ctx.command is None:
+            return
+        await self.bot.stats_collector.record_command(
+            guild_id=str(ctx.guild.id) if ctx.guild else "0",
+            user_id=str(ctx.author.id),
+            command_name=ctx.command.qualified_name,
+            timestamp=ctx.message.created_at.timestamp(),
+        )
+
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction) -> None:
+        """Record application command attempts, including failed invocations.
+
+        Args:
+            interaction: Incoming Discord interaction. Autocomplete and UI
+                interactions are excluded. Guild ID ``0`` denotes direct messages.
+        """
+        if interaction.type != discord.InteractionType.application_command:
+            return
+        command = interaction.command
+        if command is not None:
+            command_name = command.qualified_name
+        else:
+            # Resolve subcommands even before the command tree caches its command.
+            data = interaction.data
+            if data is None:
+                raise ValueError("Application command interaction has no data")
+            command_names = [data["name"]]
+            options = data.get("options", [])
+            while options:
+                subcommand = next(
+                    (option for option in options if option["type"] in (1, 2)),
+                    None,
+                )
+                if subcommand is None:
+                    break
+                command_names.append(subcommand["name"])
+                options = subcommand.get("options", [])
+            command_name = " ".join(command_names)
+        await self.bot.stats_collector.record_command(
+            guild_id=str(interaction.guild_id) if interaction.guild_id else "0",
+            user_id=str(interaction.user.id), command_name=command_name,
+            timestamp=interaction.created_at.timestamp(),
+        )
 
     # ------------------------------------------------------------------
     # Real-time on_message listener

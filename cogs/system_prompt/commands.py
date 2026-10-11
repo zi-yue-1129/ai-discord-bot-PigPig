@@ -243,7 +243,9 @@ class SystemPromptCommands(commands.Cog):
         model_manager = ModelManager()
         try:
             model_priority = model_manager.get_model_priority_list("message_model")
-            model_instance = create_model_instance(model_priority[0], max_retries=1)
+            model_instance = create_model_instance(
+                model_priority[0], guild_id=guild_id, max_retries=1,
+            )
         except Exception as exc:
             await interaction.followup.send(f"❌ Failed to load language model: {exc}", ephemeral=True)
             return

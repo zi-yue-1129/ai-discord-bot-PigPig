@@ -174,7 +174,9 @@ class EatDetailView(discord.ui.View):
                 if not circuit_breaker.is_available(current_model):
                     continue
                 try:
-                    model_instance = create_model_instance(current_model, max_retries=0)
+                    model_instance = create_model_instance(
+                        current_model, guild_id=self.guild_id, max_retries=0,
+                    )
                     review_agent = create_agent(
                         model=model_instance,
                         tools=[],

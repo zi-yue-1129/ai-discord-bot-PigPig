@@ -1,0 +1,160 @@
+Usage-statistics recording verification (2026-10-11)
+
+Worktree: .claude/worktrees/vllm-public-api-key
+Branch: worktree-vllm-public-api-key
+Baseline commit: f9db22dee5edcc5c8ca887061ad2f93d5d8332e6
+Interpreter: /home/ubuntu/anaconda3/envs/bot2/bin/python3
+Every shell command used a timeout. All database tests used temporary or in-memory
+SQLite. No real data/ files were opened or written, no service processes were
+started/stopped, and no push or merge was performed.
+
+Root causes established in the baseline code
+
+1. Command recording had storage but no producer.
+   dashboard/services/stats_collector.py:122 defined record_command, but no bot
+   or cog called it. StatsCog had only a message listener and log migration.
+   Prefix and application command invocation events were never connected to
+   command_events. New listeners record attempts before command completion,
+   including errors, DMs (guild_id "0"), qualified subcommand names, and hybrid
+   slash commands once. Autocomplete and component events are excluded.
+
+2. LLM recording was attached to successful agent workflows, not model calls.
+   llm/orchestrator.py:559-577 and :741-763 recorded after successful awaits,
+   always with success=True. Its error/fallback branches did not record failures.
+   Durations included agent/tool/Discord work, rather than the model lifecycle.
+   llm/utils/model_init.py:13-34 returned bare models without statistics hooks.
+   Consequently other consumers of that helper had no recording at all.
+   cogs/memory/services/event_summarization_service.py:583 also returned a bare
+   init_chat_model result for raw fallback, bypassing the shared helper.
+   llm/model_manager.py:111 passed fallback model strings to LangChain middleware;
+   inspection of the installed middleware confirmed it calls init_chat_model
+   directly for those strings. An offline real-agent test demonstrated the
+   missing fallback row before its fix.
+   scripts/reconstruct_stats.py:127 hardcodes historical LLM events as duration=0,
+   success=1. This is additional code evidence for success-only historical rows;
+   this script was not run or modified.
+
+   The shared helper now attaches model lifecycle callbacks, recording one event
+   per run ID, preserving original provider-qualified names (including vllm),
+   capturing wall-clock start timestamps and monotonic elapsed durations, and
+   recording failures and timeout cancellation. Existing callbacks survive.
+   Missing collectors and recording errors propagate explicitly. Memory raw
+   fallback and configured middleware fallback models use this same helper.
+   Guild context is forwarded throughout helper consumers. Old orchestrator
+   aggregate writes were removed to avoid double counting.
+
+Schema compatibility
+
+No schema/storage implementation changes. Tests initialize an existing schema,
+retain historical rows and IDs, and append successful/failed new events.
+
+Test-first evidence (verbatim pytest summary lines)
+
+Initial regression suite, before production edits:
+45 failed, 4 warnings in 3.28s
+All command/model cases reached missing-row assertions; missing instrumentation
+also allowed an invocation with no collector instead of raising explicitly.
+
+Additional configured middleware fallback regression, before its fix:
+1 failed, 4 warnings in 1.21s
+Only the primary failure row existed; successful fallback row was absent.
+
+Memory guild propagation regression, before its fix:
+1 failed, 50 passed, 4 warnings in 3.50s
+Both events existed but used guild "0" instead of the message group's "123".
+
+Final focused command:
+timeout 120 /home/ubuntu/anaconda3/envs/bot2/bin/python3 -m pytest tests/usage_stats -q --tb=short --show-capture=no
+51 passed, 4 warnings in 2.38s
+
+Coverage includes prefix/application invocation attempts, DMs, unresolved nested
+subcommands, hybrid deduplication, UI/autocomplete exclusion, sync/async invocation
+and streaming, failures, timeout cancellation, overlapping calls with distinct
+guild metadata, structured output, agent tool loops, configured fallback models,
+actual structured-to-raw memory fallback, existing callbacks (list and manager),
+and existing SQLite rows. Providers are replaced by an offline BaseChatModel;
+Discord listeners and LangChain model/agent lifecycles are real.
+
+Full-suite baseline comparison
+
+An untouched HEAD archive of addons/, cogs/, dashboard/, function.py, llm/, tests/,
+and translations/ was extracted inside .pytest_cache/usage-baseline in this
+worktree. No data/ tree was copied. Bare pytest was run there with the same
+interpreter and timeout.
+16 failed, 79 passed, 2 warnings, 5 errors in 0.68s
+
+Changed-tree full suite (51 additional passing tests):
+16 failed, 130 passed, 4 warnings, 5 errors in 4.16s
+
+The identical pre-existing failures/errors are named below. No existing tests
+were changed, skipped, xfailed, or weakened. Global sys.modules replacements in
+legacy tests cause missing packages; seven tests also expect a current event
+loop after earlier tests closed it. New tests isolate installed Discord/LangChain
+modules so these legacy replacements do not prevent their execution.
+
+Failed dashboard tests (missing cogs.memory.db.connection or dashboard.routers):
+- tests/dashboard/test_memory_admin.py::test_get_all_users_returns_list
+- tests/dashboard/test_memory_admin.py::test_get_users_count_returns_int
+- tests/dashboard/test_memory_admin.py::test_episodic_get_total_count
+- tests/dashboard/test_memory_admin.py::test_user_manager_get_all_users
+- tests/dashboard/test_memory_admin.py::test_require_owner_blocks_non_owner
+- tests/dashboard/test_memory_admin.py::test_admin_delete_user_memory_requires_confirm
+- tests/dashboard/test_memory_admin.py::test_admin_delete_user_memory_success
+
+Failed system-prompt tools tests (no current event loop):
+- tests/test_system_prompt_tools.py::TestUpdatePersonalityChannel::test_calls_set_channel_prompt_with_correct_args
+- tests/test_system_prompt_tools.py::TestUpdatePersonalityChannel::test_returns_success_message
+- tests/test_system_prompt_tools.py::TestUpdatePersonalityChannel::test_invalidates_cache_after_write
+- tests/test_system_prompt_tools.py::TestUpdatePersonalityServer::test_blocks_non_admin_from_server_scope
+- tests/test_system_prompt_tools.py::TestUpdatePersonalityServer::test_allows_admin_to_set_server_scope
+- tests/test_system_prompt_tools.py::TestUpdatePersonalityErrors::test_missing_cog_returns_error_string
+- tests/test_system_prompt_tools.py::TestUpdatePersonalityErrors::test_no_message_context_returns_error_string
+
+Failed version tests (missing cogs.memory.db.schema):
+- tests/test_version_storage.py::test_create_tables_creates_guild_version_seen
+- tests/test_version_storage.py::test_guild_version_seen_has_correct_columns
+
+Version setup errors (missing cogs.memory.db.schema):
+- tests/test_version_storage.py::TestGuildVersionStorage::test_get_seen_version_returns_none_for_unknown_guild
+- tests/test_version_storage.py::TestGuildVersionStorage::test_set_and_get_seen_version_roundtrip
+- tests/test_version_storage.py::TestGuildVersionStorage::test_set_seen_version_updates_existing_record
+- tests/test_version_storage.py::TestGuildVersionStorage::test_set_seen_version_stores_current_timestamp
+- tests/test_version_storage.py::TestGuildVersionStorage::test_multiple_guilds_are_independent
+
+Warnings: existing audioop deprecation and unawaited configuration-error reporter;
+the integration tests also import LangChain/LangGraph deprecation warnings.
+The restricted sandbox stalled aiosqlite thread-to-event-loop wakeups, including
+in a standalone temporary-database reproducer. Offline pytest ran successfully
+with approved sandbox escalation. No fake SQLite replacement was used.
+
+Changed files
+
+- cogs/stats_cog.py: command event producers; cumulative-storage warning clarified.
+- llm/utils/model_init.py: common model invocation lifecycle instrumentation.
+- llm/model_manager.py: instrumented configured fallback models.
+- llm/orchestrator.py: guild propagation and removal of aggregate duplicate writes.
+- cogs/memory/services/event_summarization_service.py: shared raw fallback hook,
+  original vLLM identifiers, and message-group guild propagation.
+- cogs/eat/views.py: guild propagation.
+- cogs/story/manager.py: guild propagation for primary and fallback models.
+- cogs/summarizer.py: guild propagation for primary and fallback models.
+- cogs/system_prompt/commands.py: guild propagation.
+- cogs/userdata.py: guild propagation for user and knowledge merge calls.
+- tests/usage_stats/__init__.py: integration-test package.
+- tests/usage_stats/runtime.py: real framework isolation from legacy global stubs.
+- tests/usage_stats/conftest.py: scoped configuration/network boundaries.
+- tests/usage_stats/test_recording.py: temporary-database regression coverage.
+- docs/usage_statistics_verification.txt: this evidence and limitations report.
+
+Limits
+
+The bot was not connected to Discord or to real providers. Production data and
+logs were not inspected, so the exact cause/timing of the September/October
+monthly count collapse and the origin of existing success-only rows cannot be
+attributed conclusively. The code-level missing recording paths are reproduced
+and repaired. Provider-internal HTTP retries remain one LangChain invocation;
+separate agent rounds and fallback invocations each receive their own event.
+Downstream parser errors after a successful provider response do not relabel that
+provider invocation as a failure. Process termination cannot guarantee a terminal
+row because recordings are emitted at model end/error. The entire legacy suite
+cannot be claimed green; all 21 baseline failures/errors remain as documented.

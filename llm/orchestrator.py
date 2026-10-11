@@ -1,6 +1,5 @@
 from __future__ import annotations
 import asyncio
-import time
 from typing import Any, List, MutableMapping, Optional
 import re
 
@@ -544,7 +543,9 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                             model_specific_prompt += llm_config.reasoning_optimization_prompt
 
                         # Instantiate model with zero retries to ensure immediate fallback on quota exhaustion
-                        info_model_instance = create_model_instance(current_info_model, max_retries=0)
+                        info_model_instance = create_model_instance(
+                            current_info_model, guild_id=guild_id, max_retries=0,
+                        )
                         
                         info_agent = create_agent(
                             model=info_model_instance,
@@ -556,7 +557,6 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                         sanitized_messages = await self._sanitize_messages_for_model(messages_for_info_agent, current_info_model, image_cache)
 
                         # Execute info_agent to process user message and tools
-                        call_start = time.time()
                         info_result = await asyncio.wait_for(
                             info_agent.ainvoke(
                                 {"messages": sanitized_messages},
@@ -564,15 +564,6 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                             ),
                             timeout=_LLM_CALL_TIMEOUT_SECONDS,
                         )
-                        # Record LLM call statistics
-                        if hasattr(bot, 'stats_collector') and bot.stats_collector:
-                            duration_ms = (time.time() - call_start) * 1000
-                            await bot.stats_collector.record_llm_call(
-                                guild_id=guild_id,
-                                model_name=current_info_model,
-                                duration_ms=duration_ms,
-                                success=True
-                            )
                         
                         # Success!
                         if models_tried > 1:
@@ -717,7 +708,9 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                             model_specific_message_prompt += llm_config.reasoning_optimization_prompt
 
                         # Create agent with current model configured for zero retries
-                        message_model_instance = create_model_instance(current_model, max_retries=0)
+                        message_model_instance = create_model_instance(
+                            current_model, guild_id=guild_id, max_retries=0,
+                        )
                         
                         message_agent = create_agent(
                             model=message_model_instance,
@@ -737,7 +730,6 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                         remaining_models = [m for m in model_priority_list[model_index + 1:] if circuit_breaker.is_available(m)]
                         is_last_available = len(remaining_models) == 0
                         
-                        call_start = time.time()
                         message_result = await asyncio.wait_for(
                             send_message(
                                 bot,
@@ -750,15 +742,6 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                             ),
                             timeout=180.0,  # Much larger total safety timeout
                         )
-                        # Record LLM call statistics
-                        if hasattr(bot, 'stats_collector') and bot.stats_collector:
-                            duration_ms = (time.time() - call_start) * 1000
-                            await bot.stats_collector.record_llm_call(
-                                guild_id=guild_id,
-                                model_name=current_model,
-                                duration_ms=duration_ms,
-                                success=True
-                            )
                         
                         # Success!
                         if models_tried > 1:

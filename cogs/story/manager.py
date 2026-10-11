@@ -441,8 +441,12 @@ class StoryManager:
                         ))
 
                 # Call GM agent with zero retries for fast fallback
-                story_gm_model_name, fallback = ModelManager().get_model("story_gm_model")
-                story_gm_model_instance = create_model_instance(story_gm_model_name, max_retries=0)
+                story_gm_model_name, fallback = ModelManager().get_model(
+                    "story_gm_model", guild_id=str(story_instance.guild_id),
+                )
+                story_gm_model_instance = create_model_instance(
+                    story_gm_model_name, guild_id=str(story_instance.guild_id), max_retries=0,
+                )
                 
                 agent = create_agent(
                     story_gm_model_instance, 
@@ -554,8 +558,12 @@ class StoryManager:
                                 )
 
                             # Call character agent with zero retries
-                            story_character_model_name, fallback = ModelManager().get_model("story_character_model")
-                            story_character_model_instance = create_model_instance(story_character_model_name, max_retries=0)
+                            story_character_model_name, fallback = ModelManager().get_model(
+                                "story_character_model", guild_id=str(story_instance.guild_id),
+                            )
+                            story_character_model_instance = create_model_instance(
+                                story_character_model_name, guild_id=str(story_instance.guild_id), max_retries=0,
+                            )
                             
                             agent = create_agent(
                                 story_character_model_instance, 
@@ -815,8 +823,12 @@ class StoryManager:
             )
 
             # Call summary model with structured output and zero retries
-            story_summary_model_name, fallback = ModelManager().get_model("story_summary_model")
-            story_summary_model_instance = create_model_instance(story_summary_model_name, max_retries=0)
+            story_summary_model_name, fallback = ModelManager().get_model(
+                "story_summary_model", guild_id=str(story_instance.guild_id),
+            )
+            story_summary_model_instance = create_model_instance(
+                story_summary_model_name, guild_id=str(story_instance.guild_id), max_retries=0,
+            )
             
             agent = create_agent(
                 story_summary_model_instance, 
@@ -901,8 +913,12 @@ class StoryManager:
 
         try:
             # Call outline model with structured output and zero retries
-            story_outline_model_name, fallback = ModelManager().get_model("story_outline_model")
-            story_outline_model_instance = create_model_instance(story_outline_model_name, max_retries=0)
+            story_outline_model_name, fallback = ModelManager().get_model(
+                "story_outline_model", guild_id=str(story_instance.guild_id),
+            )
+            story_outline_model_instance = create_model_instance(
+                story_outline_model_name, guild_id=str(story_instance.guild_id), max_retries=0,
+            )
             
             agent = create_agent(
                 story_outline_model_instance, 
@@ -1079,8 +1095,12 @@ class StoryManager:
                 )
                 
                 # Call GM Model for initial scene with zero retries
-                story_gm_model_name, fallback = ModelManager().get_model("story_gm_model")
-                story_gm_model_instance = create_model_instance(story_gm_model_name, max_retries=0)
+                story_gm_model_name, fallback = ModelManager().get_model(
+                    "story_gm_model", guild_id=str(story_instance.guild_id),
+                )
+                story_gm_model_instance = create_model_instance(
+                    story_gm_model_name, guild_id=str(story_instance.guild_id), max_retries=0,
+                )
                 
                 agent = create_agent(
                     story_gm_model_instance, 

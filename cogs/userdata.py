@@ -392,20 +392,33 @@ class UserDataCog(commands.Cog):
         self,
         existing_data: Optional[UserInfo],
         new_data: str,
-        user_id: str
+        user_id: str,
+        *, guild_id: str = "0",
     ) -> UserDataResponse:
-        """Invokes AI agent to merge existing and new user data."""
+        """Invoke a recorded model call to merge existing and new user data.
+
+        Args:
+            existing_data: Current user memory.
+            new_data: Additional memory to merge.
+            user_id: User whose memory is being updated.
+            guild_id: Guild context, or ``0`` for a direct message.
+
+        Returns:
+            The merged structured user memory.
+        """
         system_prompt = (
             prompt_config.get_system_prompt('user_data_agent') or
             DEFAULT_SYSTEM_PROMPT
         )
 
         try:
-            model_id, _ = ModelManager().get_model("user_data_model")
+            model_id, _ = ModelManager().get_model("user_data_model", guild_id=guild_id)
             # Directly use the model with structured output instead of creating a full agent
             # This avoids the overhead of creating prompt templates and multiple layers of agent logic
             # Setting max_retries=1 to prevent hanging during quota exhaustion; fallbacks will handle it
-            llm = create_model_instance(model_id, max_retries=1).with_structured_output(UserDataResponse)
+            llm = create_model_instance(
+                model_id, guild_id=guild_id, max_retries=1).with_structured_output(UserDataResponse,
+            )
         except Exception as e:
             await func.report_error(e, "Failed to get user_data_model for merge")
             raise RuntimeError(f"Failed to get user_data_model: {e}") from e
@@ -438,9 +451,21 @@ class UserDataCog(commands.Cog):
         existing_knowledge: Optional[str],
         new_knowledge: str,
         target_type: str,
-        category: str = "general"
+        category: str = "general",
+        *, guild_id: str = "0",
     ) -> str:
-        """Invokes AI agent to merge existing and new guild/channel knowledge."""
+        """Invoke a recorded model call to merge guild or channel knowledge.
+
+        Args:
+            existing_knowledge: Current stored knowledge.
+            new_knowledge: Knowledge to incorporate.
+            target_type: Whether knowledge belongs to a guild or channel.
+            category: Knowledge category.
+            guild_id: Guild context, or ``0`` for a direct message.
+
+        Returns:
+            The complete merged knowledge text.
+        """
         system_prompt = (
             prompt_config.get_system_prompt('knowledge_merge_agent') or
             "You are a Knowledge Architect for a Discord community. Your job is to maintain a structured Knowledge Base.\n"
@@ -455,8 +480,8 @@ class UserDataCog(commands.Cog):
 
         try:
             # Use 'user_data_model' as fallback or same model for consistency
-            model_id, _ = ModelManager().get_model("user_data_model")
-            llm = create_model_instance(model_id, max_retries=1)
+            model_id, _ = ModelManager().get_model("user_data_model", guild_id=guild_id)
+            llm = create_model_instance(model_id, guild_id=guild_id, max_retries=1)
         except Exception as e:
             await func.report_error(e, "Failed to get model for knowledge merge")
             raise RuntimeError(f"Failed to get model: {e}") from e
@@ -503,7 +528,8 @@ class UserDataCog(commands.Cog):
                     existing,
                     content,
                     target_type,
-                    category
+                    category,
+                    guild_id=guild_id or "0",
                 )
 
                 self.logger.info(f"Saving merged {target_type} knowledge to database for {target_id}...")
@@ -627,7 +653,8 @@ class UserDataCog(commands.Cog):
                 merged_data = await self._invoke_ai_merge_agent(
                     existing_data,
                     user_data,
-                    user_id
+                    user_id,
+                    guild_id=guild_id or "0",
                 )
             except Exception as e:
                 self.logger.error(f"AI processing failed for user {user_id}: {e}")
