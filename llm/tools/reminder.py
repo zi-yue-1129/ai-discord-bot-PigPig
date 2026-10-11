@@ -159,6 +159,7 @@ class ReminderTools:
                     message=message,
                     guild_id=guild_id,
                     interaction=None,
+                    creator=getattr(message_obj, "author", None),
                 )
                 
                 logger.info("Reminder scheduled", extra={"result": result})

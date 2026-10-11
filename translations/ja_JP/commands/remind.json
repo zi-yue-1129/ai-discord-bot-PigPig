@@ -6,7 +6,14 @@
         "invalid_format": "無効な形式",
         "reminder_message": "リマインダー: {message}",
         "fallback_user": "ユーザー",
-        "error_setting": "リマインダー設定エラー"
+        "error_setting": "リマインダー設定エラー",
+        "limit_reached": "未送信のリマインダーがすでに {limit} 件あります。いくつか取り消してから追加してください。",
+        "too_far": "リマインダーは1年より先には設定できません。",
+        "list_title": "未送信のリマインダー：",
+        "list_empty": "未送信のリマインダーはありません。",
+        "list_item": "`#{id}` {time}：{message}",
+        "cancel_success": "リマインダー #{id} を取り消しました。",
+        "cancel_not_found": "あなたのリマインダー #{id} が見つかりません（送信済み、またはあなたが設定したものではありません）。"
     },
     "time_units": {
         "seconds": "秒",

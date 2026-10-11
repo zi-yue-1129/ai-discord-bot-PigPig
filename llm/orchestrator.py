@@ -161,6 +161,22 @@ Output Format:
 
 Focus on understanding what the user actually needs and prepare a clear analysis for the response generation phase."""
 
+    def build_persona_prompt(self, bot_id: int, message: Optional[Message]) -> str:
+        """Returns the reply agent's system prompt (persona and output rules) for ``message``.
+
+        Used by features that make the bot speak without a user message to answer, such as
+        reminders. ``message`` supplies the guild, language and channel customizations; None
+        gives the default prompt.
+
+        Args:
+            bot_id: Discord bot ID.
+            message: A recent message of the channel to speak in, or None.
+
+        Returns:
+            The system prompt.
+        """
+        return self._build_message_agent_prompt(bot_id, message)
+
     def _build_message_agent_prompt(self, bot_id: int, message: Message) -> str:
         """
         Build system prompt for message_agent using ProtectedPromptManager.
