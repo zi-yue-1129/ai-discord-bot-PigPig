@@ -18,6 +18,8 @@ class PlayerState:
     # Set when playback was stopped on purpose (skip, previous, replace), so a player
     # loop that sees the stream end does not mistake it for a dropped connection.
     user_stopped: bool = False
+    # Set by skip: the next play_next must leave a looped song instead of repeating it.
+    force_next: bool = False
 
 
 class StateManager:

@@ -50,6 +50,7 @@ class Prefetcher:
         self._inflight: Dict[Tuple[int, str], asyncio.Task] = {}
         self._failed: Dict[int, Set[str]] = {}
         self._current: Dict[int, asyncio.Task] = {}
+        self._current_ids: Dict[int, str] = {}
 
     # ------------------------------------------------------------------ public
     def schedule(self, ctx: PlaybackContext) -> None:
@@ -105,6 +106,7 @@ class Prefetcher:
         """
         task = asyncio.create_task(self._download_current(ctx, song))
         self._current[ctx.guild.id] = task
+        self._current_ids[ctx.guild.id] = song.get("video_id")
         return task
 
     def current_download(self, guild_id: int) -> Optional[asyncio.Task]:
@@ -130,10 +132,23 @@ class Prefetcher:
         if error:
             log.warning("Background download of '%s' failed (%s); it plays from the stream only.", song.get("title"), error)
 
-    async def cancel(self, guild_id: int) -> None:
-        """Stops the guild's worker and any download it started."""
-        tasks = [self._workers.pop(guild_id, None), self._current.pop(guild_id, None)]
-        tasks.extend(task for (guild, _), task in list(self._inflight.items()) if guild == guild_id)
+    async def cancel(self, guild_id: int, keep_current: bool = False) -> None:
+        """Stops the guild's worker and the downloads it started.
+
+        Args:
+            guild_id: The guild whose downloads are cancelled.
+            keep_current: Leave the background download of the song that is playing alone
+                (clearing the queue must not abort it).
+        """
+        keep_id = self._current_ids.get(guild_id) if keep_current else None
+        tasks = [self._workers.pop(guild_id, None)]
+        if not keep_current:
+            tasks.append(self._current.pop(guild_id, None))
+            self._current_ids.pop(guild_id, None)
+        tasks.extend(
+            task for (guild, video_id), task in list(self._inflight.items())
+            if guild == guild_id and video_id != keep_id
+        )
         pending = [task for task in tasks if task is not None and not task.done()]
         for task in pending:
             task.cancel()

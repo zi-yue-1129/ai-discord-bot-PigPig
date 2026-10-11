@@ -75,6 +75,8 @@ class YTMusic(commands.Cog):
     async def mode(self, interaction: discord.Interaction, mode: app_commands.Choice[str]):
         """播放模式命令"""
         guild_id = interaction.guild.id
+        if not await self._ensure_can_control(interaction):
+            return
         if not self.lang_manager: # Ensure lang_manager is loaded
              self.lang_manager = self.bot.get_cog("LanguageManager")
              if not self.lang_manager:
@@ -98,6 +100,8 @@ class YTMusic(commands.Cog):
     async def shuffle(self, interaction: discord.Interaction):
         """隨機播放命令"""
         guild_id = interaction.guild.id
+        if not await self._ensure_can_control(interaction):
+            return
         if not self.lang_manager: # Ensure lang_manager is loaded
              self.lang_manager = self.bot.get_cog("LanguageManager")
              if not self.lang_manager:
@@ -233,7 +237,7 @@ class YTMusic(commands.Cog):
         
         # 播放音樂
         voice_client = interaction.guild.voice_client
-        if not voice_client.is_playing():
+        if self._is_idle(voice_client):
             await self.play_next(interaction)
 
     async def _handle_playlist(self, interaction: discord.Interaction, url: str):
@@ -410,7 +414,7 @@ class YTMusic(commands.Cog):
         """Handle single song loop playback"""
         try:
             if voice_client.is_playing():
-                self.mark_user_stop(guild_id)
+                self.mark_user_stop(ctx.guild.id)
                 voice_client.stop()
 
             song = state.current_song
@@ -426,10 +430,10 @@ class YTMusic(commands.Cog):
             self.state_manager.update_state(ctx.guild.id, current_message=message)
 
             voice_client.play(audio_source)
-            if not song.get('is_live'):
-                self.state_manager.cancel_player_loop(ctx.guild.id)
-                task = self.bot.loop.create_task(self._player_loop(ctx, song))
-                self.state_manager.update_state(ctx.guild.id, player_loop_task=task)
+            self.state_manager.update_state(ctx.guild.id, user_stopped=False, force_next=False)
+            self.state_manager.cancel_player_loop(ctx.guild.id)
+            task = self.bot.loop.create_task(self._player_loop(ctx, song))
+            self.state_manager.update_state(ctx.guild.id, player_loop_task=task)
         except Exception as e:
             await func.report_error(e, "handling single loop")
             state.consecutive_failures += 1
@@ -515,14 +519,15 @@ class YTMusic(commands.Cog):
         self.state_manager.update_state(guild_id, current_message=message, current_song=song, last_played_song=song)
 
         voice_client.play(audio_source)
-        self.state_manager.update_state(guild_id, consecutive_failures=0, user_stopped=False)
+        song['resumes'] = 0
+        self.state_manager.update_state(guild_id, consecutive_failures=0, user_stopped=False, force_next=False)
         self.prefetcher.schedule(ctx)
         if song.get('stream_url') and not song.get('file_path') and not song.get('is_live'):
             self.prefetcher.download_current(ctx, song)
-        if not song.get('is_live'):
-            self.state_manager.cancel_player_loop(guild_id)
-            task = self.bot.loop.create_task(self._player_loop(ctx, song))
-            self.state_manager.update_state(guild_id, player_loop_task=task)
+        # Live streams are watched too, so the queue moves on when one ends or is skipped.
+        self.state_manager.cancel_player_loop(guild_id)
+        task = self.bot.loop.create_task(self._player_loop(ctx, song))
+        self.state_manager.update_state(guild_id, player_loop_task=task)
 
     async def _handle_after_play(self, ctx: PlaybackContext, song: dict) -> None:
         """Handle cleanup and queue transitions after a song finishes playing.
@@ -572,8 +577,11 @@ class YTMusic(commands.Cog):
             # report it and carry on with the next song.
             await func.report_error(e, "housekeeping after play")
 
-        # play_next handles its own failures and gives up after a bounded number of retries.
-        await self.play_next(ctx)
+        # A skip must leave a looped song; play_next handles its own failures and gives up
+        # after a bounded number of retries.
+        force_new = self.state_manager.get_state(guild_id).force_next
+        self.state_manager.update_state(guild_id, force_next=False)
+        await self.play_next(ctx, force_new=force_new)
 
     def _delete_when_downloaded(self, guild_id: int, song: dict) -> None:
         """Deletes a streamed song's file once its background download has finished.
@@ -868,7 +876,7 @@ class YTMusic(commands.Cog):
 
         ctx = PlaybackContext.from_interaction(interaction)
         voice_client = interaction.guild.voice_client
-        if voice_client and not voice_client.is_playing():
+        if voice_client and self._is_idle(voice_client):
             # Nothing playing: play_next fills the empty queue through autoplay itself.
             logger.info(f"[音樂] 伺服器 ID: {guild_id}, 觸發閒置時的 Autoplay。")
             self.bot.loop.create_task(self.play_next(ctx))
@@ -937,6 +945,7 @@ class YTMusic(commands.Cog):
         self.state_manager.cancel_player_loop(guild_id)
         await self.prefetcher.cancel(guild_id)
         self.queue_manager.clear_queue(guild_id)
+        self.queue_manager.set_playlist(guild_id, [])
         _, folder = self._get_guild_folder(guild_id)
         await self.audio_manager.cleanup_guild_files(guild_id, folder)
         self.state_manager.update_state(guild_id, current_song=None, last_played_song=None, current_message=None, current_view=None, ui_messages=[])
@@ -1049,6 +1058,15 @@ class YTMusic(commands.Cog):
                         if view:
                             await view.update_button_state()
 
+    @staticmethod
+    def _is_idle(voice_client: Any) -> bool:
+        """Tells whether nothing is playing *and* nothing is paused.
+
+        A paused song is still the current one; starting another would replace it and
+        leave the paused audio thread running.
+        """
+        return not (voice_client.is_playing() or voice_client.is_paused())
+
     def mark_user_stop(self, guild_id: int) -> None:
         """Records that playback is being stopped on purpose (skip, previous, replacement)."""
         self.state_manager.update_state(guild_id, user_stopped=True)
@@ -1149,7 +1167,7 @@ class YTMusic(commands.Cog):
         song['streaming'] = False
         view = self.ui_manager.get_current_view(guild_id)
         if view:
-            view.current_position = int(played)
+            view.start_progress_updater(duration, start_position=int(played))
         task = asyncio.get_running_loop().create_task(self._player_loop(ctx, song, played))
         self.state_manager.update_state(guild_id, player_loop_task=task)
         return True

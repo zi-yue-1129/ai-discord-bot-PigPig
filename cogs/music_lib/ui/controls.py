@@ -152,14 +152,20 @@ class MusicControlView(discord.ui.View):
             except Exception as e:
                 log.error(f"Failed to update button state: {e}")
 
-    def start_progress_updater(self, duration: int):
+    def start_progress_updater(self, duration: int, start_position: int = 0):
+        """Starts the progress bar updater.
+
+        Args:
+            duration: Song length in seconds.
+            start_position: Seconds already played (non-zero after a resume).
+        """
         # 如果是直播，則不啟動進度更新器
         if self.song_info.get('is_live', False):
             return
             
         if self.update_task:
             self.update_task.cancel()
-        self.current_position = 0
+        self.current_position = start_position
         self.update_task = asyncio.create_task(self.update_progress(duration))
 
     def stop_progress_updater(self):

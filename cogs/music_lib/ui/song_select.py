@@ -182,7 +182,7 @@ class SongSelectMenu(discord.ui.Select):
             
             # Start playing if not already playing
             voice_client = interaction.guild.voice_client
-            if voice_client and not voice_client.is_playing():
+            if voice_client and view.player._is_idle(voice_client):
                 await view.player.play_next(interaction)
                 
         except Exception as e:

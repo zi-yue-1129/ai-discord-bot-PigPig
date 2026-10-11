@@ -1,6 +1,7 @@
 import os
 import subprocess
 import asyncio
+import glob
 import yt_dlp
 import discord
 import random
@@ -350,6 +351,26 @@ class YouTubeManager:
             "is_live": False,
         }, None
 
+    @staticmethod
+    def _remove_files_when_done(download: "asyncio.Future", folder: str, video_id: str) -> None:
+        """Deletes a video's files once its (uncancellable) download thread has ended.
+
+        Args:
+            download: The future wrapping the download thread.
+            folder: The guild's download folder.
+            video_id: The video whose files must not stay behind.
+        """
+        def remove(finished: "asyncio.Future") -> None:
+            if not finished.cancelled():
+                finished.exception()  # mark the outcome as retrieved
+            for path in glob.glob(os.path.join(glob.escape(folder), f"{glob.escape(video_id)}*")):
+                try:
+                    os.remove(path)
+                except FileNotFoundError:
+                    continue  # already gone
+
+        download.add_done_callback(remove)
+
     async def download_audio(self, url: str, folder: str, ctx: PlaybackContext) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
         """Download audio from YouTube.
 
@@ -487,7 +508,13 @@ class YouTubeManager:
                             return None, "影片時長過長！超過 30 分鐘"
 
                         log.info(f"[音樂] 正在下載 (策略 {strategy_idx + 1}/{len(player_client_strategies)}, 伺服器 ID: {ctx.guild.id}): {url}")
-                        await asyncio.to_thread(ydl.download, [url])
+                        download = asyncio.ensure_future(asyncio.to_thread(ydl.download, [url]))
+                        try:
+                            await asyncio.shield(download)
+                        except asyncio.CancelledError:
+                            # The download thread cannot be stopped; delete what it leaves behind.
+                            self._remove_files_when_done(download, folder, info_dict['id'])
+                            raise
                         log.info(f"[音樂] 下載完成 (伺服器 ID: {ctx.guild.id}): {url}")
                         break  # Success — exit strategy loop
 

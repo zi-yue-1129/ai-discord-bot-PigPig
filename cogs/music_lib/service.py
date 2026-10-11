@@ -175,6 +175,15 @@ class MusicService:
         await voice_client.move_to(voice_state.channel)
         return None
 
+    async def _keep_connected(self, ctx: PlaybackContext) -> None:
+        """Cancels the queue-end idle disconnect: a request is being served right now.
+
+        A paused player keeps its own idle timer.
+        """
+        voice_client = ctx.guild.voice_client
+        if voice_client is not None and not voice_client.is_paused():
+            await self._cog._cancel_disconnect_timer(ctx.guild.id)
+
     async def enqueue_video(self, ctx: PlaybackContext, url: str) -> Tuple[Optional[dict], Optional[ActionResult]]:
         """Resolves one video URL and puts it at the front of the queue.
 
@@ -183,6 +192,7 @@ class MusicService:
         """
         cog = self._cog
         guild_id = ctx.guild.id
+        await self._keep_connected(ctx)
         _, folder = cog._get_guild_folder(guild_id)
         voice_client = ctx.guild.voice_client
         nothing_playing = not (voice_client.is_playing() or voice_client.is_paused())
@@ -212,6 +222,7 @@ class MusicService:
         """
         cog = self._cog
         guild_id = ctx.guild.id
+        await self._keep_connected(ctx)
         _, folder = cog._get_guild_folder(guild_id)
         video_infos, error = await cog.youtube.download_playlist(url, folder, ctx)
         if error or not video_infos:
@@ -244,6 +255,7 @@ class MusicService:
         problem = await self._ensure_voice(ctx)
         if problem:
             return problem
+        await self._keep_connected(ctx)
 
         kind = classify_query(query)
         data: Dict[str, Any]
@@ -263,6 +275,10 @@ class MusicService:
                     "duration": info.get("duration", 0)}
 
         voice_client = ctx.guild.voice_client
+        if voice_client is None:
+            # The idle timer (or a disconnect) removed the bot while the song was being prepared.
+            self._cog.queue_manager.clear_queue(ctx.guild.id)
+            return _fail("voice_connect_failed", "The bot left the voice channel while the song was being prepared.")
         data["channel"] = _channel_name(voice_client.channel)
         if voice_client.is_playing() or voice_client.is_paused():
             self._cog.prefetcher.schedule(ctx)
@@ -349,6 +365,7 @@ class MusicService:
         if view:
             view.stop_progress_updater()
         self._cog.mark_user_stop(guild_id)
+        self._cog.state_manager.update_state(guild_id, force_next=True)
         voice_client.stop()
         if view and refresh_buttons:
             await view.update_button_state()
@@ -491,7 +508,7 @@ class MusicService:
         removed = queue_manager.get_queue_snapshot(guild_id)
         queue_manager.clear_queue(guild_id)
         queue_manager.set_playlist(guild_id, [])
-        await self._cog.prefetcher.cancel(guild_id)
+        await self._cog.prefetcher.cancel(guild_id, keep_current=True)
         await self._discard_files(guild_id, removed)
         return ActionResult(ok=True, detail="Queue cleared.", data={"removed": len(removed)})
 
