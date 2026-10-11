@@ -29,9 +29,16 @@ class FakeYouTube:
         self.playlist: List[dict] = [make_song(200 + i) for i in range(8)]
         self.error: Optional[str] = None
         self.downloaded: List[str] = []
+        self.stream_song: Optional[dict] = None
+        self.stream_error: Optional[str] = None
+        self.resolved: List[str] = []
 
     async def search_videos(self, query: str, max_results: int = 10) -> List[dict]:
         return self.search_results
+
+    async def resolve_stream(self, url: str, ctx: Any) -> tuple:
+        self.resolved.append(url)
+        return self.stream_song, self.stream_error
 
     async def download_audio(self, url: str, folder: str, ctx: Any) -> tuple:
         self.downloaded.append(url)

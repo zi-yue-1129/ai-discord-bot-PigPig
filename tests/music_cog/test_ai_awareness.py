@@ -160,6 +160,9 @@ def idle_service(cog: YTMusic, monkeypatch: pytest.MonkeyPatch) -> MusicService:
     class QuickYouTube:
         time_limit = 1800
 
+        async def resolve_stream(self, url: str, ctx: Any) -> tuple:
+            return None, None
+
         async def search_videos(self, query: str, max_results: int = 10) -> List[dict]:
             return [make_song(100)]
 
