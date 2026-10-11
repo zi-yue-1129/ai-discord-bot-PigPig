@@ -1,5 +1,6 @@
 {
     "enabled": "Enabled",
     "disabled": "Disabled",
-    "toggled": "{user} toggled autoplay: {status}"
+    "toggled": "{user} toggled autoplay: {status}",
+    "songs_added": "Automatically added {count} recommended songs"
 }
