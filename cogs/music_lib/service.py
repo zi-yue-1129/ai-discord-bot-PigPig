@@ -214,6 +214,8 @@ class MusicService:
         voice_client = ctx.guild.voice_client
         if not voice_client.is_playing() and not voice_client.is_paused():
             await self._cog.play_next(ctx)
+        else:
+            self._cog.prefetcher.schedule(ctx)
         return ActionResult(ok=True, detail="Queued.", data=data)
 
     async def _queue_video_or_search(self, ctx: PlaybackContext, query: str, kind: str) -> Tuple[Optional[dict], Optional[ActionResult]]:

@@ -15,6 +15,7 @@ from .music_lib.audio_manager import AudioManager
 from .music_lib.state_manager import StateManager
 from .music_lib.queue_manager import QueueManager, PlayMode
 from .music_lib.context import PlaybackContext, user_shares_voice_channel
+from .music_lib.prefetch import Prefetcher
 from .music_lib.service import MusicService, classify_query
 from .music_lib.ui_manager import UIManager
 from .music_lib.ui.song_select import SongSelectView
@@ -44,6 +45,11 @@ class YTMusic(commands.Cog):
         self.lang_manager: Optional[LanguageManager] = None # Initialize lang_manager
         self.disconnect_timers = {}
         self.service = MusicService(self)
+        self.prefetcher = Prefetcher(
+            get_youtube=lambda: self.youtube,
+            queue_manager=self.queue_manager,
+            get_folder=lambda guild_id: self._get_guild_folder(guild_id)[1],
+        )
 
     async def setup_hook(self):
         """Initialize async components and LanguageManager."""
@@ -405,10 +411,9 @@ class YTMusic(commands.Cog):
                 next_song['file_path'] = potential_path
                 return next_song
 
-            logger.info(f"歌曲 '{next_song['title']}' 未下載，開始下載...")
-            downloaded_info, error = await self.youtube.download_audio(next_song['url'], folder, ctx)
+            logger.info(f"歌曲 '{next_song['title']}' 未下載，開始下載（或等待預先下載完成）...")
+            _, error = await self.prefetcher.ensure_downloaded(ctx, next_song)
             if not error:
-                next_song.update(downloaded_info)
                 return next_song
 
             logger.error(f"下載失敗: {next_song['title']} - {error}")
@@ -444,6 +449,7 @@ class YTMusic(commands.Cog):
 
         voice_client.play(audio_source)
         self.state_manager.update_state(guild_id, consecutive_failures=0)
+        self.prefetcher.schedule(ctx)
         if not song.get('is_live'):
             self.state_manager.cancel_player_loop(guild_id)
             task = self.bot.loop.create_task(self._player_loop(ctx, song))
@@ -837,7 +843,10 @@ class YTMusic(commands.Cog):
 
         # Cancel any running player loop and clear queue and state
         self.state_manager.cancel_player_loop(guild_id)
+        await self.prefetcher.cancel(guild_id)
         self.queue_manager.clear_queue(guild_id)
+        _, folder = self._get_guild_folder(guild_id)
+        await self.audio_manager.cleanup_guild_files(guild_id, folder)
         self.state_manager.update_state(guild_id, current_song=None, last_played_song=None, current_message=None, current_view=None, ui_messages=[])
         logger.info(f"[音樂] 伺服器 ID: {guild_id}, 已清理語音會話。")
 
