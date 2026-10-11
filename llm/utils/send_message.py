@@ -16,6 +16,7 @@ import discord
 import opencc
 
 from function import func
+from llm.utils.reply_sanitizer import sanitize_reply
 
 
 # Constants
@@ -565,50 +566,32 @@ async def _process_token_stream(
         if pending_content:
             await update_message()
             
-        # Fallback: If no content was displayed but we have raw result,
-        # it means the model output was entirely outside <som>/<eom> markers.
+        # Fallback: If no content was displayed but we have raw result, the model
+        # ignored the <som>/<eom> protocol (e.g. forgot "<som>" or appended metadata
+        # after "<eom>"). Send only what survives sanitising; never the raw output.
+        fallback_text = ''
         if not display_content and message_result and message_result.strip():
             if markers_detected:
                 _logger.warning("Model used markers but all content was outside them. Applying fallback.")
             else:
                 _logger.warning("Model output without <som>/<eom> markers. Applying fallback with cleanup.")
 
-            import re
-            cleaned_result = message_result
-
-            # Step 1: If the model properly closed its thinking block, everything after the
-            # last </think> is the actual response — use it directly.
-            for end_tag in ('</think>', '</thinking>'):
-                if end_tag in cleaned_result:
-                    after = cleaned_result.rsplit(end_tag, 1)[-1].strip()
-                    if after:
-                        cleaned_result = after
-                        break
+            fallback_text = sanitize_reply(message_result)
+            if not fallback_text:
+                _logger.warning("Model output had nothing postable after sanitising; nothing is sent from it.")
             else:
-                # Step 2: Strip complete thinking blocks.
-                cleaned_result = re.sub(r'<thinking>.*?</thinking>\s*', '', cleaned_result, flags=re.DOTALL)
-                cleaned_result = re.sub(r'<think>.*?</think>\s*', '', cleaned_result, flags=re.DOTALL)
+                # Truncate to the hard limit in the fallback path.
+                # The fallback only fires when the model ignores the <som>/<eom> format.
+                # Creating continuation messages here would spam the channel — a single
+                # (possibly truncated) message is far better than multiple partial ones.
+                if len(fallback_text) > _HARD_LIMIT:
+                    fallback_text = fallback_text[: _HARD_LIMIT - 1] + "…"
+                pending_content = fallback_text
+                await update_message()
 
-            # Strip identity prefixes like "[Name | UserID:xxx | MessageID:xxx]  content"
-            prefix_pattern = r'^\[.*?\|\s*UserID:\d+\s*\|\s*MessageID:\d+\]\s*'
-            cleaned_result = re.sub(prefix_pattern, '', cleaned_result, flags=re.DOTALL).strip()
-
-            if not cleaned_result:
-                cleaned_result = message_result.strip()
-
-            # Truncate to the hard limit in the fallback path.
-            # The fallback only fires when the model ignores the <som>/<eom> format.
-            # Creating continuation messages here would spam the channel — a single
-            # (possibly truncated) message is far better than multiple partial ones.
-            if len(cleaned_result) > _HARD_LIMIT:
-                cleaned_result = cleaned_result[: _HARD_LIMIT - 1] + "…"
-
-            pending_content = cleaned_result
-            await update_message()
-            
         # Check if we have any content after all processing
         # Allow either text content OR tool calls (or both)
-        has_text_content = message_result and message_result.strip()
+        has_text_content = bool(display_content.strip() or fallback_text.strip())
         has_tool_calls = len(tool_call_chunks) > 0
         
         if not has_text_content and not has_tool_calls:

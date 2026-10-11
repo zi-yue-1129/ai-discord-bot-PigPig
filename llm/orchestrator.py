@@ -28,6 +28,7 @@ from .prompting.system_prompt import get_system_prompt
 from .prompting.protected_prompt_manager import get_protected_prompt_manager
 
 from llm.context_manager import ContextManager
+from llm.utils.tool_context import build_message_agent_history
 from llm.music_context import build_music_context
 from llm.memory.short_term import ShortTermMemoryProvider
 from llm.memory.procedural import ProceduralMemoryProvider
@@ -669,26 +670,10 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                 # IMPORTANT: Place static message_system_prompt before dynamic procedural_context_str to maximize KV cache reuse!
                 full_message_prompt = f"{message_system_prompt}\n\n{procedural_context_str}"
 
-                # Use the analysis from info_agent for message generation
-                # Compose messages for message_agent with analysis output and context
-                # Filter and transform ToolMessage and AIMessage with tool_calls.
-                # Local models (e.g. Ollama) often don't support these specific message types/attributes,
-                # so we convert them to plain text messages to preserve context without crashing.
-                clean_info_messages: List[BaseMessage] = []
-                for _msg in info_message:
-                    if isinstance(_msg, ToolMessage):
-                        # Convert ToolMessage to HumanMessage with English prefix and structured formatting
-                        tool_name = getattr(_msg, "name", "unknown")
-                        clean_info_messages.append(HumanMessage(content=f"[System: Tool Result ({tool_name})]\n{_msg.content}"))
-                    elif isinstance(_msg, AIMessage) and _msg.tool_calls:
-                        # Preserve text content; provide English placeholder if empty
-                        _text = _msg.content if isinstance(_msg.content, str) else ""
-                        if not _text.strip():
-                            tool_names = ", ".join([tc.get("name", "unknown") for tc in _msg.tool_calls])
-                            _text = f"[Assistant: Calling tool(s): {tool_names}]"
-                        clean_info_messages.append(AIMessage(content=_text))
-                    else:
-                        clean_info_messages.append(_msg)
+                # Use the analysis from info_agent for message generation.
+                # Tool calls and results become one internal block instead of fake
+                # assistant/system turns, which the reply agent would imitate in its output.
+                clean_info_messages: List[BaseMessage] = build_message_agent_history(info_message)
                 messages_for_message_agent = list(clean_info_messages)
                 if _announcement_msg is not None:
                     messages_for_message_agent.append(_announcement_msg)
