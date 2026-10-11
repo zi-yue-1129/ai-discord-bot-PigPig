@@ -235,7 +235,8 @@ async def test_a_song_queued_behind_the_current_one_reports_its_position(
 
     assert result.ok
     assert result.data["started"] is False
-    assert result.data["position"] == 1
+    # Requests play in the order they were made, so it waits behind the song already queued.
+    assert result.data["position"] == 2
 
 
 # --- failures become visible in the channel -----------------------------------------------
@@ -252,7 +253,7 @@ def _tool_runtime(cog: YTMusic, channel: FakeChannel) -> SimpleNamespace:
 class RefusingService:
     """Service stand-in whose every action fails."""
 
-    async def play(self, ctx: PlaybackContext, query: str) -> ActionResult:
+    async def play(self, ctx: PlaybackContext, query: str, play_next: bool = False) -> ActionResult:
         return ActionResult(ok=False, reason="user_not_in_voice", detail="join first")
 
     async def skip(self, ctx: PlaybackContext) -> ActionResult:

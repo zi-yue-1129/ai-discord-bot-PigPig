@@ -144,7 +144,7 @@ class MusicTools:
                 logger.warning("Could not announce a music failure in the channel", exc_info=True)
 
         @tool
-        async def play_music(query: str) -> str:
+        async def play_music(query: str, play_next: bool = False) -> str:
             """Plays music in the voice channel of the user who asked.
 
             Call this when the user asks to play, queue or put on a song, an artist
@@ -153,9 +153,13 @@ class MusicTools:
             this tool. If the user is not in a voice channel, the tool tells them so
             in the channel.
 
+            Requests play in the order they were made. Set play_next to true only when
+            the user explicitly asks to cut in or to play the song next (插播).
+
             Args:
                 query: A YouTube video or playlist URL, or search keywords such as
                     a song title and artist.
+                play_next: Cut in so the song plays right after the current one.
 
             Returns:
                 What was queued, or an error explaining why it could not be played.
@@ -163,7 +167,7 @@ class MusicTools:
             service, ctx, error = resolve()
             if error:
                 return error
-            result = await service.play(ctx, query)
+            result = await service.play(ctx, query, play_next=play_next)
             return _format_queued(result) if result.ok else await _failure(ctx, result)
 
         @tool

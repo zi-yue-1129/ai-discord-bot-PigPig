@@ -223,15 +223,21 @@ class QueueManager:
         q = self.get_queue(guild_id)
         # Directly manipulate q._queue (deque) to ensure atomicity
 
-        # 1. Check if the song already exists; if so and not a forced add, return True directly
+        # 1. Determine if the adder is a user or a bot
+        added_by_user = 'added_by' in item and item['added_by'] != self.bot.user.id
+
+        # 2. A song that is already queued is left alone, except that a user's request for a
+        #    song the bot recommended turns it into a request (and moves it into place).
         if not force:
             video_id = item.get('video_id')
-            if any(song.get('video_id') == video_id for song in q._queue):
-                logger.info(f"Song '{item.get('title')}' is already in the queue, treating as success.")
-                return True
-
-        # 2. Determine if the adder is a user or a bot
-        added_by_user = 'added_by' in item and item['added_by'] != self.bot.user.id
+            existing = next((song for song in q._queue if song.get('video_id') == video_id), None)
+            if existing is not None:
+                if not (added_by_user and existing.get('added_by') == self.bot.user.id):
+                    logger.info(f"Song '{item.get('title')}' is already in the queue, treating as success.")
+                    return True
+                if existing.get('file_path') and not item.get('file_path'):
+                    item['file_path'] = existing['file_path']
+                q._queue.remove(existing)
 
         # 3. Handle queue full scenarios
         if q.qsize() >= self.MAX_QUEUE_SIZE:
@@ -273,6 +279,24 @@ class QueueManager:
 
         # 5. Rebuilding queue is no longer necessary
         return True
+
+    async def enqueue_request(self, guild_id: int, item: Dict[str, Any], play_next: bool = False) -> bool:
+        """Queues a user's song request.
+
+        Requests play in the order they were made (after earlier requests, before the bot's
+        own recommendations). ``play_next`` cuts in: the song plays right after the current one.
+
+        Args:
+            guild_id: The guild.
+            item: The song entry; ``added_by`` is the requesting user.
+            play_next: Whether to cut in at the front of the queue.
+
+        Returns:
+            True when the song is queued, False when the queue is full.
+        """
+        if play_next:
+            return await self.add_to_front_of_queue(guild_id, item)
+        return await self.add_to_queue(guild_id, item)
 
     async def add_to_front_of_queue(self, guild_id: int, item: Dict[str, Any]) -> bool:
         """Add item to the front of the queue and handle overflow. Returns True on success, False on failure."""

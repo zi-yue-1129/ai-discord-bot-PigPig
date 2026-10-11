@@ -31,6 +31,7 @@ class FakeService:
 
     def __init__(self) -> None:
         self.calls: List[tuple] = []
+        self.play_calls: List[Dict[str, Any]] = []
         self.result = ActionResult(ok=True, detail="Done.", data={})
         self.status_value: Dict[str, Any] = {
             "state": "idle", "current": None, "queue": [], "mode": "no_loop",
@@ -41,7 +42,8 @@ class FakeService:
         self.calls.append((name, ctx, *args))
         return self.result
 
-    async def play(self, ctx: PlaybackContext, query: str) -> ActionResult:
+    async def play(self, ctx: PlaybackContext, query: str, play_next: bool = False) -> ActionResult:
+        self.play_calls.append({"query": query, "play_next": play_next})
         return await self._record("play", ctx, query)
 
     async def skip(self, ctx: PlaybackContext) -> ActionResult:

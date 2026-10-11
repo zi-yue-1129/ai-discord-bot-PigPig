@@ -190,8 +190,10 @@ class MusicService:
         if voice_client is not None and not voice_client.is_paused():
             await self._cog._cancel_disconnect_timer(ctx.guild.id)
 
-    async def enqueue_video(self, ctx: PlaybackContext, url: str) -> Tuple[Optional[dict], Optional[ActionResult]]:
-        """Resolves one video URL and puts it at the front of the queue.
+    async def enqueue_video(
+        self, ctx: PlaybackContext, url: str, play_next: bool = False
+    ) -> Tuple[Optional[dict], Optional[ActionResult]]:
+        """Resolves one video URL and queues it as a request (``play_next`` cuts in).
 
         Returns:
             ``(video_info, None)`` on success, otherwise ``(None, failure)``.
@@ -216,7 +218,7 @@ class MusicService:
             return None, _fail("lookup_failed", str(error))
 
         video_info["added_by"] = ctx.user.id
-        if not await cog.queue_manager.add_to_front_of_queue(guild_id, video_info):
+        if not await cog.queue_manager.enqueue_request(guild_id, video_info, play_next=play_next):
             return None, _fail("queue_full", "The queue is full.")
         return video_info, None
 
@@ -250,12 +252,14 @@ class MusicService:
         return added, len(video_infos), None
 
     # --------------------------------------------------------------------- play
-    async def play(self, ctx: PlaybackContext, query: str) -> ActionResult:
+    async def play(self, ctx: PlaybackContext, query: str, play_next: bool = False) -> ActionResult:
         """Queues a song, playlist or search result and starts playback if idle.
 
         Args:
             ctx: The playback context (the user must be in a voice channel).
             query: A YouTube URL, a playlist URL or search keywords.
+            play_next: Cut in: play a single song right after the current one instead of
+                after the earlier requests.
 
         Returns:
             The outcome; on success ``data`` holds the queued song(s).
@@ -265,7 +269,7 @@ class MusicService:
             return problem
         await self._keep_connected(ctx)
 
-        result = await self._queue_and_start(ctx, query)
+        result = await self._queue_and_start(ctx, query, play_next)
         if not result.ok:
             await self._leave_soon_if_idle(ctx)
         return result
@@ -278,7 +282,7 @@ class MusicService:
                 and queue_manager.is_queue_empty(ctx.guild.id)):
             await self._cog._start_disconnect_timer(ctx.guild.id, FAILED_PLAY_DISCONNECT_SECONDS)
 
-    async def _queue_and_start(self, ctx: PlaybackContext, query: str) -> ActionResult:
+    async def _queue_and_start(self, ctx: PlaybackContext, query: str, play_next: bool = False) -> ActionResult:
         """Queues what ``query`` names and starts playback when nothing is playing."""
         kind = classify_query(query)
         data: Dict[str, Any]
@@ -291,7 +295,7 @@ class MusicService:
                     "buffered": total - len(added or []),
                     "titles": [info["title"] for info in added or []]}
         else:
-            queued, failure = await self._queue_video_or_search(ctx, query, kind)
+            queued, failure = await self._queue_video_or_search(ctx, query, kind, play_next)
             if failure or queued is None:
                 return failure or _fail("lookup_failed", "Nothing could be queued.")
             info = queued
@@ -339,10 +343,12 @@ class MusicService:
                 return False
             await asyncio.sleep(0.1)
 
-    async def _queue_video_or_search(self, ctx: PlaybackContext, query: str, kind: str) -> Tuple[Optional[dict], Optional[ActionResult]]:
+    async def _queue_video_or_search(
+        self, ctx: PlaybackContext, query: str, kind: str, play_next: bool = False
+    ) -> Tuple[Optional[dict], Optional[ActionResult]]:
         """Queues a single video URL, or the first search result that can be queued."""
         if kind == "video":
-            return await self.enqueue_video(ctx, query.strip())
+            return await self.enqueue_video(ctx, query.strip(), play_next)
 
         results = await self._cog.youtube.search_videos(query, max_results=5)
         if not results:
@@ -358,7 +364,7 @@ class MusicService:
             )
         failure: Optional[ActionResult] = None
         for candidate in playable[:_SEARCH_CANDIDATES]:
-            info, failure = await self.enqueue_video(ctx, candidate["url"])
+            info, failure = await self.enqueue_video(ctx, candidate["url"], play_next)
             if info is not None:
                 return info, None
             if failure is not None and failure.reason == "queue_full":

@@ -176,7 +176,8 @@ class YTMusic(commands.Cog):
         await self._reply_service_result(interaction, result, "queue_tools.responses.cleared", count=count)
 
     @app_commands.command(name="play", description="播放影片(網址或關鍵字) 或 刷新UI")
-    async def play(self, interaction: discord.Interaction, query: Optional[str] = None):
+    @app_commands.describe(query="影片網址或關鍵字（不填則刷新播放介面）", insert="插播：排到下一首播放")
+    async def play(self, interaction: discord.Interaction, query: Optional[str] = None, insert: bool = False):
         """播放音樂或刷新UI命令"""
         guild_id = interaction.guild.id
         if not self.lang_manager: # Ensure lang_manager is loaded
@@ -248,11 +249,11 @@ class YTMusic(commands.Cog):
         if query_kind == "playlist":
             await self._handle_playlist(interaction, query.strip())
         elif query_kind == "video":
-            is_valid = await self._handle_single_video(interaction, query.strip())
+            is_valid = await self._handle_single_video(interaction, query.strip(), play_next=insert)
             if not is_valid:
                 return
         else:
-            await self._handle_search(interaction, query)
+            await self._handle_search(interaction, query, play_next=insert)
             return
         
         # 播放音樂
@@ -281,10 +282,12 @@ class YTMusic(commands.Cog):
         )
         await interaction.edit_original_response(embed=embed)
 
-    async def _handle_single_video(self, interaction: discord.Interaction, url: str) -> bool:
+    async def _handle_single_video(self, interaction: discord.Interaction, url: str, play_next: bool = False) -> bool:
         """Handle single video URL"""
         guild_id_str = str(interaction.guild.id)
-        video_info, failure = await self.service.enqueue_video(PlaybackContext.from_interaction(interaction), url)
+        video_info, failure = await self.service.enqueue_video(
+            PlaybackContext.from_interaction(interaction), url, play_next
+        )
 
         if failure and failure.reason == "queue_full":
             title = self.lang_manager.translate(guild_id_str, "commands", "play", "errors", "queue_full_title")
@@ -303,7 +306,7 @@ class YTMusic(commands.Cog):
         await interaction.edit_original_response(embed=embed)
         return True
 
-    async def _handle_search(self, interaction: discord.Interaction, query: str):
+    async def _handle_search(self, interaction: discord.Interaction, query: str, play_next: bool = False):
         """Handle search query"""
         results = await self.youtube.search_videos(query)
         guild_id = interaction.guild.id
@@ -321,7 +324,7 @@ class YTMusic(commands.Cog):
             duration_str = f"{int(minutes):02d}:{int(seconds):02d}"
             formatted_results.append(f"{i}. {result['title']} ({duration_str})")
 
-        view = SongSelectView(self, results, interaction)
+        view = SongSelectView(self, results, interaction, play_next)
         desc_prefix = self.lang_manager.translate(str(guild_id), "commands", "play", "responses", "select_song")
         description = f"{desc_prefix}\n\n" + "\n".join(formatted_results)
         embed_title = self.lang_manager.translate(str(guild_id), "commands", "play", "responses", "search_results_title")
