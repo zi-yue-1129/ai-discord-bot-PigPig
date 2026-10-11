@@ -36,3 +36,9 @@ ai:
   max_queue_titles: 10               # how many upcoming titles to list
   announce_failures: false           # also post a channel message when an AI music action fails (the AI already reports it)
   start_confirm_timeout_seconds: 5   # how long play_music waits for playback to start (0 = don't check)
+
+# Start the first song from its stream URL while the file downloads in the background.
+streaming:
+  enabled: true                      # false = download the whole song before playing it
+  drop_tolerance_seconds: 10         # ending this early counts as a dropped stream and is resumed
+  max_resumes: 2                     # resume attempts per song before giving up

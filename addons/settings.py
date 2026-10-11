@@ -208,6 +208,26 @@ class MusicAISettings:
     start_confirm_timeout_seconds: float = 5.0
 
 
+@dataclass(frozen=True)
+class StreamingSettings:
+    """First-song streaming (``streaming:`` block of music.yaml).
+
+    When nothing is playing, the first song starts from its stream URL while the file
+    downloads in the background, instead of waiting for the whole download.
+
+    Attributes:
+        enabled: Whether to stream the first song. Off restores download-then-play.
+        drop_tolerance_seconds: A streamed song that ends this many seconds (or more)
+            before its duration is treated as a dropped connection and resumed from
+            the downloaded file.
+        max_resumes: How many times one song may be resumed before giving up.
+    """
+
+    enabled: bool = True
+    drop_tolerance_seconds: int = 10
+    max_resumes: int = 2
+
+
 class MusicConfig:
     """Configuration object mapped from config/music.yaml"""
 
@@ -219,6 +239,7 @@ class MusicConfig:
         self.youtube_cookies_path: str = data.get("youtube_cookies_path", "./data/youtube_cookies.txt")
         # Unknown keys raise TypeError so a typo in music.yaml is not silently ignored.
         self.ai: MusicAISettings = MusicAISettings(**(data.get("ai") or {}))
+        self.streaming: StreamingSettings = StreamingSettings(**(data.get("streaming") or {}))
 
 class PromptConfig:
     """Configuration object mapped from config/prompt/*.yaml"""

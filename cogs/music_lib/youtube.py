@@ -288,6 +288,68 @@ class YouTubeManager:
             log.error(f"[音樂] 取得影片資訊失敗: {e}")
             return None, "取得影片資訊失敗"
 
+    async def resolve_stream(self, url: str, ctx: PlaybackContext) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Looks a video up and returns a song entry that can be played from its stream URL.
+
+        Nothing is downloaded, so this takes about a second instead of the whole
+        download and conversion.
+
+        Args:
+            url: The YouTube video URL.
+            ctx: Where playback was requested and by whom.
+
+        Returns:
+            ``(song, None)`` when the video can be streamed. ``(None, error)`` when it must
+            not be played at all (for example too long). ``(None, None)`` when streaming is
+            not possible (live stream, no usable URL, lookup failure) and the caller should
+            use :meth:`download_audio` instead.
+        """
+        ydl_opts: Dict[str, Any] = {
+            'format': 'bestaudio/best',
+            'noplaylist': True,
+            'quiet': True,
+            'no_warnings': True,
+            'extractor_args': {'youtube': {
+                'player_client': ['android_music', 'android', 'ios', 'web'],
+                'player_skip': ['webpage'],
+            }},
+        }
+        cookies_path = self.settings.youtube_cookies_path
+        if os.path.exists(cookies_path):
+            ydl_opts['cookiefile'] = cookies_path
+
+        def extract() -> Dict[str, Any]:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                return ydl.extract_info(url, download=False)
+
+        try:
+            info = await asyncio.to_thread(extract)
+        except Exception as e:
+            # Streaming is only an optimisation: the download path reports real failures.
+            log.warning(f"[音樂] 取得串流網址失敗，改用下載: {e}")
+            return None, None
+
+        if info.get('is_live') or not info.get('url'):
+            return None, None
+        if info.get('duration', 0) > self.time_limit:
+            log.info(f"[音樂] 伺服器 ID: {ctx.guild.id}, 影片時長過長！")
+            return None, "影片時長過長！超過 30 分鐘"
+
+        return {
+            "file_path": None,
+            "stream_url": info['url'],
+            "stream_headers": dict(info.get('http_headers') or {}),
+            "title": info.get('title', '未知標題'),
+            "url": info.get('webpage_url', url),
+            "duration": info.get('duration', 0),
+            "video_id": info.get('id', '未知ID'),
+            "author": info.get('uploader', '未知上傳者'),
+            "views": info.get('view_count', 0),
+            "requester": ctx.user,
+            "user_avatar": ctx.user.display_avatar.url,
+            "is_live": False,
+        }, None
+
     async def download_audio(self, url: str, folder: str, ctx: PlaybackContext) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
         """Download audio from YouTube.
 
