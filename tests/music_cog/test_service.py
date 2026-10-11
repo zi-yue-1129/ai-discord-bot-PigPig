@@ -58,11 +58,14 @@ def youtube(cog: YTMusic, monkeypatch: pytest.MonkeyPatch) -> FakeYouTube:
 
 @pytest.fixture
 def played(cog: YTMusic, monkeypatch: pytest.MonkeyPatch) -> List[PlaybackContext]:
-    """Records play_next calls instead of starting real audio."""
+    """Records play_next calls and pretends playback started, without real audio."""
     calls: List[PlaybackContext] = []
 
     async def fake_play_next(source: Any, force_new: bool = False) -> None:
-        calls.append(PlaybackContext.coerce(source))
+        context = PlaybackContext.coerce(source)
+        calls.append(context)
+        # A real play_next leaves the voice client playing; play() now checks for that.
+        context.guild.voice_client.playing = True
 
     monkeypatch.setattr(cog, "play_next", fake_play_next)
     return calls

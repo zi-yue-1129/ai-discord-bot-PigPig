@@ -28,26 +28,19 @@ behalf of the user who wrote the message. They are thin wrappers around
 channel) and queue behaviour are the same as for the slash commands.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
+
+import discord
 
 from langchain_core.tools import tool
 
 from addons.logging import get_logger
 from cogs.music_lib.context import PlaybackContext
+from addons.settings import music_config
 from cogs.music_lib.service import ActionResult
+from llm.music_context import format_seconds, render_music_context
 
 _logger = get_logger(server_id="Bot", source="llm.tools.music_tools")
-
-_MAX_QUEUE_LINES = 10
-
-
-def _format_seconds(seconds: Any) -> str:
-    """Formats a duration in seconds as ``MM:SS``."""
-    try:
-        minutes, secs = divmod(int(seconds), 60)
-    except (TypeError, ValueError):
-        return "??:??"
-    return f"{minutes:02d}:{secs:02d}"
 
 
 def _format_queued(result: ActionResult) -> str:
@@ -59,29 +52,13 @@ def _format_queued(result: ActionResult) -> str:
             f"Queued {data.get('added')} of {data.get('total')} songs from the playlist "
             f"(the rest load as the queue plays): {titles}."
         )
-    return f"Queued '{data.get('title')}' ({_format_seconds(data.get('duration'))}). It plays right away if nothing else is playing."
-
-
-def _format_status(status: Dict[str, Any]) -> str:
-    """Renders the player status as plain text for the model."""
-    lines = [f"Player state: {status['state']}"]
-    current: Optional[Dict[str, Any]] = status["current"]
-    if current:
-        lines.append(f"Now playing: '{current['title']}' by {current['author']} ({_format_seconds(current['duration'])})")
-    queue: List[Dict[str, Any]] = status["queue"]
-    if queue:
-        lines.append(f"Up next ({len(queue)} in queue):")
-        for position, song in enumerate(queue[:_MAX_QUEUE_LINES], 1):
-            lines.append(f"{position}. '{song['title']}' ({_format_seconds(song['duration'])})")
-        if len(queue) > _MAX_QUEUE_LINES:
-            lines.append(f"... and {len(queue) - _MAX_QUEUE_LINES} more")
-    else:
-        lines.append("The queue is empty.")
-    lines.append(
-        f"Loop mode: {status['mode']}; shuffle: {'on' if status['shuffle'] else 'off'}; "
-        f"autoplay: {'on' if status['autoplay'] else 'off'}"
-    )
-    return "\n".join(lines)
+    title = f"'{data.get('title')}' ({format_seconds(data.get('duration'))})"
+    if data.get("started"):
+        return f"Now playing {title}."
+    position = data.get("position")
+    if position:
+        return f"Queued {title} at position {position}; it plays after the current song."
+    return f"Queued {title}."
 
 
 class MusicTools:
@@ -126,9 +103,30 @@ class MusicTools:
         resolve = self._resolve
         logger = getattr(self.runtime, "logger", None) or _logger
 
-        def _failure(result: ActionResult) -> str:
+        async def _failure(ctx: PlaybackContext, result: ActionResult) -> str:
+            """Reports a failed action to the channel and returns the error text.
+
+            The reply agent never sees tool results, so without the channel
+            message the user would only hear the model's optimistic answer.
+            """
             logger.info("Music tool refused: %s (%s)", result.reason, result.detail)
+            if music_config.ai.announce_failures and ctx.channel is not None:
+                await _announce(ctx, result)
             return f"Error: {result.detail}"
+
+        async def _announce(ctx: PlaybackContext, result: ActionResult) -> None:
+            """Posts a public failure message in the channel the user wrote in."""
+            lang_manager = self.runtime.bot.get_cog("LanguageManager")
+            text = result.detail
+            if lang_manager is not None:
+                text = lang_manager.translate(
+                    str(ctx.guild.id), "system", "music", "ai_errors", result.reason, detail=result.detail
+                )
+            embed = discord.Embed(title=f"❌ | {text}", color=discord.Color.red())
+            try:
+                await ctx.channel.send(embed=embed)
+            except (discord.Forbidden, discord.HTTPException):
+                logger.warning("Could not announce a music failure in the channel", exc_info=True)
 
         @tool
         async def play_music(query: str) -> str:
@@ -149,7 +147,7 @@ class MusicTools:
             if error:
                 return error
             result = await service.play(ctx, query)
-            return _format_queued(result) if result.ok else _failure(result)
+            return _format_queued(result) if result.ok else await _failure(ctx, result)
 
         @tool
         async def skip_music() -> str:
@@ -164,7 +162,7 @@ class MusicTools:
                 return error
             result = await service.skip(ctx)
             if not result.ok:
-                return _failure(result)
+                return await _failure(ctx, result)
             skipped = result.data.get("skipped")
             return f"Skipped '{skipped}'." if skipped else "Skipped the current song."
 
@@ -179,7 +177,7 @@ class MusicTools:
             if error:
                 return error
             result = await service.pause(ctx)
-            return "Paused the music." if result.ok else _failure(result)
+            return "Paused the music." if result.ok else await _failure(ctx, result)
 
         @tool
         async def resume_music() -> str:
@@ -192,7 +190,7 @@ class MusicTools:
             if error:
                 return error
             result = await service.resume(ctx)
-            return "Resumed the music." if result.ok else _failure(result)
+            return "Resumed the music." if result.ok else await _failure(ctx, result)
 
         @tool
         async def stop_music() -> str:
@@ -208,7 +206,7 @@ class MusicTools:
             if error:
                 return error
             result = await service.stop(ctx)
-            return "Stopped the music and left the voice channel." if result.ok else _failure(result)
+            return "Stopped the music and left the voice channel." if result.ok else await _failure(ctx, result)
 
         @tool
         async def set_music_loop_mode(mode: str) -> str:
@@ -225,7 +223,7 @@ class MusicTools:
             if error:
                 return error
             result = await service.set_mode(ctx, mode)
-            return f"Loop mode is now {mode}." if result.ok else _failure(result)
+            return f"Loop mode is now {mode}." if result.ok else await _failure(ctx, result)
 
         @tool
         async def set_music_shuffle(enabled: bool) -> str:
@@ -241,7 +239,7 @@ class MusicTools:
             if error:
                 return error
             result = await service.set_shuffle(ctx, enabled)
-            return f"Shuffle is now {'on' if enabled else 'off'}." if result.ok else _failure(result)
+            return f"Shuffle is now {'on' if enabled else 'off'}." if result.ok else await _failure(ctx, result)
 
         @tool
         async def set_music_volume(percent: int) -> str:
@@ -257,7 +255,7 @@ class MusicTools:
             if error:
                 return error
             result = await service.set_volume(ctx, percent)
-            return f"Volume is now {percent}%." if result.ok else _failure(result)
+            return f"Volume is now {percent}%." if result.ok else await _failure(ctx, result)
 
         @tool
         async def remove_song_from_queue(position: int) -> str:
@@ -276,7 +274,7 @@ class MusicTools:
                 return error
             result = await service.remove_from_queue(ctx, position)
             if not result.ok:
-                return _failure(result)
+                return await _failure(ctx, result)
             return f"Removed '{result.data.get('title')}' from position {position}."
 
         @tool
@@ -291,7 +289,7 @@ class MusicTools:
                 return error
             result = await service.clear_queue(ctx)
             if not result.ok:
-                return _failure(result)
+                return await _failure(ctx, result)
             return f"Cleared the queue ({result.data.get('removed')} songs removed)."
 
         @tool
@@ -308,7 +306,12 @@ class MusicTools:
             service, ctx, error = resolve()
             if error:
                 return error
-            return _format_status(service.status(ctx.guild.id))
+            ai_settings = music_config.ai
+            return render_music_context(
+                service.status(ctx.guild.id),
+                list_titles=True,
+                max_titles=ai_settings.max_queue_titles,
+            )
 
         action_tools = (
             play_music, skip_music, pause_music, resume_music,

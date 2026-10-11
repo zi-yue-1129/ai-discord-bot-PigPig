@@ -19,7 +19,7 @@ from llm.schema import OrchestratorResponse, OrchestratorRequest
 from llm.utils.send_message import send_message, safe_edit_message
 from llm.utils.model_init import create_model_instance
 from function import func
-from addons.settings import llm_config, prompt_config
+from addons.settings import llm_config, music_config, prompt_config
 
 _LLM_CALL_TIMEOUT_SECONDS: float = llm_config.llm_call_timeout
 _IMAGE_FETCH_TIMEOUT_SECONDS: float = 15.0
@@ -28,6 +28,7 @@ from .prompting.system_prompt import get_system_prompt
 from .prompting.protected_prompt_manager import get_protected_prompt_manager
 
 from llm.context_manager import ContextManager
+from llm.music_context import build_music_context
 from llm.memory.short_term import ShortTermMemoryProvider
 from llm.memory.procedural import ProceduralMemoryProvider
 from llm.memory.episodic import EpisodicMemoryProvider
@@ -466,6 +467,16 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                 asyncio.create_task(func.report_error(e, "ContextManager.get_context failed in Orchestrator"))
                 procedural_context_str = ""
                 short_term_msgs = []
+
+            # 1b) Player status goes into the context because neither agent can look it
+            # up after its single tool round.
+            try:
+                music_context = await build_music_context(bot, message.guild, music_config.ai)
+                if music_context:
+                    procedural_context_str = f"{procedural_context_str}\n\n{music_context}"
+            except Exception as e:
+                # Per design: report and continue without the music section
+                asyncio.create_task(func.report_error(e, "build_music_context failed in Orchestrator"))
 
             try:
                 user = getattr(message, "author", None)

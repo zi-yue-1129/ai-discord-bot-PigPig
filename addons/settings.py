@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import yaml
 import asyncio
 from addons.logging import get_logger
@@ -185,6 +186,27 @@ class UpdateConfig:
         self.restart: dict = data.get("restart", {})
         self.github: dict = data.get("github", {})
 
+@dataclass(frozen=True)
+class MusicAISettings:
+    """How the AI interacts with the music player (``ai:`` block of music.yaml).
+
+    Attributes:
+        status_in_context: Add the player status to every conversation's context.
+        list_queue_titles: Include the titles of upcoming songs in that status.
+        max_queue_titles: How many upcoming titles to list at most.
+        announce_failures: Post a channel message when an AI music action fails,
+            because the reply agent cannot see tool results.
+        start_confirm_timeout_seconds: How long ``play_music`` waits for playback
+            to actually start before reporting failure; 0 disables the check.
+    """
+
+    status_in_context: bool = True
+    list_queue_titles: bool = True
+    max_queue_titles: int = 10
+    announce_failures: bool = True
+    start_confirm_timeout_seconds: float = 5.0
+
+
 class MusicConfig:
     """Configuration object mapped from config/music.yaml"""
 
@@ -194,6 +216,8 @@ class MusicConfig:
         self.music_temp_base: dict = data.get("music_temp_base", "temp/music")
         self.ffmpeg : dict = data.get("ffmpeg", {})
         self.youtube_cookies_path: str = data.get("youtube_cookies_path", "./data/youtube_cookies.txt")
+        # Unknown keys raise TypeError so a typo in music.yaml is not silently ignored.
+        self.ai: MusicAISettings = MusicAISettings(**(data.get("ai") or {}))
 
 class PromptConfig:
     """Configuration object mapped from config/prompt/*.yaml"""
