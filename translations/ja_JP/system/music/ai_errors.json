@@ -1,0 +1,15 @@
+{
+    "user_not_in_voice": "音楽を再生するには、先にボイスチャンネルに参加してください。",
+    "not_in_bot_channel": "音楽を操作するには、ボットと同じボイスチャンネルに参加している必要があります。",
+    "voice_connect_failed": "ボイスチャンネルに参加できませんでした。",
+    "lookup_failed": "この曲を取得できませんでした：{detail}",
+    "queue_full": "キューがいっぱいです。",
+    "no_results": "該当する曲が見つかりませんでした。",
+    "nothing_playing": "再生中の音楽はありません。",
+    "already_paused": "音楽はすでに一時停止中です。",
+    "not_paused": "音楽は一時停止されていません。",
+    "invalid_mode": "そのループモードには対応していません。",
+    "invalid_volume": "音量は 0 から 100 の間で指定してください。",
+    "invalid_position": "キューのその位置に曲はありません。",
+    "playback_not_started": "曲は追加されましたが、再生を開始できませんでした。"
+}

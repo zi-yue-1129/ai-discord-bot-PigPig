@@ -1,0 +1,15 @@
+{
+    "user_not_in_voice": "Join a voice channel first so I can play music.",
+    "not_in_bot_channel": "You need to be in the same voice channel as the bot to control the music.",
+    "voice_connect_failed": "I could not join the voice channel.",
+    "lookup_failed": "I could not get that song: {detail}",
+    "queue_full": "The queue is full.",
+    "no_results": "No matching songs were found.",
+    "nothing_playing": "Nothing is playing.",
+    "already_paused": "The music is already paused.",
+    "not_paused": "The music is not paused.",
+    "invalid_mode": "That loop mode is not supported.",
+    "invalid_volume": "Volume must be between 0 and 100.",
+    "invalid_position": "There is no song at that position in the queue.",
+    "playback_not_started": "The song was queued but playback did not start."
+}

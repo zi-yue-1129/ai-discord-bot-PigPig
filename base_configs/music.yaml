@@ -28,3 +28,11 @@ ffmpeg:
     accept_language: "en-us,en;q=0.5"
     sec_fetch_mode: navigate
 youtube_cookies_path: "./data/youtube_cookies.txt"
+
+# How the AI interacts with the player. Every key is optional; these are the defaults.
+ai:
+  status_in_context: true            # tell the AI what is playing in every conversation
+  list_queue_titles: true            # include upcoming song titles in that status
+  max_queue_titles: 10               # how many upcoming titles to list
+  announce_failures: true            # post a channel message when an AI music action fails
+  start_confirm_timeout_seconds: 5   # how long play_music waits for playback to start (0 = don't check)

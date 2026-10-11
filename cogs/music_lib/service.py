@@ -16,11 +16,30 @@ from urllib.parse import parse_qs, urlparse
 import discord
 
 from addons.logging import get_logger
+from addons.settings import MusicAISettings
 
 from .context import PlaybackContext, user_shares_voice_channel
 from .queue_manager import PlayMode
 
 log = get_logger(source=__name__, server_id="system")
+
+# Every ``reason`` a failed ActionResult can carry; each needs a translation in
+# translations/<locale>/system/music/ai_errors.json.
+FAILURE_REASONS = (
+    "user_not_in_voice",
+    "not_in_bot_channel",
+    "voice_connect_failed",
+    "lookup_failed",
+    "queue_full",
+    "no_results",
+    "nothing_playing",
+    "already_paused",
+    "not_paused",
+    "invalid_mode",
+    "invalid_volume",
+    "invalid_position",
+    "playback_not_started",
+)
 
 _YOUTUBE_HOSTS = ("youtube.com", "youtu.be")
 _SEARCH_CANDIDATES = 3
@@ -75,10 +94,12 @@ class MusicService:
 
     Args:
         cog: The ``YTMusic`` cog providing the queue, state and player internals.
+        settings: AI-related music settings.
     """
 
-    def __init__(self, cog: Any) -> None:
+    def __init__(self, cog: Any, settings: MusicAISettings) -> None:
         self._cog = cog
+        self.settings = settings
 
     # ------------------------------------------------------------------ helpers
     def _refresh_buttons(self, guild_id: int) -> Optional[Any]:
@@ -197,6 +218,7 @@ class MusicService:
 
         kind = classify_query(query)
         data: Dict[str, Any]
+        info: Dict[str, Any] = {}
         if kind == "playlist":
             added, total, failure = await self.enqueue_playlist(ctx, query.strip())
             if failure:
@@ -204,19 +226,47 @@ class MusicService:
             data = {"kind": "playlist", "added": len(added or []), "total": total,
                     "titles": [info["title"] for info in added or []]}
         else:
-            info, failure = await self._queue_video_or_search(ctx, query, kind)
-            if failure:
-                return failure
-            assert info is not None
+            queued, failure = await self._queue_video_or_search(ctx, query, kind)
+            if failure or queued is None:
+                return failure or _fail("lookup_failed", "Nothing could be queued.")
+            info = queued
             data = {"kind": "video", "title": info["title"], "url": info.get("url"),
                     "duration": info.get("duration", 0)}
 
         voice_client = ctx.guild.voice_client
-        if not voice_client.is_playing() and not voice_client.is_paused():
-            await self._cog.play_next(ctx)
-        else:
+        if voice_client.is_playing() or voice_client.is_paused():
             self._cog.prefetcher.schedule(ctx)
-        return ActionResult(ok=True, detail="Queued.", data=data)
+            data["started"] = False
+            if data["kind"] == "video":
+                data["position"] = self._queue_position(ctx.guild.id, info.get("video_id"))
+            return ActionResult(ok=True, detail="Queued behind the current song.", data=data)
+
+        await self._cog.play_next(ctx)
+        started = await self._wait_until_playing(voice_client)
+        if not started and self.settings.start_confirm_timeout_seconds > 0:
+            return _fail("playback_not_started", "The song was queued but playback did not start.")
+        data["started"] = started
+        return ActionResult(ok=True, detail="Playing." if started else "Queued.", data=data)
+
+    def _queue_position(self, guild_id: int, video_id: Optional[str]) -> Optional[int]:
+        """Returns the one-based queue position of ``video_id``, if it is queued."""
+        snapshot = self._cog.queue_manager.get_queue_snapshot(guild_id)
+        return next((index for index, song in enumerate(snapshot, 1) if song.get("video_id") == video_id), None)
+
+    async def _wait_until_playing(self, voice_client: Any) -> bool:
+        """Waits up to the configured time for the player to report that it plays.
+
+        Returns:
+            Whether the voice client is playing (or paused) when the wait ends.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.settings.start_confirm_timeout_seconds
+        while True:
+            if voice_client.is_playing() or voice_client.is_paused():
+                return True
+            if loop.time() >= deadline:
+                return False
+            await asyncio.sleep(0.1)
 
     async def _queue_video_or_search(self, ctx: PlaybackContext, query: str, kind: str) -> Tuple[Optional[dict], Optional[ActionResult]]:
         """Queues a single video URL, or the first search result that can be queued."""
@@ -288,8 +338,9 @@ class MusicService:
             return denied
         voice_client = ctx.guild.voice_client
         if not voice_client.is_paused():
-            reason = "not_paused" if voice_client.is_playing() else "nothing_playing"
-            return _fail(reason, "Playback is not paused.")
+            if voice_client.is_playing():
+                return _fail("not_paused", "Playback is not paused.")
+            return _fail("nothing_playing", "Nothing is playing.")
 
         voice_client.resume()
         await self._cog._cancel_disconnect_timer(ctx.guild.id)
@@ -420,7 +471,7 @@ class MusicService:
 
         Returns:
             A dict with ``state`` (``disconnected``/``idle``/``playing``/``paused``),
-            ``current``, ``queue``, ``mode``, ``shuffle`` and ``autoplay``.
+            ``current``, ``queue``, ``mode``, ``shuffle``, ``autoplay`` and ``volume``.
         """
         cog = self._cog
         voice_client = cog.get_voice_client(guild_id)
@@ -440,4 +491,5 @@ class MusicService:
             "mode": cog.queue_manager.get_play_mode(guild_id).value,
             "shuffle": cog.queue_manager.is_shuffle_enabled(guild_id),
             "autoplay": state.autoplay,
+            "volume": round(state.volume * 100),
         }

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 import pytest
-from music_cog.helpers import make_member
+from music_cog.helpers import FakeChannel, FakeLangManager, make_member
 
 from cogs.music_lib.context import PlaybackContext
 from cogs.music_lib.service import ActionResult
@@ -34,7 +34,7 @@ class FakeService:
         self.result = ActionResult(ok=True, detail="Done.", data={})
         self.status_value: Dict[str, Any] = {
             "state": "idle", "current": None, "queue": [], "mode": "no_loop",
-            "shuffle": False, "autoplay": False,
+            "shuffle": False, "autoplay": False, "volume": 100,
         }
 
     async def _record(self, name: str, ctx: PlaybackContext, *args: Any) -> ActionResult:
@@ -79,10 +79,11 @@ class FakeService:
 def _runtime(service: Optional[FakeService], *, in_guild: bool = True) -> SimpleNamespace:
     guild = SimpleNamespace(id=7) if in_guild else None
     message = SimpleNamespace(
-        guild=guild, channel=object(), author=make_member(42, voice_channel=object())
+        guild=guild, channel=FakeChannel(), author=make_member(42, voice_channel=object())
     )
     cog = SimpleNamespace(service=service) if service is not None else None
-    bot = SimpleNamespace(get_cog=lambda name: cog if name == "YTMusic" else None)
+    cogs = {"YTMusic": cog, "LanguageManager": FakeLangManager()}
+    bot = SimpleNamespace(get_cog=cogs.get)
     return SimpleNamespace(bot=bot, message=message, logger=None)
 
 
@@ -179,6 +180,7 @@ async def test_status_describes_the_player() -> None:
         "mode": "loop_queue",
         "shuffle": True,
         "autoplay": False,
+        "volume": 55,
     }
 
     reply = await _tools(_runtime(service))["get_music_status"].ainvoke({})

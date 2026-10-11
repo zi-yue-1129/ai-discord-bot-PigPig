@@ -44,7 +44,7 @@ class YTMusic(commands.Cog):
         self.ui_manager = bot.ui_manager
         self.lang_manager: Optional[LanguageManager] = None # Initialize lang_manager
         self.disconnect_timers = {}
-        self.service = MusicService(self)
+        self.service = MusicService(self, music_config.ai)
         self.prefetcher = Prefetcher(
             get_youtube=lambda: self.youtube,
             queue_manager=self.queue_manager,

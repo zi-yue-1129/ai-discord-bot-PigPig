@@ -1,0 +1,15 @@
+{
+    "user_not_in_voice": "请先加入一个语音频道，我才能播放音乐。",
+    "not_in_bot_channel": "你需要和机器人在同一个语音频道才能控制音乐。",
+    "voice_connect_failed": "无法加入语音频道。",
+    "lookup_failed": "无法获取这首歌：{detail}",
+    "queue_full": "待播列表已满。",
+    "no_results": "找不到符合的歌曲。",
+    "nothing_playing": "目前没有播放音乐。",
+    "already_paused": "音乐已经是暂停状态。",
+    "not_paused": "音乐没有被暂停。",
+    "invalid_mode": "不支持这个循环模式。",
+    "invalid_volume": "音量必须介于 0 到 100。",
+    "invalid_position": "待播列表中没有这个位置的歌曲。",
+    "playback_not_started": "歌曲已加入，但没有成功开始播放。"
+}
