@@ -227,6 +227,8 @@ class MusicService:
         video_infos, error = await cog.youtube.download_playlist(url, folder, ctx)
         if error or not video_infos:
             return None, 0, _fail("lookup_failed", str(error or "The playlist is empty."))
+        if cog.queue_manager.is_shuffle_enabled(guild_id):
+            video_infos = cog.queue_manager.shuffled(video_infos)
 
         queue_size = cog.queue_manager.get_queue(guild_id).qsize()
         slots = max(0, min(_PLAYLIST_INITIAL_SLOTS - queue_size, len(video_infos)))
@@ -385,6 +387,7 @@ class MusicService:
             return _fail("nothing_playing", "Nothing is playing.")
 
         voice_client.pause()
+        self._cog.state_manager.update_state(ctx.guild.id, auto_paused=False)
         await self._cog._start_disconnect_timer(ctx.guild.id)
         view = self._refresh_buttons(ctx.guild.id)
         if view and refresh_buttons:
@@ -403,6 +406,7 @@ class MusicService:
             return _fail("nothing_playing", "Nothing is playing.")
 
         voice_client.resume()
+        self._cog.state_manager.update_state(ctx.guild.id, auto_paused=False)
         await self._cog._cancel_disconnect_timer(ctx.guild.id)
         view = self._refresh_buttons(ctx.guild.id)
         if view and refresh_buttons:

@@ -184,7 +184,17 @@ class YTMusic(commands.Cog):
             embed = discord.Embed(title=f"❌ | {title}", color=discord.Color.red())
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-            
+
+        # While music is playing (or paused) only people in the bot's channel may use /play.
+        current_client = interaction.guild.voice_client
+        if (current_client is not None and not self._is_idle(current_client)
+                and not user_shares_voice_channel(interaction.user, current_client)):
+            await interaction.response.send_message(
+                self.lang_manager.translate(str(guild_id), "system", "music", "controls", "not_in_channel"),
+                ephemeral=True,
+            )
+            return
+
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         # 連接至語音頻道
@@ -198,6 +208,9 @@ class YTMusic(commands.Cog):
                 embed = discord.Embed(title=f"❌ | {title}", color=discord.Color.red())
                 await interaction.edit_original_response(embed=embed)
                 return
+        elif interaction.guild.voice_client.channel != channel:
+            # The bot is idle in another channel (busy was refused above): follow the requester.
+            await interaction.guild.voice_client.move_to(channel)
 
         # 如果沒有提供查詢，刷新UI
         if not query:
@@ -460,7 +473,7 @@ class YTMusic(commands.Cog):
 
             # --- Loop Logic ---
             if not next_song and self.queue_manager.get_play_mode(guild_id) == PlayMode.LOOP_QUEUE:
-                await self._refill_queue(guild_id)
+                self.queue_manager.restart_cycle(guild_id)
                 next_song = await self.queue_manager.get_next_item(guild_id)
 
             if not next_song:
@@ -487,15 +500,6 @@ class YTMusic(commands.Cog):
             if state.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                 raise PlaybackAbortedError(f"{state.consecutive_failures} consecutive download failures")
 
-    async def _refill_queue(self, guild_id: int):
-        """Refill the queue with songs"""
-        queue_copy, new_queue = await self.queue_manager.copy_queue(
-            guild_id, 
-            shuffle=self.queue_manager.is_shuffle_enabled(guild_id)
-        )
-        if queue_copy:
-            self.queue_manager.set_queue(guild_id, new_queue)
-
     async def _play_song(self, ctx: PlaybackContext, song: dict, voice_client: Any) -> None:
         """Play a song and update UI"""
         guild_id = ctx.guild.id
@@ -520,7 +524,7 @@ class YTMusic(commands.Cog):
 
         voice_client.play(audio_source)
         song['resumes'] = 0
-        self.state_manager.update_state(guild_id, consecutive_failures=0, user_stopped=False, force_next=False)
+        self.state_manager.update_state(guild_id, consecutive_failures=0, user_stopped=False, force_next=False, auto_paused=False)
         self.prefetcher.schedule(ctx)
         if song.get('stream_url') and not song.get('file_path') and not song.get('is_live'):
             self.prefetcher.download_current(ctx, song)
@@ -545,8 +549,12 @@ class YTMusic(commands.Cog):
 
             # 如果是清單循環模式，將剛播放完的歌曲（包含檔案路徑）重新加入佇列
             if play_mode == PlayMode.LOOP_QUEUE and current_song:
-                await self.queue_manager.add_to_queue(guild_id, current_song, force=True)
-                logger.info(f"[音樂] 在清單循環模式下，將 '{current_song['title']}' 重新加入佇列。")
+                if self.queue_manager.is_shuffle_enabled(guild_id):
+                    # Shuffle plays every song once per round, so it waits for the next round.
+                    self.queue_manager.finish_for_cycle(guild_id, current_song)
+                else:
+                    await self.queue_manager.add_to_queue(guild_id, current_song, force=True)
+                logger.info(f"[音樂] 在清單循環模式下，'{current_song['title']}' 已播完，等待下一輪。")
 
             # 只有在非循環且非直播的模式下才刪除檔案
             if play_mode not in [PlayMode.LOOP_SINGLE, PlayMode.LOOP_QUEUE] and not song.get('is_live'):
@@ -984,6 +992,10 @@ class YTMusic(commands.Cog):
         voice_client = self.get_voice_client(guild_id)
         if voice_client and voice_client.is_connected() and not voice_client.is_playing():
             logger.info(f"[音樂] 伺服器 ID: {guild_id}, 閒置超過 {delay:g} 秒，自動斷線。")
+            # Leaving the channel triggers on_voice_state_update, which cancels the guild's timer;
+            # unregister first so that does not cancel this running task mid-cleanup.
+            if self.disconnect_timers.get(guild_id) is asyncio.current_task():
+                del self.disconnect_timers[guild_id]
 
             # Find a channel to send the message
             state = self.state_manager.get_state(guild_id)
@@ -1038,6 +1050,7 @@ class YTMusic(commands.Cog):
                 if voice_client.is_playing():
                     logger.info(f"[音樂] 伺服器 ID: {member.guild.id}, 頻道內無人，自動暫停播放。")
                     voice_client.pause()
+                    self.state_manager.update_state(member.guild.id, auto_paused=True)
                     await self._start_disconnect_timer(member.guild.id)
 
                     # Update UI button state (progress updater handles paused state on its own)
@@ -1048,10 +1061,11 @@ class YTMusic(commands.Cog):
             else:
                 # Someone is in the channel, resume if paused
                 if voice_client.is_paused():
-                    # Check if the pause was due to inactivity (i.e., a timer is running)
-                    if member.guild.id in self.disconnect_timers:
+                    # Only resume a pause the bot made itself; a user's pause stays.
+                    if self.state_manager.get_state(member.guild.id).auto_paused:
                         logger.info(f"[音樂] 伺服器 ID: {member.guild.id}, 有使用者加入，自動恢復播放。")
                         voice_client.resume()
+                        self.state_manager.update_state(member.guild.id, auto_paused=False)
                         await self._cancel_disconnect_timer(member.guild.id)
 
                         view = self.ui_manager.get_current_view(member.guild.id)

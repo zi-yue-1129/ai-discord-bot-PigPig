@@ -20,6 +20,8 @@ class PlayerState:
     user_stopped: bool = False
     # Set by skip: the next play_next must leave a looped song instead of repeating it.
     force_next: bool = False
+    # Set when the bot paused the player because the voice channel emptied (not the user).
+    auto_paused: bool = False
 
 
 class StateManager:

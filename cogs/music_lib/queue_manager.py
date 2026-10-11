@@ -20,6 +20,11 @@ class QueueManager:
         self.guild_queues: Dict[int, asyncio.Queue] = {}
         self.guild_settings: Dict[int, Dict[str, Any]] = {}
         self.guild_playlists: Dict[int, List[Dict[str, Any]]] = {}
+        # Songs already played in the current round of loop-queue mode, waiting for the next round.
+        self.guild_finished: Dict[int, List[Dict[str, Any]]] = {}
+        # Deliberately unseeded: a seeded shuffle would play the same order every time.
+        # Tests replace it with a seeded generator.
+        self._rng = random.Random()
 
     def get_guild_settings(self, guild_id: int) -> Dict[str, Any]:
         """Get server playback settings."""
@@ -54,6 +59,7 @@ class QueueManager:
             self.guild_settings[guild_id]["shuffle"] = False
         if guild_id in self.guild_playlists:
             self.guild_playlists[guild_id] = []
+        self.guild_finished.pop(guild_id, None)
 
     def set_playlist(self, guild_id: int, video_infos: List[Dict[str, Any]]):
         """Set the server's playlist."""
@@ -84,11 +90,45 @@ class QueueManager:
         """Check if there are more songs in the playlist."""
         return guild_id in self.guild_playlists and len(self.guild_playlists[guild_id]) > 0
 
+    def shuffled(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Returns a shuffled copy of ``items``."""
+        copy = list(items)
+        self._rng.shuffle(copy)
+        return copy
+
+    def shuffle_queue(self, guild_id: int) -> None:
+        """Shuffles the whole list: the queue and the playlist songs still buffered."""
+        queue = self.guild_queues.get(guild_id)
+        if queue is not None and len(queue._queue) > 1:
+            items = self.shuffled(list(queue._queue))
+            queue._queue.clear()
+            queue._queue.extend(items)
+        if self.guild_playlists.get(guild_id):
+            self.guild_playlists[guild_id] = self.shuffled(self.guild_playlists[guild_id])
+
     def toggle_shuffle(self, guild_id: int) -> bool:
-        """Toggle shuffle playback state."""
+        """Toggles shuffle; turning it on shuffles the whole list right away."""
         settings = self.get_guild_settings(guild_id)
         settings["shuffle"] = not settings["shuffle"]
+        if settings["shuffle"]:
+            self.shuffle_queue(guild_id)
         return settings["shuffle"]
+
+    def finish_for_cycle(self, guild_id: int, song: Dict[str, Any]) -> None:
+        """Parks a song that was played in loop-queue mode until the next round starts."""
+        self.guild_finished.setdefault(guild_id, []).append(song)
+
+    def restart_cycle(self, guild_id: int) -> int:
+        """Starts the next loop-queue round: puts the played songs (shuffled if enabled) back.
+
+        Returns:
+            How many songs were put back into the queue.
+        """
+        finished = self.guild_finished.pop(guild_id, [])
+        if self.is_shuffle_enabled(guild_id):
+            finished = self.shuffled(finished)
+        self.get_queue(guild_id)._queue.extend(finished)
+        return len(finished)
 
     def set_play_mode(self, guild_id: int, mode: PlayMode):
         """Set the playback mode."""
@@ -165,6 +205,7 @@ class QueueManager:
         """Clear the playback queue for the specified server."""
         if guild_id in self.guild_queues:
             self.guild_queues[guild_id] = asyncio.Queue()
+        self.guild_finished.pop(guild_id, None)
 
     def set_queue(self, guild_id: int, q: asyncio.Queue):
         """Set the queue for a specific guild."""
