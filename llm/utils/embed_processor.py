@@ -1,12 +1,30 @@
 # llm/utils/embed_processor.py
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 from addons.settings import attachment_config
 
 if TYPE_CHECKING:
     import discord
+
+_YOUTUBE_MAXRES = re.compile(r"^(https://img\.youtube\.com/vi/[\w-]+/)maxresdefault\.jpg$")
+
+
+def _usable_image_url(url: str) -> str:
+    """Replaces YouTube's ``maxresdefault.jpg`` thumbnail, which 404s for some videos.
+
+    Earlier music embeds in the channel history still use that URL, and a 404 while the
+    model server fetches it fails the whole model call.
+
+    Args:
+        url: The image URL of an embed.
+
+    Returns:
+        The same URL, or the always-available ``hqdefault.jpg`` for YouTube thumbnails.
+    """
+    return _YOUTUBE_MAXRES.sub(r"\1hqdefault.jpg", url)
 
 
 def process_embed(embed: "discord.Embed") -> list[dict]:
@@ -48,8 +66,8 @@ def process_embed(embed: "discord.Embed") -> list[dict]:
 
     if attachment_config.embeds.include_images:
         if embed.image and embed.image.url:
-            parts.append({"type": "image_url", "image_url": {"url": embed.image.url}})
+            parts.append({"type": "image_url", "image_url": {"url": _usable_image_url(embed.image.url)}})
         if embed.thumbnail and embed.thumbnail.url:
-            parts.append({"type": "image_url", "image_url": {"url": embed.thumbnail.url}})
+            parts.append({"type": "image_url", "image_url": {"url": _usable_image_url(embed.thumbnail.url)}})
 
     return parts

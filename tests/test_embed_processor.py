@@ -90,3 +90,29 @@ def test_process_embed_image_and_thumbnail():
     assert len(parts) == 3  # 1 text + 1 image + 1 thumbnail
     img_parts = [p for p in parts if p["type"] == "image_url"]
     assert len(img_parts) == 2
+
+
+def test_process_embed_rewrites_a_missing_youtube_maxres_thumbnail():
+    """Old music embeds carry maxresdefault.jpg, which 404s for some videos and breaks model calls."""
+    old = "https://img.youtube.com/vi/pztQtHvZkRc/maxresdefault.jpg"
+    embed = _make_embed(title="Now playing", image_url=old, thumbnail_url=old)
+
+    with patch("llm.utils.embed_processor.attachment_config") as config:
+        config.embeds.enabled = True
+        config.embeds.include_images = True
+        parts = process_embed(embed)
+
+    urls = [part["image_url"]["url"] for part in parts if part["type"] == "image_url"]
+    assert urls == ["https://img.youtube.com/vi/pztQtHvZkRc/hqdefault.jpg"] * 2
+
+
+def test_process_embed_leaves_other_image_urls_alone():
+    other = "https://example.com/maxresdefault.jpg"
+    embed = _make_embed(title="x", thumbnail_url=other)
+
+    with patch("llm.utils.embed_processor.attachment_config") as config:
+        config.embeds.enabled = True
+        config.embeds.include_images = True
+        parts = process_embed(embed)
+
+    assert parts[-1]["image_url"]["url"] == other
