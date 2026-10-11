@@ -170,6 +170,13 @@ output_format:
     A MessageID is only for tool arguments (for example which message `add_reaction` targets), never for
     your text. Always start your reply with `<som>`, write only the message itself, and end with `<eom>`.
 
+    ### Actions Must Be Confirmed
+    Say that something was done (a song started or was queued, skipped, stopped, a volume changed) only
+    when the internal background information contains a tool result that says so.
+    When there is no tool result for the action, or the result is an error, do not claim it happened:
+    say what went wrong or ask what the user wants. Never announce that you are "getting ready" to play
+    something.
+
     ### User Mentions
     Always `<@user_id>`. Never `@username` or `[User:mention]`.
 

@@ -94,7 +94,14 @@ def _tools(runtime: SimpleNamespace) -> Dict[str, Any]:
 def test_exposes_the_expected_tools() -> None:
     tools = _tools(_runtime(FakeService()))
 
-    assert set(tools) == ACTION_TOOLS | {"get_music_status"}
+    assert set(tools) == ACTION_TOOLS
+
+
+def test_there_is_no_status_tool_to_call_instead_of_playing() -> None:
+    """The player status is already in every conversation's context. Offering a status tool as
+    well made the info agent call it first for "one more song" (8 of 8 replays); it ends its turn
+    after one tool round, so nothing was played while the reply claimed it was."""
+    assert "get_music_status" not in _tools(_runtime(FakeService()))
 
 
 def test_every_music_tool_belongs_to_the_info_agent() -> None:
@@ -172,27 +179,6 @@ async def test_each_control_calls_the_matching_service_method(
 
 
 @pytest.mark.asyncio
-async def test_status_describes_the_player() -> None:
-    service = FakeService()
-    service.status_value = {
-        "state": "playing",
-        "current": {"title": "稻香", "author": "Jay", "duration": 223, "url": "u"},
-        "queue": [{"title": "next song", "author": "x", "duration": 100, "url": "v"}],
-        "mode": "loop_queue",
-        "shuffle": True,
-        "autoplay": False,
-        "volume": 55,
-    }
-
-    reply = await _tools(_runtime(service))["get_music_status"].ainvoke({})
-
-    assert "playing" in reply
-    assert "稻香" in reply
-    assert "next song" in reply
-    assert "loop_queue" in reply
-
-
-@pytest.mark.asyncio
 async def test_tools_refuse_to_run_in_direct_messages() -> None:
     service = FakeService()
 
@@ -238,26 +224,6 @@ async def test_volume_failures_are_returned_as_error_text() -> None:
     reply = await _tools(_runtime(service))["set_music_volume"].ainvoke({"percent": 500})
 
     assert reply == "Error: Volume must be between 0 and 100."
-
-
-@pytest.mark.asyncio
-async def test_status_states_where_the_requester_is() -> None:
-    runtime = _runtime(FakeService())
-    runtime.message.author = make_member(42, voice_channel=SimpleNamespace(name="General"))
-
-    reply = await _tools(runtime)["get_music_status"].ainvoke({})
-
-    assert "Requester is in the voice channel 'General'" in reply
-
-
-@pytest.mark.asyncio
-async def test_status_states_when_the_requester_is_not_in_a_voice_channel() -> None:
-    runtime = _runtime(FakeService())
-    runtime.message.author = make_member(42, voice_channel=None)
-
-    reply = await _tools(runtime)["get_music_status"].ainvoke({})
-
-    assert "Requester is not in a voice channel" in reply
 
 
 @pytest.mark.asyncio

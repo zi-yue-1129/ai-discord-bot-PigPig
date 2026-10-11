@@ -36,7 +36,6 @@
             "set_music_volume": "🔊 Adjusting the volume...",
             "remove_song_from_queue": "🗑️ Removing the song...",
             "clear_music_queue": "🧹 Clearing the queue...",
-            "get_music_status": "🎶 Checking the player...",
             "default": "🛠️ Using {tool_name}..."
         }
     }

@@ -36,7 +36,6 @@
             "set_music_volume": "🔊 音量を調整中...",
             "remove_song_from_queue": "🗑️ 曲を削除中...",
             "clear_music_queue": "🧹 キューを空にしています...",
-            "get_music_status": "🎶 プレーヤーの状態を確認中...",
             "default": "🛠️ {tool_name} を使用中..."
         }
     }

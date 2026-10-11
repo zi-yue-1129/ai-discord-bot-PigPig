@@ -38,7 +38,7 @@ from addons.logging import get_logger
 from cogs.music_lib.context import PlaybackContext
 from addons.settings import music_config
 from cogs.music_lib.service import ActionResult
-from llm.music_context import format_seconds, render_music_context
+from llm.music_context import format_seconds
 
 _logger = get_logger(server_id="Bot", source="llm.tools.music_tools")
 
@@ -69,15 +69,6 @@ def _format_queued(result: ActionResult) -> str:
 def _quoted(title: Optional[str]) -> str:
     """Returns ``'title'`` or a neutral phrase when the title is unknown."""
     return f"'{title}'" if title else "the current song"
-
-
-def _requester_voice(ctx: PlaybackContext) -> str:
-    """States whether, and where, the requester is in a voice channel."""
-    voice_state = getattr(ctx.user, "voice", None)
-    channel = getattr(voice_state, "channel", None)
-    if channel is None:
-        return "Requester is not in a voice channel."
-    return f"Requester is in the voice channel '{getattr(channel, 'name', 'unknown')}'."
 
 
 class MusicTools:
@@ -295,7 +286,7 @@ class MusicTools:
         async def remove_song_from_queue(position: int) -> str:
             """Removes one upcoming song from the queue.
 
-            Use get_music_status first to see the positions.
+            The queue and its positions are listed in the music player section of the context.
 
             Args:
                 position: Position in the queue, starting at 1 for the next song.
@@ -326,27 +317,6 @@ class MusicTools:
                 return await _failure(ctx, result)
             return f"Cleared the queue ({result.data.get('removed')} songs removed)."
 
-        @tool
-        async def get_music_status() -> str:
-            """Reports what the music player is doing right now.
-
-            Use it to answer questions such as "what song is this?" or "what is
-            next in the queue?".
-
-            Returns:
-                The player state, the current song, the upcoming queue and the
-                loop/shuffle/autoplay settings.
-            """
-            service, ctx, error = resolve()
-            if error:
-                return error
-            status_text = render_music_context(
-                service.status(ctx.guild.id),
-                list_titles=True,
-                max_titles=music_config.ai.max_queue_titles,
-            )
-            return f"{status_text}\n{_requester_voice(ctx)}"
-
         # All music tools run in the info agent: its tool results are handed to the reply
         # agent, whereas the reply agent calls the model once and never sees tool results
         # (and its tool calls are cut off after 10 seconds, too short for a download).
@@ -356,4 +326,4 @@ class MusicTools:
             set_music_volume, remove_song_from_queue, clear_music_queue,
         )
 
-        return [*action_tools, get_music_status]
+        return list(action_tools)
