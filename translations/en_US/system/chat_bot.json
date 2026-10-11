@@ -36,7 +36,12 @@
             "set_music_volume": "🔊 Adjusting the volume...",
             "remove_song_from_queue": "🗑️ Removing the song...",
             "clear_music_queue": "🧹 Clearing the queue...",
-            "default": "🛠️ Using {tool_name}..."
-        }
+            "default": "🛠️ Using {tool_name}...",
+            "change_own_nickname": "✏️ Changing my nickname...",
+            "clear_user_memory": "🧹 Clearing the user's memory...",
+            "delete_own_last_message": "🗑️ Deleting my last message...",
+            "dramatic_pause": "⏳ Building up the mood..."
+        },
+        "switching_model": "⏳ The model did not respond, switching to a backup model..."
     }
 }
