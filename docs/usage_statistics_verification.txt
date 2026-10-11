@@ -38,7 +38,10 @@ Root causes established in the baseline code
    per run ID, preserving original provider-qualified names (including vllm),
    capturing wall-clock start timestamps and monotonic elapsed durations, and
    recording failures and timeout cancellation. Existing callbacks survive.
-   Missing collectors and recording errors propagate explicitly. Memory raw
+   Missing collectors and recording errors are logged at error level (with a
+   traceback for storage failures) and never interrupt the model call; a failed
+   provider call still surfaces its own error. (Revised after review: the first
+   version raised, which let a locked database fail user-facing replies.) Memory raw
    fallback and configured middleware fallback models use this same helper.
    Guild context is forwarded throughout helper consumers. Old orchestrator
    aggregate writes were removed to avoid double counting.

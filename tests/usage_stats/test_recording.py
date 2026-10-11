@@ -356,11 +356,26 @@ async def test_concurrent_calls_keep_separate_timing_and_guilds(
     assert all(row[-1] == 1 and row[-2] >= 15 for row in rows)
 
 
+class _ErrorLog:
+    """Capture error-level log calls made by the statistics callback."""
+
+    def __init__(self) -> None:
+        """Start with no recorded calls."""
+        self.calls: list[tuple[str, bool]] = []
+
+    def error(self, message: str, *args: Any, exc_info: bool = False, **kwargs: Any) -> None:
+        """Record an error message and whether a traceback was requested."""
+        self.calls.append((message % args if args else message, exc_info))
+
+
 @pytest.mark.asyncio
-async def test_missing_collector_is_an_explicit_error(
+async def test_missing_collector_never_breaks_the_model_call(
     stats_modules: types.SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Prevent calls from silently bypassing instrumentation without a collector.
+    """A missing collector is logged loudly, but the real model call still succeeds.
+
+    The earlier expectation (the call must raise) was wrong: usage statistics are
+    auxiliary data and must never veto the user-facing model invocation.
 
     Args:
         stats_modules: Isolated production modules.
@@ -369,9 +384,71 @@ async def test_missing_collector_is_an_explicit_error(
     def offline_init(model_name: str, **kwargs: Any) -> BaseChatModel:
         return OfflineChatModel(callbacks=kwargs.get("callbacks"), cache=False)
 
+    error_log = _ErrorLog()
     monkeypatch.setattr(stats_modules.model, "init_chat_model", offline_init)
+    monkeypatch.setattr(stats_modules.model, "log", error_log, raising=False)
     model = stats_modules.model.create_model_instance("vllm:local")
-    with pytest.raises(RuntimeError, match="[Ss]tats.collector"):
+    response = await model.ainvoke("hello")
+    assert response.content == "ok"
+    assert any("collector" in message.lower() for message, _ in error_log.calls)
+
+
+@pytest.mark.asyncio
+async def test_failing_collector_never_breaks_the_model_call(
+    stats_modules: types.SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A database error while recording is logged with a traceback and swallowed.
+
+    Args:
+        stats_modules: Isolated production modules.
+        monkeypatch: Provider network replacement.
+    """
+    class BrokenCollector:
+        """Collector whose storage is unavailable."""
+
+        async def record_llm_call(self, **kwargs: Any) -> None:
+            """Fail like a locked SQLite database."""
+            raise OSError("database is locked")
+
+    def offline_init(model_name: str, **kwargs: Any) -> BaseChatModel:
+        return OfflineChatModel(callbacks=kwargs.get("callbacks"), cache=False)
+
+    error_log = _ErrorLog()
+    stats_modules.singleton.bot = types.SimpleNamespace(stats_collector=BrokenCollector())
+    monkeypatch.setattr(stats_modules.model, "init_chat_model", offline_init)
+    monkeypatch.setattr(stats_modules.model, "log", error_log, raising=False)
+    model = stats_modules.model.create_model_instance("vllm:local")
+    response = await model.ainvoke("hello")
+    assert response.content == "ok"
+    assert error_log.calls
+    assert all(with_traceback for _, with_traceback in error_log.calls)
+
+
+@pytest.mark.asyncio
+async def test_failing_collector_does_not_mask_the_provider_error(
+    stats_modules: types.SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the provider fails and recording fails too, the provider error surfaces.
+
+    Args:
+        stats_modules: Isolated production modules.
+        monkeypatch: Provider network replacement.
+    """
+    class BrokenCollector:
+        """Collector whose storage is unavailable."""
+
+        async def record_llm_call(self, **kwargs: Any) -> None:
+            """Fail like a locked SQLite database."""
+            raise OSError("database is locked")
+
+    def offline_init(model_name: str, **kwargs: Any) -> BaseChatModel:
+        return OfflineChatModel(callbacks=kwargs.get("callbacks"), fail=True, cache=False)
+
+    stats_modules.singleton.bot = types.SimpleNamespace(stats_collector=BrokenCollector())
+    monkeypatch.setattr(stats_modules.model, "init_chat_model", offline_init)
+    monkeypatch.setattr(stats_modules.model, "log", _ErrorLog(), raising=False)
+    model = stats_modules.model.create_model_instance("vllm:local")
+    with pytest.raises(RuntimeError, match="provider unavailable"):
         await model.ainvoke("hello")
 
 

@@ -11,12 +11,15 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 from langchain_core.outputs import LLMResult
 
+from addons.logging import get_logger
 from addons.settings import llm_config
 from addons.tokens import tokens
 from function import func
 
 if TYPE_CHECKING:
     from dashboard.services.stats_collector import StatsCollector
+
+log = get_logger(server_id="Bot", source=__name__)
 
 
 class ModelStatsCallback(AsyncCallbackHandler):
@@ -27,7 +30,7 @@ class ModelStatsCallback(AsyncCallbackHandler):
     context. Invocation metadata can supply a guild for a shared model instance.
     """
 
-    raise_error: bool = True
+    raise_error: bool = False
     run_inline: bool = True
 
     def __init__(self, model_name: str, guild_id: str) -> None:
@@ -54,16 +57,18 @@ class ModelStatsCallback(AsyncCallbackHandler):
             metadata: Invocation metadata, optionally containing guild_id.
             **kwargs: Additional LangChain callback fields.
 
-        Raises:
-            RuntimeError: The bot has no statistics collector.
-            ValueError: Invocation metadata supplies a null guild ID.
+        Statistics are auxiliary: a missing collector or a null guild ID is logged
+        at error level and the invocation is simply not recorded. It must never
+        raise, because that would fail the real model call.
         """
         collector = getattr(func.bot, "stats_collector", None)
         if collector is None:
-            raise RuntimeError("Stats collector is required for model invocations")
+            log.error("Stats collector is unavailable; model invocation %s is not recorded", self.model_name)
+            return
         guild_id = (metadata or {}).get("guild_id", self.guild_id)
         if guild_id is None:
-            raise ValueError("Model invocation guild_id must not be None")
+            log.error("Model invocation guild_id is None; %s is not recorded", self.model_name)
+            return
         self._runs[run_id] = (time.time(), time.perf_counter(), str(guild_id), collector)
 
     async def on_llm_end(
@@ -91,13 +96,24 @@ class ModelStatsCallback(AsyncCallbackHandler):
         await self._record(run_id, success=False)
 
     async def _record(self, run_id: UUID, success: bool) -> None:
-        """Persist a terminal event without including SQLite latency in duration."""
-        timestamp, started_at, guild_id, collector = self._runs.pop(run_id)
+        """Persist a terminal event without including SQLite latency in duration.
+
+        Recording failures are logged and swallowed so they cannot fail the model call.
+        """
+        run = self._runs.pop(run_id, None)
+        if run is None:
+            return
+        timestamp, started_at, guild_id, collector = run
         duration_ms = (time.perf_counter() - started_at) * 1000
-        await collector.record_llm_call(
-            guild_id=guild_id, model_name=self.model_name,
-            duration_ms=duration_ms, success=success, timestamp=timestamp,
-        )
+        try:
+            await collector.record_llm_call(
+                guild_id=guild_id, model_name=self.model_name,
+                duration_ms=duration_ms, success=success, timestamp=timestamp,
+            )
+        except Exception:
+            # Statistics are auxiliary; a storage failure must not break or mask the
+            # user-facing model call, so execution continues after logging the traceback.
+            log.error("Failed to record LLM call statistics for %s", self.model_name, exc_info=True)
 
 
 def create_model_instance(
@@ -108,7 +124,8 @@ def create_model_instance(
     vLLM models use ChatOpenAI with the configured OpenAI-compatible endpoint.
     The callback retains the original model name and survives tool bindings,
     structured output, agent execution, and synchronous or asynchronous streams.
-    Existing caller callbacks are preserved. Recording errors propagate explicitly.
+    Existing caller callbacks are preserved. Recording failures are logged at error
+    level and never interrupt the model call.
 
     Args:
         model_name: Provider-qualified identifier, such as ``vllm:gemma4:26b``.
