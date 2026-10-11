@@ -50,7 +50,7 @@ class ReminderCog(commands.Cog):
 
             # 如果是來自斜線命令，先發送一個 "已收到" 的臨時回覆
             if interaction:
-                await interaction.followup.send(self.lang_manager.translate(guild_id, "commands", "remind", "responses", "received"), ephemeral=True)
+                await interaction.edit_original_response(content=self.lang_manager.translate(guild_id, "commands", "remind", "responses", "received"))
 
             reminder_time = self.parse_time(time_str, guild_id)
             if reminder_time is None:
@@ -134,7 +134,7 @@ class ReminderCog(commands.Cog):
         user="The user to remind (optional, defaults to yourself)"
     )
     async def remind(self, interaction: discord.Interaction, time: str, message: str, user: discord.User = None):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
         
         guild_id = str(interaction.guild_id)
         target_user = user or interaction.user

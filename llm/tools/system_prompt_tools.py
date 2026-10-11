@@ -18,7 +18,34 @@ if TYPE_CHECKING:
 
 _logger = get_logger(server_id="Bot", source="llm.tools.system_prompt_tools")
 
-__all__ = ["write_personality", "SystemPromptTools"]
+__all__ = ["check_personality_permission", "write_personality", "SystemPromptTools"]
+
+
+def check_personality_permission(bot: Any, author: Any, guild: Any, channel: Any, scope: str) -> str | None:
+    """Check whether *author* may modify the personality at *scope*.
+
+    Any scope other than "server" results in a channel-level write in
+    :func:`write_personality`, so it is validated as a channel change.
+
+    Args:
+        bot: The discord.ext.commands.Bot instance.
+        author: The member requesting the change.
+        guild: The guild the change applies to.
+        channel: The channel the change applies to.
+        scope: "channel" or "server".
+
+    Returns:
+        None if permitted, otherwise a human-readable error string.
+    """
+    from cogs.system_prompt.permissions import PermissionValidator
+
+    validator = PermissionValidator(bot)
+    if scope == "server":
+        if not validator.can_modify_server_prompt(author, guild):
+            return "Error: You need administrator permissions to modify the server-level personality."
+    elif not validator.can_modify_channel_prompt(author, channel):
+        return "Error: You need manage channel permissions to modify the channel-level personality."
+    return None
 
 
 async def write_personality(
@@ -100,8 +127,9 @@ class SystemPromptTools:
                 merged_prompt: The complete merged system prompt text — your current
                     personality with the requested changes incorporated. Must be a
                     full system prompt, not just the changed part.
-                scope: "channel" applies only to the current channel (any user may
-                    do this). "server" applies to the entire server (admin only).
+                scope: "channel" applies only to the current channel (requires
+                    manage-channel permission). "server" applies to the entire
+                    server (admin only).
 
             Returns:
                 Confirmation message or an error description.
@@ -122,14 +150,9 @@ class SystemPromptTools:
             user_id = str(author.id)
             bot = getattr(runtime, "bot", None)
 
-            if scope == "server":
-                from cogs.system_prompt.permissions import PermissionValidator
-                validator = PermissionValidator(bot)
-                if not validator.can_modify_server_prompt(author, guild):
-                    return (
-                        "Error: You need administrator permissions to modify the "
-                        "server-level personality."
-                    )
+            permission_error = check_personality_permission(bot, author, guild, channel, scope)
+            if permission_error is not None:
+                return permission_error
 
             return await write_personality(guild_id, channel_id, merged_prompt, scope, bot, user_id)
 

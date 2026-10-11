@@ -29,6 +29,27 @@ log = get_logger(source=__name__, server_id="system")
 
 _DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=15.0)
 
+# Prefix of the fallback text part returned when processing raises.
+PROCESSING_FAILED_PREFIX = "[Attachment processing failed"
+
+
+def is_processing_failure(parts: list[dict]) -> bool:
+    """Return whether *parts* is the fallback emitted for a failed attachment.
+
+    Such results stem from transient errors (e.g. network failures) and must
+    not be cached, so the attachment is retried on the next request.
+
+    Args:
+        parts: Content parts returned by :func:`process_attachment`.
+
+    Returns:
+        True if every part is a text part carrying the failure prefix.
+    """
+    return bool(parts) and all(
+        part.get("type") == "text" and str(part.get("text", "")).startswith(PROCESSING_FAILED_PREFIX)
+        for part in parts
+    )
+
 
 async def _download(url: str) -> bytes:
     """Download a URL and return the raw bytes.
@@ -310,4 +331,4 @@ async def process_attachment(attachment: "discord.Attachment") -> list[dict]:
         except Exception:
             pass
         log.warning(f"Attachment processing failed for {filename}: {e}")
-        return [{"type": "text", "text": f"[Attachment processing failed: {filename}]"}]
+        return [{"type": "text", "text": f"{PROCESSING_FAILED_PREFIX}: {filename}]"}]

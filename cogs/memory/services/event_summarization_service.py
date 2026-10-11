@@ -12,11 +12,10 @@ from datetime import timezone
 import discord
 from pydantic import BaseModel, Field
 from langchain.agents import create_agent
-from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage
 
 from function import func
-from addons.settings import MemoryConfig, prompt_config
+from addons.settings import MemoryConfig, prompt_config, llm_config
 from addons.logging import get_logger
 from llm.model_manager import ModelManager
 from llm.model_circuit_breaker import get_model_circuit_breaker
@@ -25,6 +24,13 @@ from llm.utils.model_init import create_model_instance
 log = get_logger(__name__)
 
 T = TypeVar('T', bound=BaseModel)
+
+# Some providers (e.g. ChatGoogleGenerativeAI) default to an unbounded request
+# timeout. A hung LLM call inside this service has previously frozen the whole
+# bot for hours (the event loop task never returns), so every model invocation
+# here is bounded both at the client config level and with asyncio.wait_for as
+# a second line of defense. Reuses the same config value as llm/orchestrator.py.
+LLM_CALL_TIMEOUT_SECONDS: float = llm_config.llm_call_timeout
 
 
 @dataclass
@@ -318,7 +324,10 @@ class EventSummarizationService:
             message_data = await self._prepare_message_data(messages)
             
             # Get LLM response using the episodic memory extractor
-            llm_response = await self._get_llm_summary(message_data, previous_summary)
+            guild_id = str(messages[0].guild.id) if messages[0].guild else "0"
+            llm_response = await self._get_llm_summary(
+                message_data, previous_summary, guild_id=guild_id,
+            )
             
             if not llm_response:
                 log.warning("No LLM response received for message group")
@@ -361,7 +370,10 @@ class EventSummarizationService:
         
         return message_data
 
-    async def _get_llm_summary(self, message_data: List[Dict[str, Any]], previous_summary: str = "") -> Optional[MemoryFragmentList]:
+    async def _get_llm_summary(
+        self, message_data: List[Dict[str, Any]], previous_summary: str = "",
+        *, guild_id: str = "0",
+    ) -> Optional[MemoryFragmentList]:
         """
         Get event summary from LLM using the episodic memory extractor prompt with structured output.
         
@@ -370,6 +382,7 @@ class EventSummarizationService:
         Args:
             message_data: Prepared message data for LLM processing
             previous_summary: Context from previous events
+            guild_id: Guild context for model statistics, or ``0`` if absent.
             
         Returns:
             MemoryFragmentList object or None if failed
@@ -403,24 +416,31 @@ class EventSummarizationService:
                 try:
                     log.debug(f"Episodic memory: trying model {current_model} ({model_index + 1}/{len(model_priority_list)})")
                     
-                    # Create the model instance with zero retries
-                    model_instance = create_model_instance(current_model, max_retries=0)
-                    
+                    # Create the model instance with zero retries and a bounded timeout
+                    model_instance = create_model_instance(
+                        current_model, guild_id=guild_id,
+                        max_retries=0, timeout=LLM_CALL_TIMEOUT_SECONDS
+                    )
+
                     from langchain_core.messages import SystemMessage
                     full_messages = [SystemMessage(content=system_prompt)] + message_list
-                    
+
                     # Make the API call to the LLM
                     try:
                         # Since model supports tool calling natively, use with_structured_output
                         structured_llm = model_instance.with_structured_output(MemoryFragmentList)
-                        response = await structured_llm.ainvoke(full_messages)
+                        response = await asyncio.wait_for(
+                            structured_llm.ainvoke(full_messages), timeout=LLM_CALL_TIMEOUT_SECONDS
+                        )
                     except Exception as invoke_error:
                         # Fallback for when tool parsing fails (e.g., LLM returns Python code)
                         log.warning(f"Structured invoke failed for {current_model}: {invoke_error}. Attempting raw fallback.")
                         
                         try:
                             # Instantiate model object from string
-                            model_instance = self._create_llm_instance(current_model, force_json=True)
+                            model_instance = self._create_llm_instance(
+                                current_model, force_json=True, guild_id=guild_id,
+                            )
                             
                             schema_str = '{"fragments": [{"query_key": "string", "query_keywords": ["string"], "query_value": "string", "start_message_id": 1, "end_message_id": 2, "entities": [{"name": "string", "type": "string", "description": "string"}]}]}'
                             fallback_messages = list(full_messages)
@@ -432,7 +452,9 @@ class EventSummarizationService:
                             )))
                             
                             # Manually invoke the model to get raw output
-                            raw_response = await model_instance.ainvoke(fallback_messages)
+                            raw_response = await asyncio.wait_for(
+                                model_instance.ainvoke(fallback_messages), timeout=LLM_CALL_TIMEOUT_SECONDS
+                            )
                             response = {"output": raw_response.content}
                             log.debug(f"Raw mode fallback successful for {current_model}")
                         except Exception as fallback_error:
@@ -489,13 +511,16 @@ class EventSummarizationService:
             await func.report_error(e, "EventSummarizationService/_get_llm_summary")
             return None
 
-    def _create_llm_instance(self, model_name: str, force_json: bool = False) -> Any:
+    def _create_llm_instance(
+        self, model_name: str, force_json: bool = False, *, guild_id: str = "0",
+    ) -> Any:
         """
         Create a LangChain model instance from a model name string.
         
         Args:
             model_name: Model identifier (e.g. 'ollama:gpt-oss:20b')
             force_json: Whether to force the model into JSON mode if supported
+            guild_id: Guild context for model statistics, or ``0`` if absent.
             
         Returns:
             LangChain chat model instance
@@ -507,15 +532,20 @@ class EventSummarizationService:
                 # Default to localhost if not specified in config
                 base_url = getattr(self.settings, "ollama_base_url", "http://localhost:11434")
                 # Use num_retries=0 for Ollama to ensure fast fallback
-                kwargs.update({"base_url": base_url, "num_retries": 0})
+                kwargs.update({"base_url": base_url, "num_retries": 0, "timeout": LLM_CALL_TIMEOUT_SECONDS})
                 if force_json:
                     kwargs["format"] = "json"
 
             elif model_name.startswith("vllm:"):
                 # vLLM exposes an OpenAI-compatible API; route through the openai provider
+                from addons.tokens import tokens
                 vllm_base_url = getattr(self.settings, "vllm_url", "http://localhost:8181")
-                model_name = f"openai:{model_name[len('vllm:'):]}"
-                kwargs.update({"base_url": f"{vllm_base_url}/v1", "api_key": "EMPTY", "max_retries": 0})
+                kwargs.update({
+                    "base_url": f"{vllm_base_url}/v1",
+                    "api_key": tokens.vllm_api_key,
+                    "max_retries": 0,
+                    "timeout": LLM_CALL_TIMEOUT_SECONDS,
+                })
 
             elif model_name.startswith("google_genai:"):
                 api_key = getattr(self.settings, "google_api_key", None)
@@ -527,7 +557,13 @@ class EventSummarizationService:
                         pass
                 if api_key:
                     kwargs["google_api_key"] = api_key
-                
+                # Unlike the other providers above, ChatGoogleGenerativeAI defaults to
+                # max_retries=6 and timeout=None (unbounded) — bound both explicitly so a
+                # degraded/hanging API call can't freeze this service (and the bot's
+                # single-threaded event loop with it) indefinitely.
+                kwargs["max_retries"] = 0
+                kwargs["timeout"] = LLM_CALL_TIMEOUT_SECONDS
+
             elif model_name.startswith("openai:"):
                 api_key = getattr(self.settings, "openai_api_key", None)
                 if not api_key:
@@ -539,7 +575,8 @@ class EventSummarizationService:
                 if api_key:
                     kwargs["api_key"] = api_key
                 kwargs["max_retries"] = 0
- 
+                kwargs["timeout"] = LLM_CALL_TIMEOUT_SECONDS
+
             elif model_name.startswith("anthropic:"):
                 api_key = getattr(self.settings, "anthropic_api_key", None)
                 if not api_key:
@@ -551,9 +588,10 @@ class EventSummarizationService:
                 if api_key:
                     kwargs["api_key"] = api_key
                 kwargs["max_retries"] = 0
-            
-            # Use centralized init_chat_model
-            return init_chat_model(model_name, **kwargs)
+                kwargs["timeout"] = LLM_CALL_TIMEOUT_SECONDS
+
+            # Use the same recording hook for structured and raw fallback calls.
+            return create_model_instance(model_name, guild_id=guild_id, **kwargs)
                 
         except Exception as e:
             log.error(f"Failed to create LLM instance for {model_name}: {e}")

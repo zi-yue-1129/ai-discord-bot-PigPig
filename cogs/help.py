@@ -119,7 +119,7 @@ class HelpCog(commands.Cog):
 
     @app_commands.command(name="help", description="Display all commands")
     async def help_command(self, interaction: discord.Interaction):
-        await interaction.response.defer(thinking=True)
+        await interaction.response.defer(thinking=True, ephemeral=True)
         if not self.lang_manager:
             self.lang_manager = LanguageManager.get_instance(self.bot)
 
@@ -153,7 +153,7 @@ class HelpCog(commands.Cog):
                 if i == 0:
                     await interaction.edit_original_response(embeds=embeds[start:start + 10])
                 else:
-                    await interaction.followup.send(embeds=embeds[start:start + 10])
+                    await interaction.followup.send(embeds=embeds[start:start + 10], ephemeral=True)
 
         except Exception as e:
             log.exception("Error building help response")

@@ -63,7 +63,7 @@ class BotInfo(commands.Cog):
                 self.botinfo.description = localized_desc
 
         try:
-            await interaction.response.defer()
+            await interaction.response.defer(thinking=True)
 
             bot = interaction.client
             guild_id = str(interaction.guild_id) if interaction.guild_id else "0"
@@ -198,9 +198,14 @@ class BotInfo(commands.Cog):
                 icon_url=avatar_url
             )
 
-            await interaction.followup.send(embed=main_embed)
+            await interaction.edit_original_response(embed=main_embed)
         except Exception as e:
             await func.report_error(e, "getting bot info")
+            try:
+                await interaction.edit_original_response(content="❌ Error getting bot info.")
+            except discord.HTTPException:
+                # The interaction may have expired; the original error was already reported above.
+                log.error("Could not edit the botinfo response after an error", exc_info=True)
 
 async def setup(bot):
     """Set up the BotInfo cog."""

@@ -139,8 +139,8 @@ class SummarizerCog(commands.Cog):
             log.info(f"Calling LLM for summary... (Analyzing {human_msg_count} human messages, {current_char_count} chars total)")
 
             # Initialize Agent
-            model_name, fallback = ModelManager().get_model("summarize_model")
-            model_instance = create_model_instance(model_name, max_retries=0)
+            model_name, fallback = ModelManager().get_model("summarize_model", guild_id=guild_id)
+            model_instance = create_model_instance(model_name, guild_id=guild_id, max_retries=0)
             
             summarize_agent = create_agent(
                 model=model_instance,

@@ -525,7 +525,12 @@ async def _process_token_stream(
 
             # Extract text token
             if hasattr(token_obj, "content") and token_obj.content:
-                token_str = str(token_obj.content)
+                # token_obj.content may be a plain string or a list of content
+                # blocks (e.g. [{'type': 'text', 'text': '...', 'index': 0}]),
+                # which some OpenAI-compatible backends (e.g. vLLM with
+                # --enable-auto-tool-choice) emit even for plain text deltas.
+                # AIMessageChunk.text normalizes both shapes into plain text.
+                token_str = token_obj.text
                 
                 # Always accumulate to message_result (complete output)
                 message_result += token_str
