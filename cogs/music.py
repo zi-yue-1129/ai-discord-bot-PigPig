@@ -14,10 +14,19 @@ from .music_lib.youtube import YouTubeManager
 from .music_lib.audio_manager import AudioManager
 from .music_lib.state_manager import StateManager
 from .music_lib.queue_manager import QueueManager, PlayMode
+from .music_lib.context import PlaybackContext, user_shares_voice_channel
 from .music_lib.ui_manager import UIManager
 from .music_lib.ui.song_select import SongSelectView
 from cogs.language_manager import LanguageManager # Import LanguageManager
 from function import func
+
+# Playback attempts that may fail back-to-back before the player gives up.
+MAX_CONSECUTIVE_FAILURES = 3
+
+
+class PlaybackAbortedError(RuntimeError):
+    """Raised when consecutive failures exhausted the retry budget."""
+
 
 class YTMusic(commands.Cog):
     def __init__(self, bot):
@@ -167,7 +176,7 @@ class YTMusic(commands.Cog):
         """Handle playlist URL"""
         guild_id = interaction.guild.id
         _, folder = self._get_guild_folder(guild_id)
-        video_infos, error = await self.youtube.download_playlist(url, folder, interaction)
+        video_infos, error = await self.youtube.download_playlist(url, folder, PlaybackContext.from_interaction(interaction))
         
         if error:
             title = self.lang_manager.translate(str(guild_id), "commands", "play", "errors", "playlist_download_failed", error=error)
@@ -214,9 +223,9 @@ class YTMusic(commands.Cog):
         should_download = queue.qsize() == 0
         
         if should_download:
-            video_info, error = await self.youtube.download_audio(url, folder, interaction)
+            video_info, error = await self.youtube.download_audio(url, folder, PlaybackContext.from_interaction(interaction))
         else:
-            video_info, error = await self.youtube.get_video_info_without_download(url, interaction)
+            video_info, error = await self.youtube.get_video_info_without_download(url, PlaybackContext.from_interaction(interaction))
             
         if error:
             title = self.lang_manager.translate(guild_id_str, "commands", "play", "errors", "video_info_failed", error=error)
@@ -275,149 +284,176 @@ class YTMusic(commands.Cog):
         
         await interaction.edit_original_response(embed=embed, view=view)
 
-    async def play_next(self, interaction: discord.Interaction, force_new: bool = False) -> None:
+    async def play_next(self, source: Any, force_new: bool = False) -> None:
         """Play the next song in the queue.
 
+        Failures are retried with the following song, but only up to
+        ``MAX_CONSECUTIVE_FAILURES`` times in a row; after that playback stops
+        and the channel is told, instead of grinding through the whole queue.
+
         Args:
-            interaction: The Discord interaction object.
+            source: A ``PlaybackContext`` or the ``discord.Interaction`` it is built from.
             force_new: Whether to force playing a new song instead of looping.
         """
-        guild_id = interaction.guild.id
-        guild_id_str = str(guild_id)
-        voice_client = interaction.guild.voice_client
-        
+        ctx = PlaybackContext.coerce(source)
+        guild_id = ctx.guild.id
+        voice_client = ctx.guild.voice_client
+
         if not voice_client or not voice_client.is_connected():
             return
-            
+
         state = self.state_manager.get_state(guild_id)
         play_mode = self.queue_manager.get_play_mode(guild_id)
-        
-        try:
-            # Handle single song loop
-            if not force_new and play_mode == PlayMode.LOOP_SINGLE and state.current_song:
-                await self._handle_single_loop(interaction, state, voice_client)
-                return
-                
-            # Get next song from queue
-            next_song = await self._get_next_song(interaction, guild_id, force_new)
-            if not next_song:
-                title = self.lang_manager.translate(guild_id_str, "commands", "play", "responses", "queue_finished")
-                embed = discord.Embed(title=f"🌟 | {title}", color=discord.Color.blue())
-                # Use followup if interaction is available, otherwise use channel.send
-                message = None
-                try:
-                    if hasattr(interaction, 'followup') and not interaction.response.is_done():
-                         await interaction.response.send_message(embed=embed)
-                         message = await interaction.original_response()
-                    elif interaction.channel:
-                         message = await interaction.channel.send(embed=embed)
-                except discord.errors.Forbidden:
-                    logger.warning(f"[Music] Guild ID: {guild_id} - Failed to send queue finished message due to Forbidden (Missing Access).")
-                except Exception as send_err:
-                    logger.error(f"[Music] Guild ID: {guild_id} - Failed to send queue finished message: {send_err}")
 
-                if message:
-                    state = self.state_manager.get_state(guild_id)
-                    state.ui_messages.append(message)
-                self.state_manager.update_state(guild_id, current_song=None, current_message=None)
+        try:
+            if not force_new and play_mode == PlayMode.LOOP_SINGLE and state.current_song:
+                await self._handle_single_loop(ctx, state, voice_client)
                 return
-                
-            # Update state and play song
+
+            next_song = await self._get_next_song(ctx, guild_id, force_new)
+            if not next_song:
+                await self._announce_queue_finished(ctx)
+                return
+
             self.state_manager.update_state(guild_id, current_song=next_song)
-            await self._play_song(interaction, next_song, voice_client)
-            
+            await self._play_song(ctx, next_song, voice_client)
+
+        except PlaybackAbortedError:
+            await self._abort_playback(ctx)
+        except discord.errors.Forbidden:
+            logger.error(f"[Music] Guild ID: {guild_id} - Forbidden error encountered. Stopping playback attempts to prevent infinite loop.")
+            state.consecutive_failures = 0
         except Exception as e:
             await func.report_error(e, f"playing next song in guild {guild_id}")
-            title = self.lang_manager.translate(guild_id_str, "commands", "play", "errors", "playback_error")
-            embed = discord.Embed(title=f"❌ | {title}", color=discord.Color.red())
-            
-            message = None
-            try:
-                if hasattr(interaction, 'followup') and not interaction.response.is_done():
-                     message = await interaction.followup.send(embed=embed)
-                elif interaction.channel:
-                     message = await interaction.channel.send(embed=embed)
-            except discord.errors.Forbidden:
-                logger.warning(f"[Music] Guild ID: {guild_id} - Failed to send playback error message due to Forbidden.")
-            except Exception as send_err:
-                logger.error(f"[Music] Guild ID: {guild_id} - Failed to send playback error message: {send_err}")
-
-            if message:
-                state = self.state_manager.get_state(guild_id)
-                state.ui_messages.append(message)
-                
-            # Avoid infinite loop if the error is Forbidden (e.g. if we somehow still got it)
-            if isinstance(e, discord.errors.Forbidden):
-                logger.error(f"[Music] Guild ID: {guild_id} - Forbidden error encountered. Stopping playback attempts to prevent infinite loop.")
+            state.consecutive_failures += 1
+            if state.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                await self._abort_playback(ctx)
                 return
-                
-            await self.play_next(interaction, force_new=True)
+            await self.play_next(ctx, force_new=True)
 
-    async def _handle_single_loop(self, interaction: discord.Interaction, state, voice_client):
+    async def _send_channel_message(self, ctx: PlaybackContext, **kwargs: Any) -> Optional[discord.Message]:
+        """Send a message to the player channel and track it for later cleanup.
+
+        Args:
+            ctx: The playback context holding the target channel.
+            **kwargs: Arguments forwarded to ``channel.send``.
+
+        Returns:
+            The sent message, or ``None`` when it could not be delivered.
+        """
+        if ctx.channel is None:
+            return None
+        guild_id = ctx.guild.id
+        try:
+            message = await ctx.channel.send(**kwargs)
+        except discord.errors.Forbidden:
+            logger.warning(f"[Music] Guild ID: {guild_id} - Failed to send a channel message due to Forbidden (Missing Access).")
+            return None
+        except discord.HTTPException as send_err:
+            logger.error(f"[Music] Guild ID: {guild_id} - Failed to send a channel message: {send_err}")
+            return None
+        self.state_manager.get_state(guild_id).ui_messages.append(message)
+        return message
+
+    async def _announce_queue_finished(self, ctx: PlaybackContext) -> None:
+        """Tell the channel that the queue ran out and clear the current song."""
+        guild_id = ctx.guild.id
+        title = self.lang_manager.translate(str(guild_id), "commands", "play", "responses", "queue_finished")
+        embed = discord.Embed(title=f"🌟 | {title}", color=discord.Color.blue())
+        await self._send_channel_message(ctx, embed=embed)
+        self.state_manager.update_state(guild_id, current_song=None, current_message=None, consecutive_failures=0)
+
+    async def _abort_playback(self, ctx: PlaybackContext) -> None:
+        """Give up after repeated failures: stop the player and tell the channel."""
+        guild_id = ctx.guild.id
+        logger.error(f"[Music] Guild ID: {guild_id} - Giving up after {MAX_CONSECUTIVE_FAILURES} consecutive playback failures.")
+        voice_client = ctx.guild.voice_client
+        if voice_client and voice_client.is_connected() and voice_client.is_playing():
+            voice_client.stop()
+        self.state_manager.cancel_player_loop(guild_id)
+        self.state_manager.update_state(guild_id, current_song=None, consecutive_failures=0)
+
+        title = self.lang_manager.translate(str(guild_id), "commands", "play", "errors", "playback_failed_title")
+        desc = self.lang_manager.translate(str(guild_id), "commands", "play", "errors", "playback_failed_desc")
+        embed = discord.Embed(title=f"❌ | {title}", description=desc, color=discord.Color.red())
+        await self._send_channel_message(ctx, embed=embed)
+
+    async def _handle_single_loop(self, ctx: PlaybackContext, state: Any, voice_client: Any) -> None:
         """Handle single song loop playback"""
         try:
             if voice_client.is_playing():
                 voice_client.stop()
-            
+
             song = state.current_song
             audio_source = self.audio_manager.create_audio_source(song)
-            
+
             message = await self.ui_manager.update_player_ui(
-                interaction, 
+                ctx,
                 state.current_song,
                 state.current_message,
                 self.youtube,
                 music_cog=self
             )
-            self.state_manager.update_state(interaction.guild.id, current_message=message)
-            
+            self.state_manager.update_state(ctx.guild.id, current_message=message)
+
             voice_client.play(audio_source)
             if not song.get('is_live'):
-                self.state_manager.cancel_player_loop(interaction.guild.id)
-                task = self.bot.loop.create_task(self._player_loop(interaction, song))
-                self.state_manager.update_state(interaction.guild.id, player_loop_task=task)
+                self.state_manager.cancel_player_loop(ctx.guild.id)
+                task = self.bot.loop.create_task(self._player_loop(ctx, song))
+                self.state_manager.update_state(ctx.guild.id, player_loop_task=task)
         except Exception as e:
             await func.report_error(e, "handling single loop")
-            await self.play_next(interaction, force_new=True)
+            state.consecutive_failures += 1
+            if state.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                await self._abort_playback(ctx)
+                return
+            await self.play_next(ctx, force_new=True)
 
-    async def _get_next_song(self, interaction: discord.Interaction, guild_id: int, force_new: bool):
-        """Get the next song to play, handling autoplay and ensuring download."""
-        guild_id_str = str(guild_id)
+    async def _get_next_song(self, ctx: PlaybackContext, guild_id: int, force_new: bool) -> Optional[dict]:
+        """Get the next playable song, skipping songs whose download fails.
+
+        Raises:
+            PlaybackAbortedError: If too many downloads failed back-to-back.
+        """
         state = self.state_manager.get_state(guild_id)
 
-        # --- Autoplay Logic: Fill queue if empty ---
-        if state.autoplay and self.queue_manager.is_queue_empty(guild_id):
-            await self._trigger_autoplay(interaction, guild_id)
+        while True:
+            # --- Autoplay Logic: Fill queue if empty ---
+            if state.autoplay and self.queue_manager.is_queue_empty(guild_id):
+                await self._trigger_autoplay(ctx, guild_id)
 
-        # --- Queue Logic: Get next song ---
-        next_song = await self.queue_manager.get_next_item(guild_id)
-
-        # --- Loop Logic ---
-        if not next_song and self.queue_manager.get_play_mode(guild_id) == PlayMode.LOOP_QUEUE:
-            await self._refill_queue(guild_id)
+            # --- Queue Logic: Get next song ---
             next_song = await self.queue_manager.get_next_item(guild_id)
 
-        if not next_song:
-            return None
+            # --- Loop Logic ---
+            if not next_song and self.queue_manager.get_play_mode(guild_id) == PlayMode.LOOP_QUEUE:
+                await self._refill_queue(guild_id)
+                next_song = await self.queue_manager.get_next_item(guild_id)
 
-        # --- Download Logic: Ensure song is downloaded before playing ---
-        if not next_song.get('is_live') and not next_song.get('file_path'):
-            # 額外檢查檔案是否存在，以防狀態不一致
+            if not next_song:
+                return None
+
+            if next_song.get('is_live') or next_song.get('file_path'):
+                return next_song
+
+            # --- Download Logic: Ensure song is downloaded before playing ---
             _, folder = self._get_guild_folder(guild_id)
             potential_path = os.path.join(folder, f"{next_song.get('video_id')}.mp3")
-            if not await asyncio.to_thread(os.path.exists, potential_path):
-                logger.info(f"歌曲 '{next_song['title']}' 未下載，開始下載...")
-                downloaded_info, error = await self.youtube.download_audio(next_song['url'], folder, interaction)
-                if error:
-                    logger.error(f"下載失敗: {next_song['title']} - {error}")
-                    # Skip to the next song if download fails
-                    return await self._get_next_song(interaction, guild_id, force_new)
-                next_song.update(downloaded_info)
-            else:
+            if await asyncio.to_thread(os.path.exists, potential_path):
                 logger.info(f"歌曲 '{next_song['title']}' 已存在於本地，更新檔案路徑。")
                 next_song['file_path'] = potential_path
+                return next_song
 
-        return next_song
+            logger.info(f"歌曲 '{next_song['title']}' 未下載，開始下載...")
+            downloaded_info, error = await self.youtube.download_audio(next_song['url'], folder, ctx)
+            if not error:
+                next_song.update(downloaded_info)
+                return next_song
+
+            logger.error(f"下載失敗: {next_song['title']} - {error}")
+            state.consecutive_failures += 1
+            if state.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                raise PlaybackAbortedError(f"{state.consecutive_failures} consecutive download failures")
 
     async def _refill_queue(self, guild_id: int):
         """Refill the queue with songs"""
@@ -428,157 +464,112 @@ class YTMusic(commands.Cog):
         if queue_copy:
             self.queue_manager.set_queue(guild_id, new_queue)
 
-    async def _play_song(self, interaction: discord.Interaction, song: dict, voice_client: Any) -> None:
+    async def _play_song(self, ctx: PlaybackContext, song: dict, voice_client: Any) -> None:
         """Play a song and update UI"""
-        await self._cancel_disconnect_timer(interaction.guild.id)
+        guild_id = ctx.guild.id
+        await self._cancel_disconnect_timer(guild_id)
         if voice_client.is_playing():
             voice_client.stop()
-            
+
         audio_source = self.audio_manager.create_audio_source(song)
         message = await self.ui_manager.update_player_ui(
-            interaction,
+            ctx,
             song,
-            self.state_manager.get_state(interaction.guild.id).current_message,
+            self.state_manager.get_state(guild_id).current_message,
             self.youtube,
             music_cog=self
         )
-        self.state_manager.update_state(interaction.guild.id, current_message=message, current_song=song, last_played_song=song)
+        self.state_manager.update_state(guild_id, current_message=message, current_song=song, last_played_song=song)
 
         voice_client.play(audio_source)
+        self.state_manager.update_state(guild_id, consecutive_failures=0)
         if not song.get('is_live'):
-            self.state_manager.cancel_player_loop(interaction.guild.id)
-            task = self.bot.loop.create_task(self._player_loop(interaction, song))
-            self.state_manager.update_state(interaction.guild.id, player_loop_task=task)
+            self.state_manager.cancel_player_loop(guild_id)
+            task = self.bot.loop.create_task(self._player_loop(ctx, song))
+            self.state_manager.update_state(guild_id, player_loop_task=task)
 
-    async def _handle_after_play(self, interaction: discord.Interaction, song: dict) -> None:
+    async def _handle_after_play(self, ctx: PlaybackContext, song: dict) -> None:
         """Handle cleanup and queue transitions after a song finishes playing.
 
         Args:
-            interaction: The Discord interaction object.
+            ctx: The playback context.
             song: The song dictionary that just finished playing.
         """
-        guild_id = interaction.guild.id
-        guild_id_str = str(guild_id)
-        channel = interaction.channel
-        
+        guild_id = ctx.guild.id
+
         try:
             state = self.state_manager.get_state(guild_id)
             current_song = state.current_song
             play_mode = self.queue_manager.get_play_mode(guild_id)
-    
+
             # 如果是清單循環模式，將剛播放完的歌曲（包含檔案路徑）重新加入佇列
             if play_mode == PlayMode.LOOP_QUEUE and current_song:
                 await self.queue_manager.add_to_queue(guild_id, current_song, force=True)
                 logger.info(f"[音樂] 在清單循環模式下，將 '{current_song['title']}' 重新加入佇列。")
-    
+
             # 只有在非循環且非直播的模式下才刪除檔案
             if play_mode not in [PlayMode.LOOP_SINGLE, PlayMode.LOOP_QUEUE] and not song.get('is_live'):
                 file_path = song.get('file_path')
                 if file_path:
                     await self.audio_manager.delete_file(guild_id, file_path)
-            
+
             # Add more songs from playlist if needed
             queue = self.queue_manager.get_queue(guild_id)
             if queue.qsize() < 5 and self.queue_manager.has_playlist_songs(guild_id):
-                _, folder = self._get_guild_folder(guild_id)
                 next_songs = await self.queue_manager.get_next_playlist_songs(
                     guild_id,
                     count=5 - queue.qsize()
                 )
                 for next_song_item in next_songs:
                     await self.queue_manager.add_to_queue(guild_id, next_song_item)
-                
+
                 # Enforce autoplay limit after adding new songs
                 await self.queue_manager.enforce_autoplay_limit(guild_id)
 
             # Trigger autoplay if enabled and not enough songs in queue
             if state.autoplay:
-                queue_snapshot = self.queue_manager.get_queue_snapshot(guild_id)
-                autoplay_song_count = sum(1 for s in queue_snapshot if s.get('added_by') == self.bot.user.id)
-                if autoplay_song_count < 5:
-                    await self._trigger_autoplay(interaction, guild_id)
-
-            # Create a new interaction-like object for UI updates
-            if channel:
-                new_interaction = await self._create_dummy_interaction(channel, interaction.guild, interaction)
-                
-                # Play next song with new interaction object
-                try:
-                    # Try to play next song
-                    await self.play_next(new_interaction)
-                except discord.errors.Forbidden as e:
-                    logger.warning(f"[Music] Guild ID: {guild_id} - Forbidden error when playing next song in _handle_after_play, stopping playback.")
-                except Exception as e:
-                    await func.report_error(e, "playing next song in _handle_after_play")
-                    if channel:
-                        try:
-                            # Send error message using channel.send directly
-                            title = self.lang_manager.translate(guild_id_str, "commands", "play", "errors", "playback_error")
-                            desc = self.lang_manager.translate(guild_id_str, "commands", "play", "errors", "attempting_next")
-                            embed = discord.Embed(
-                                title=f"❌ | {title}",
-                                description=desc,
-                                color=discord.Color.red()
-                            )
-                            message = await channel.send(embed=embed)
-                            state = self.state_manager.get_state(guild_id)
-                            state.ui_messages.append(message)
-                            
-                            # Try to stop current playback if any
-                            voice_client = interaction.guild.voice_client
-                            if voice_client and voice_client.is_connected() and voice_client.is_playing():
-                                voice_client.stop()
-                            
-                            # Try one more time with force_new
-                            await self.play_next(new_interaction, force_new=True)
-                        except discord.errors.Forbidden:
-                            logger.warning(f"[Music] Guild ID: {guild_id} - Failed to send fallback/retry error message due to Forbidden.")
-                        except Exception as retry_error:
-                            await func.report_error(retry_error, "retrying to play next song in _handle_after_play")
-                            try:
-                                # Send final error message
-                                title = self.lang_manager.translate(guild_id_str, "commands", "play", "errors", "playback_failed_title")
-                                desc = self.lang_manager.translate(guild_id_str, "commands", "play", "errors", "playback_failed_desc")
-                                embed = discord.Embed(
-                                    title=f"❌ | {title}",
-                                    description=desc,
-                                    color=discord.Color.red()
-                                )
-                                message = await channel.send(embed=embed)
-                                state = self.state_manager.get_state(guild_id)
-                                state.ui_messages.append(message)
-                            except discord.errors.Forbidden:
-                                logger.warning(f"[Music] Guild ID: {guild_id} - Failed to send final error message due to Forbidden.")
-                            except Exception as final_error:
-                                 await func.report_error(final_error, "sending final error message in _handle_after_play")
-            
+                await self._trigger_autoplay(ctx, guild_id)
         except Exception as e:
-             await func.report_error(e, "handling after play")
+            # The queue housekeeping failed, but the listeners still want music:
+            # report it and carry on with the next song.
+            await func.report_error(e, "housekeeping after play")
 
-    async def _trigger_autoplay(self, interaction: discord.Interaction, guild_id: int):
-        """根據最後播放的歌曲觸發自動播放，精確填充推薦歌曲至5首，並排除重複。"""
+        # play_next handles its own failures and gives up after a bounded number of retries.
+        await self.play_next(ctx)
+
+    async def _trigger_autoplay(self, ctx: PlaybackContext, guild_id: int, notify: bool = False) -> int:
+        """根據最後播放的歌曲觸發自動播放，精確填充推薦歌曲至5首，並排除重複。
+
+        Args:
+            ctx: The playback context.
+            guild_id: The guild to fill the queue for.
+            notify: Whether to tell the channel how many songs were added.
+
+        Returns:
+            The number of recommended songs added to the queue.
+        """
         state = self.state_manager.get_state(guild_id)
-        
+
         queue_snapshot = self.queue_manager.get_queue_snapshot(guild_id)
         autoplay_song_count = sum(1 for s in queue_snapshot if s.get('added_by') == self.bot.user.id)
-        
+
         needed = 5 - autoplay_song_count
         if needed <= 0:
-            return
+            return 0
 
         logger.info(f"[音樂] Autoplay 已啟用，需要填充 {needed} 首推薦歌曲。")
 
         song_to_recommend_from = state.current_song or state.last_played_song
         if not song_to_recommend_from:
             logger.info("[音樂] 沒有可供推薦的歌曲。")
-            return
+            return 0
 
         video_id = song_to_recommend_from.get("video_id")
         title = song_to_recommend_from.get("title")
         author = song_to_recommend_from.get("author")
         if not video_id or not title or not author:
-            logger.warning(f"無法觸發自動播放，因為缺少 video_id、title 或 author。")
-            return
+            logger.warning("無法觸發自動播放，因為缺少 video_id、title 或 author。")
+            return 0
 
         # 建立一個包含當前歌曲和佇列中所有歌曲ID的集合，以供排除
         exclude_ids = {s.get('video_id') for s in queue_snapshot if s.get('video_id')}
@@ -586,23 +577,28 @@ class YTMusic(commands.Cog):
             exclude_ids.add(state.current_song.get('video_id'))
 
         related_videos, error = await self.youtube.get_related_videos(
-            video_id, title, author, interaction, limit=needed, exclude_ids=exclude_ids
+            video_id, title, author, ctx, limit=needed, exclude_ids=exclude_ids
         )
         if error:
             logger.warning(f"無法獲取推薦影片: {error}")
-            return
+            return 0
+        if not related_videos:
+            return 0
 
-        if related_videos:
-            logger.info(f"成功獲取 {len(related_videos)} 首推薦影片，正在加入佇列。")
-            # --- 新增的修復程式碼 ---
-            for video in related_videos:
-                video['added_by'] = self.bot.user.id
-            # --- 修復結束 ---
-            
-            for video in related_videos:
-                await self.queue_manager.add_to_queue(guild_id, video)
-            
-            await self.queue_manager.enforce_autoplay_limit(guild_id)
+        logger.info(f"成功獲取 {len(related_videos)} 首推薦影片，正在加入佇列。")
+        for video in related_videos:
+            video['added_by'] = self.bot.user.id
+            await self.queue_manager.add_to_queue(guild_id, video)
+        await self.queue_manager.enforce_autoplay_limit(guild_id)
+
+        if notify:
+            text = self.lang_manager.translate(
+                str(guild_id), "system", "music", "autoplay", "songs_added", count=len(related_videos)
+            )
+            await self._send_channel_message(
+                ctx, embed=discord.Embed(title=f"🎶 | {text}", color=discord.Color.blue()), delete_after=15
+            )
+        return len(related_videos)
 
     def _get_guild_folder(self, guild_id: int) -> tuple:
         """Get guild queue and folder"""
@@ -622,8 +618,34 @@ class YTMusic(commands.Cog):
     def get_lang_manager(self) -> Optional[LanguageManager]:
         return self.lang_manager
 
+    async def _ensure_can_control(self, interaction: discord.Interaction) -> bool:
+        """Check that the user sits in the bot's voice channel before changing playback.
+
+        Without a voice client there is nothing to protect, so the handler's own
+        "nothing is playing" reply applies and this returns ``True``.
+
+        Args:
+            interaction: The interaction that triggered the control.
+
+        Returns:
+            ``True`` when the control may proceed; otherwise an ephemeral
+            explanation has been sent and ``False`` is returned.
+        """
+        guild_id = interaction.guild.id
+        voice_client = self.get_voice_client(guild_id)
+        if voice_client is None or user_shares_voice_channel(interaction.user, voice_client):
+            return True
+        text = self.lang_manager.translate(str(guild_id), "system", "music", "controls", "not_in_channel")
+        if interaction.response.is_done():
+            await interaction.followup.send(text, ephemeral=True)
+        else:
+            await interaction.response.send_message(text, ephemeral=True)
+        return False
+
     # --- Callback Handlers ---
     async def handle_previous(self, interaction: discord.Interaction):
+        if not await self._ensure_can_control(interaction):
+            return
         voice_client = self.get_voice_client(interaction.guild.id)
         if not voice_client:
             await interaction.response.send_message(self.lang_manager.translate(str(interaction.guild.id), "system", "music", "controls", "no_music"), ephemeral=True)
@@ -639,6 +661,8 @@ class YTMusic(commands.Cog):
                 )
 
     async def handle_toggle_playback(self, interaction: discord.Interaction):
+        if not await self._ensure_can_control(interaction):
+            return
         guild_id = interaction.guild.id
         voice_client = self.get_voice_client(guild_id)
         view = self.ui_manager.get_current_view(guild_id)
@@ -657,6 +681,8 @@ class YTMusic(commands.Cog):
         await view.update_button_state()
 
     async def handle_skip(self, interaction: discord.Interaction):
+        if not await self._ensure_can_control(interaction):
+            return
         voice_client = self.get_voice_client(interaction.guild.id)
         if not voice_client:
             await interaction.response.send_message(self.lang_manager.translate(str(interaction.guild.id), "system", "music", "controls", "no_music"), ephemeral=True)
@@ -676,9 +702,11 @@ class YTMusic(commands.Cog):
         state = self.state_manager.get_state(interaction.guild.id)
         if state.autoplay:
             # 使用 create_task 在背景觸發自動播放，避免阻塞當前的 skip 操作
-            asyncio.create_task(self._trigger_autoplay(interaction, interaction.guild.id))
+            asyncio.create_task(self._trigger_autoplay(PlaybackContext.from_interaction(interaction), interaction.guild.id))
 
     async def handle_stop(self, interaction: discord.Interaction):
+        if not await self._ensure_can_control(interaction):
+            return
         guild_id = interaction.guild.id
         voice_client = self.get_voice_client(guild_id)
 
@@ -700,6 +728,8 @@ class YTMusic(commands.Cog):
             await interaction.followup.send(embed=embed, ephemeral=True)
 
     async def handle_toggle_mode(self, interaction: discord.Interaction):
+        if not await self._ensure_can_control(interaction):
+            return
         guild_id = interaction.guild.id
         current_mode = self.queue_manager.get_play_mode(guild_id)
         
@@ -717,6 +747,8 @@ class YTMusic(commands.Cog):
             await view.update_embed(interaction, self.lang_manager.translate(str(guild_id), "system", "music", "controls", "mode_changed", user=interaction.user.name, mode=mode_name))
 
     async def handle_toggle_shuffle(self, interaction: discord.Interaction):
+        if not await self._ensure_can_control(interaction):
+            return
         guild_id = interaction.guild.id
         is_shuffle = self.queue_manager.toggle_shuffle(guild_id)
         status_key = "enabled" if is_shuffle else "disabled"
@@ -740,6 +772,8 @@ class YTMusic(commands.Cog):
 
     async def handle_toggle_autoplay(self, interaction: discord.Interaction):
         """切換自動播放模式"""
+        if not await self._ensure_can_control(interaction):
+            return
         guild_id = interaction.guild.id
         state = self.state_manager.get_state(guild_id)
         state.autoplay = not state.autoplay
@@ -757,16 +791,18 @@ class YTMusic(commands.Cog):
         
         await interaction.response.send_message(f"✅ | {title}", ephemeral=True)
 
-        # If autoplay is enabled, check if the upcoming queue is empty to fill it
-        if state.autoplay and len(self.queue_manager.get_queue_snapshot(interaction.guild.id)) == 0:
-            logger.info(f"[音樂] 伺服器 ID: {interaction.guild.id}, Autoplay 已啟用且待播清單為空，立即觸發推薦填充。")
-            self.bot.loop.create_task(self._fill_autoplay_queue(interaction))
+        if not state.autoplay:
+            return
 
-        # If autoplay is enabled and nothing is playing, start it
+        ctx = PlaybackContext.from_interaction(interaction)
         voice_client = interaction.guild.voice_client
-        if state.autoplay and not (voice_client and voice_client.is_playing()):
-            logger.info(f"[音樂] 伺服器 ID: {interaction.guild.id}, 觸發閒置時的 Autoplay。")
-            self.bot.loop.create_task(self.play_next(interaction))
+        if voice_client and not voice_client.is_playing():
+            # Nothing playing: play_next fills the empty queue through autoplay itself.
+            logger.info(f"[音樂] 伺服器 ID: {guild_id}, 觸發閒置時的 Autoplay。")
+            self.bot.loop.create_task(self.play_next(ctx))
+        elif self.queue_manager.is_queue_empty(guild_id):
+            logger.info(f"[音樂] 伺服器 ID: {guild_id}, Autoplay 已啟用且待播清單為空，立即觸發推薦填充。")
+            self.bot.loop.create_task(self._trigger_autoplay(ctx, guild_id, notify=True))
 
     async def get_queue_text(self, guild_id: int) -> str:
         """Generates the text for the queue display."""
@@ -802,48 +838,6 @@ class YTMusic(commands.Cog):
                 text += line
         
         return text if text.strip() else self.lang_manager.translate(guild_id_str, "system", "music", "player", "queue_empty")
-
-    async def _fill_autoplay_queue(self, interaction: discord.Interaction) -> None:
-        """Fills the queue with recommended songs when autoplay is on.
-
-        Args:
-            interaction: The Discord interaction object.
-        """
-        guild_id = interaction.guild.id
-        state = self.state_manager.get_state(guild_id)
-        
-        song_to_recommend_from = state.current_song or state.last_played_song
-        if song_to_recommend_from:
-            video_id = song_to_recommend_from.get("video_id")
-            title = song_to_recommend_from.get("title")
-            author = song_to_recommend_from.get("author")
-            if video_id and title and author:
-                related_videos, error = await self.youtube.get_related_videos(
-                    video_id, title, author, interaction, limit=5, exclude_ids=set()
-                )
-                if related_videos:
-                    logger.info(f"成功獲取 {len(related_videos)} 首推薦影片，正在加入佇列。")
-                    # --- 新增的修復程式碼 ---
-                    for video in related_videos:
-                        video['added_by'] = self.bot.user.id
-                    # --- 修復結束 ---
-
-                    for video in related_videos:
-                        await self.queue_manager.add_to_queue(guild_id, video)
-
-                    # Notify user that songs have been added
-                    channel = interaction.channel
-                    if channel:
-                        embed = discord.Embed(
-                            title=f"🎶 | 已自動為您加入 {len(related_videos)} 首推薦歌曲",
-                            color=discord.Color.blue()
-                        )
-                        try:
-                            await channel.send(embed=embed, delete_after=15)
-                        except discord.errors.Forbidden:
-                            logger.warning(f"[Music] Guild ID: {guild_id} - Failed to send autoplay notification due to Forbidden.")
-                else:
-                    logger.warning(f"無法獲取推薦影片: {error}")
 
     async def _cleanup_voice_session(self, guild_id: int):
         """Cleans up the voice session for a guild."""
@@ -970,52 +964,13 @@ class YTMusic(commands.Cog):
                         if view:
                             await view.update_button_state()
 
-    async def _create_dummy_interaction(self, channel, guild, original_interaction):
-        """Creates a dummy interaction object for internal use."""
-        
-        class DummyUser:
-            def __init__(self, original_user):
-                self.name = original_user.name
-                self.display_name = original_user.display_name
-                self.id = original_user.id
-                self.mention = original_user.mention
-                self.display_avatar = original_user.display_avatar
-                self.avatar = type('Avatar', (), {'url': original_user.display_avatar.url})()
-            def __getattr__(self, name):
-                return getattr(original_interaction.user, name)
-
-        class DummyInteraction:
-            def __init__(self, channel, guild, user):
-                self.channel = channel
-                self.guild = guild
-                self.user = user
-                self.application_id = original_interaction.application_id
-                self.id = original_interaction.id
-                
-                class DummyResponse:
-                    def __init__(self):
-                        self.is_done = lambda: True
-                    async def send_message(self, *args, **kwargs):
-                        return await channel.send(*args, **kwargs)
-                self.response = DummyResponse()
-
-                class DummyFollowup:
-                    def __init__(self, channel):
-                        self._channel = channel
-                    async def send(self, *args, **kwargs):
-                        return await channel.send(*args, **kwargs)
-                self.followup = DummyFollowup(channel)
-
-        return DummyInteraction(channel, guild, DummyUser(original_interaction.user))
-
-
-    async def _player_loop(self, interaction: discord.Interaction, song: dict):
+    async def _player_loop(self, ctx: PlaybackContext, song: dict) -> None:
         """Monitors the player and handles song completion."""
-        guild_id = interaction.guild.id
+        guild_id = ctx.guild.id
         logger.info(f"[{guild_id}] Player loop started for '{song['title']}'.")
-        
-        await asyncio.sleep(2) # Wait for playback to start
-        
+
+        await asyncio.sleep(2)  # Wait for playback to start
+
         while True:
             voice_client = self.get_voice_client(guild_id)
             if not voice_client or not voice_client.is_connected():
@@ -1029,20 +984,17 @@ class YTMusic(commands.Cog):
             if not voice_client.is_playing():
                 logger.info(f"[{guild_id}] Player loop detected song has finished.")
                 break
-            
+
             await asyncio.sleep(1)
-        
+
         state = self.state_manager.get_state(guild_id)
         # Ensure we are still on the same song before triggering after_play
         if state.current_song and state.current_song['video_id'] == song['video_id']:
             logger.info(f"[{guild_id}] 歌曲 '{song['title']}' 播放完畢，觸發 _handle_after_play。")
-            # Use a new interaction object to avoid issues with expired interactions
-            channel = interaction.channel
-            if channel:
-                new_interaction = await self._create_dummy_interaction(channel, interaction.guild, interaction)
-                await self._handle_after_play(new_interaction, song)
+            await self._handle_after_play(ctx, song)
         else:
             logger.info(f"[{guild_id}] Player loop for '{song['title']}' exiting without action. (Song might have been skipped).")
+
 
 async def setup(bot):
     """Initialize the music cog"""

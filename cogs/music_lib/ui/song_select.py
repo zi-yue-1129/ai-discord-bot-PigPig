@@ -2,6 +2,7 @@ import discord
 from typing import Optional
 from cogs.language_manager import LanguageManager
 from addons.logging import get_logger
+from ..context import PlaybackContext
 
 log = get_logger(source=__name__, server_id="system")
 
@@ -159,12 +160,12 @@ class SongSelectMenu(discord.ui.Select):
                 video_info, error = await view.player.youtube.download_audio(
                     selected_song['url'],
                     folder,
-                    interaction
+                    PlaybackContext.from_interaction(interaction)
                 )
             else:
                 video_info, error = await view.player.youtube.get_video_info_without_download(
                     selected_song['url'],
-                    interaction
+                    PlaybackContext.from_interaction(interaction)
                 )
                 
             if error:

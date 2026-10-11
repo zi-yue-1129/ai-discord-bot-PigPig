@@ -1,5 +1,6 @@
 {
     "enabled": "開啟",
     "disabled": "關閉",
-    "toggled": "{user} 切換自動播放：{status}"
+    "toggled": "{user} 切換自動播放：{status}",
+    "songs_added": "已自動為您加入 {count} 首推薦歌曲"
 }

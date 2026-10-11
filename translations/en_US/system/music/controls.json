@@ -17,5 +17,6 @@
                 "queue_songs": "Songs in Queue"
             }
         }
-    }
+    },
+    "not_in_channel": "You need to be in the same voice channel as the bot to control the music"
 }

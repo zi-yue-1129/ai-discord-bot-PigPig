@@ -1,6 +1,7 @@
 import asyncio
 import discord
 from typing import Optional, Dict, Any
+from .context import PlaybackContext
 from .ui.controls import MusicControlView
 from .ui.progress import ProgressDisplay
 from cogs.language_manager import LanguageManager
@@ -51,12 +52,12 @@ class UIManager:
     def get_current_view(self, guild_id: int) -> Optional[MusicControlView]:
         return self.views.get(guild_id)
 
-    async def update_player_ui(self, interaction: discord.Interaction, item: Dict[str, Any],
+    async def update_player_ui(self, ctx: PlaybackContext, item: Dict[str, Any],
                              current_message: Optional[discord.Message], youtube_manager: Any, music_cog: Any) -> Optional[discord.Message]:
         """Update or create the music player UI.
 
         Args:
-            interaction: The Discord interaction object.
+            ctx: Where playback was requested and by whom.
             item: A dictionary containing song information.
             current_message: The current player message to update or delete.
             youtube_manager: The YouTube manager instance.
@@ -66,7 +67,7 @@ class UIManager:
             The sent Discord Message object, or None if the message could not be sent.
         """
         try:
-            guild_id = interaction.guild.id
+            guild_id = ctx.guild.id
             guild_id_str = str(guild_id)
             embed = self._create_player_embed(item, youtube_manager, guild_id_str)
 
@@ -90,7 +91,7 @@ class UIManager:
                 old_view = self.views[guild_id]
                 old_view.stop_progress_updater()
 
-            view = MusicControlView(interaction, song_info=item, **callbacks)
+            view = MusicControlView(ctx, song_info=item, **callbacks)
             self.views[guild_id] = view
 
             state = music_cog.state_manager.get_state(guild_id)
@@ -106,7 +107,7 @@ class UIManager:
             # Always send a new message to ensure it's at the bottom
             message = None
             try:
-                message = await interaction.channel.send(embed=embed, view=view)
+                message = await ctx.channel.send(embed=embed, view=view)
             except discord.errors.Forbidden:
                 log.warning(f"Failed to send player UI in guild {guild_id}: Forbidden (Missing Access). Music will play without UI.")
 

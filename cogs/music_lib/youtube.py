@@ -9,6 +9,7 @@ from typing import Optional, Any, Dict, List, Set
 from youtube_search import YoutubeSearch
 from addons.settings import music_config
 from addons.logging import get_logger
+from .context import PlaybackContext
 
 log = get_logger(source=__name__, server_id="system")
 
@@ -142,13 +143,13 @@ class YouTubeManager:
             log.error(f"YouTube 搜尋失敗: {e}")
             return []
 
-    async def download_playlist(self, url: str, folder: str, interaction: discord.Interaction) -> tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    async def download_playlist(self, url: str, folder: str, ctx: PlaybackContext) -> tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
         """Download a YouTube playlist.
 
         Args:
             url: The YouTube playlist URL.
             folder: The destination folder path.
-            interaction: The Discord interaction object.
+            ctx: Where playback was requested and by whom.
 
         Returns:
             A tuple of (video_infos, error_message).
@@ -202,15 +203,15 @@ class YouTubeManager:
                         "video_id": entry.get('id', '未知ID'),
                         "author": entry.get('uploader', '未知上傳者'),
                         "views": entry.get('view_count', 0),
-                        "requester": interaction.user,
-                        "user_avatar": interaction.user.display_avatar.url,
+                        "requester": ctx.user,
+                        "user_avatar": ctx.user.display_avatar.url,
                         "file_path": None,
                         "is_live": entry.get('is_live', False)
                     }
                     for entry in info_dict['entries'][1:]
                 ]
                 
-                first_song_download = self.download_audio(video_url, folder, interaction)
+                first_song_download = self.download_audio(video_url, folder, ctx)
                 first_song_info, error = await first_song_download
                 
                 if first_song_info:
@@ -224,12 +225,12 @@ class YouTubeManager:
             log.error(f"[音樂] 播放清單下載失敗: {e}")
             return None, "播放清單下載失敗"
 
-    async def get_video_info_without_download(self, url: str, interaction: discord.Interaction) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    async def get_video_info_without_download(self, url: str, ctx: PlaybackContext) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
         """Get video information without downloading.
 
         Args:
             url: The YouTube video URL.
-            interaction: The Discord interaction object.
+            ctx: Where playback was requested and by whom.
 
         Returns:
             A tuple of (video_info, error_message).
@@ -264,7 +265,7 @@ class YouTubeManager:
             is_live = info_dict.get('is_live', False)
 
             if not is_live and info_dict.get('duration', 0) > self.time_limit:
-                log.info(f"[音樂] 伺服器 ID: {interaction.guild.id}, 影片時長過長！")
+                log.info(f"[音樂] 伺服器 ID: {ctx.guild.id}, 影片時長過長！")
                 return None, "影片時長過長！超過 30 分鐘"
 
             video_info = {
@@ -276,8 +277,8 @@ class YouTubeManager:
                 "video_id": info_dict.get('id', '未知ID'),
                 "author": info_dict.get('uploader', '未知上傳者'),
                 "views": info_dict.get('view_count', 0),
-                "requester": interaction.user,
-                "user_avatar": interaction.user.display_avatar.url,
+                "requester": ctx.user,
+                "user_avatar": ctx.user.display_avatar.url,
                 "is_live": is_live
             }
 
@@ -287,13 +288,13 @@ class YouTubeManager:
             log.error(f"[音樂] 取得影片資訊失敗: {e}")
             return None, "取得影片資訊失敗"
 
-    async def download_audio(self, url: str, folder: str, interaction: discord.Interaction) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    async def download_audio(self, url: str, folder: str, ctx: PlaybackContext) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
         """Download audio from YouTube.
 
         Args:
             url: The YouTube video URL.
             folder: The destination folder path.
-            interaction: The Discord interaction object.
+            ctx: Where playback was requested and by whom.
 
         Returns:
             A tuple of (video_info, error_message).
@@ -367,7 +368,7 @@ class YouTubeManager:
                 ['ios'],
             ]
 
-            log.info(f"[音樂] 開始下載 (伺服器 ID: {interaction.guild.id}): {url} 到 {folder}")
+            log.info(f"[音樂] 開始下載 (伺服器 ID: {ctx.guild.id}): {url} 到 {folder}")
 
             last_error = None
             info_dict = None
@@ -390,7 +391,7 @@ class YouTubeManager:
                         is_live = info_dict.get('is_live', False)
 
                         if is_live:
-                            log.info(f"[音樂] 偵測到直播影片 (伺服器 ID: {interaction.guild.id}): {url}")
+                            log.info(f"[音樂] 偵測到直播影片 (伺服器 ID: {ctx.guild.id}): {url}")
                             best_audio_url = None
                             if 'formats' in info_dict:
                                 audio_formats = [f for f in info_dict['formats']
@@ -414,18 +415,18 @@ class YouTubeManager:
                                 "video_id": info_dict.get('id', '未知ID'),
                                 "author": info_dict.get('uploader', '未知上傳者'),
                                 "views": info_dict.get('view_count', 0),
-                                "requester": interaction.user,
-                                "user_avatar": interaction.user.display_avatar.url,
+                                "requester": ctx.user,
+                                "user_avatar": ctx.user.display_avatar.url,
                                 "is_live": True,
                             }, None
 
                         if info_dict.get('duration', 0) > self.time_limit:
-                            log.info(f"[音樂] 伺服器 ID: {interaction.guild.id}, 影片時長過長！")
+                            log.info(f"[音樂] 伺服器 ID: {ctx.guild.id}, 影片時長過長！")
                             return None, "影片時長過長！超過 30 分鐘"
 
-                        log.info(f"[音樂] 正在下載 (策略 {strategy_idx + 1}/{len(player_client_strategies)}, 伺服器 ID: {interaction.guild.id}): {url}")
+                        log.info(f"[音樂] 正在下載 (策略 {strategy_idx + 1}/{len(player_client_strategies)}, 伺服器 ID: {ctx.guild.id}): {url}")
                         await asyncio.to_thread(ydl.download, [url])
-                        log.info(f"[音樂] 下載完成 (伺服器 ID: {interaction.guild.id}): {url}")
+                        log.info(f"[音樂] 下載完成 (伺服器 ID: {ctx.guild.id}): {url}")
                         break  # Success — exit strategy loop
 
                 except yt_dlp.utils.DownloadError as e:
@@ -483,8 +484,8 @@ class YouTubeManager:
                 "video_id": info_dict.get('id', '未知ID'),
                 "author": info_dict.get('uploader', '未知上傳者'),
                 "views": info_dict.get('view_count', 0),
-                "requester": interaction.user,
-                "user_avatar": interaction.user.display_avatar.url,
+                "requester": ctx.user,
+                "user_avatar": ctx.user.display_avatar.url,
                 "is_live": False,
             }, None
 
@@ -515,14 +516,14 @@ class YouTubeManager:
     def get_thumbnail_url(self, video_id):
         return f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
 
-    async def get_related_videos(self, video_id: str, title: str, author: str, interaction: discord.Interaction, limit: int = 5, exclude_ids: Optional[Set[str]] = None) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    async def get_related_videos(self, video_id: str, title: str, author: str, ctx: PlaybackContext, limit: int = 5, exclude_ids: Optional[Set[str]] = None) -> tuple[List[Dict[str, Any]], Optional[str]]:
         """Get related videos for a YouTube video.
 
         Args:
             video_id: The YouTube video ID.
             title: The title of the video.
             author: The author/channel of the video.
-            interaction: The Discord interaction object.
+            ctx: Where playback was requested and by whom.
             limit: The maximum number of recommendations.
             exclude_ids: A set of video IDs to exclude.
 
@@ -554,8 +555,8 @@ class YouTubeManager:
                         "video_id": video_id_res,
                         "author": video.get('author', '未知上傳者'),
                         "views": video.get('views', 0),
-                        "requester": interaction.user,
-                        "user_avatar": interaction.user.display_avatar.url,
+                        "requester": ctx.user,
+                        "user_avatar": ctx.user.display_avatar.url,
                         "is_live": False
                     })
                     exclude_ids.add(video_id_res)
@@ -660,8 +661,8 @@ class YouTubeManager:
                                     "video_id": entry_id,
                                     "author": entry.get('uploader', '未知上傳者'),
                                     "views": entry.get('view_count', 0),
-                                    "requester": interaction.user,
-                                    "user_avatar": interaction.user.display_avatar.url,
+                                    "requester": ctx.user,
+                                    "user_avatar": ctx.user.display_avatar.url,
                                     "is_live": False
                                 })
                                 exclude_ids.add(entry_id)

@@ -1,6 +1,7 @@
 import discord
 import asyncio
 from typing import Optional
+from ..context import PlaybackContext
 from .progress import ProgressDisplay
 from cogs.language_manager import LanguageManager
 from ..queue_manager import PlayMode
@@ -9,13 +10,13 @@ from addons.logging import get_logger
 log = get_logger(source=__name__, server_id="system")
 
 class MusicControlView(discord.ui.View):
-    def __init__(self, interaction: discord.Interaction, *,
+    def __init__(self, ctx: PlaybackContext, *,
                 song_info: dict,  # Add song_info
                 previous_callback, toggle_playback_callback, skip_callback, stop_callback,
                 toggle_mode_callback, toggle_shuffle_callback, show_queue_callback, toggle_autoplay_callback,
                 get_queue_manager, get_state_manager, get_voice_client, get_lang_manager):
         super().__init__(timeout=None)
-        self.guild = interaction.guild
+        self.guild = ctx.guild
         self.message = None
         self.current_embed = None
         self.song_info = song_info  # Store song_info

@@ -13,6 +13,7 @@ class PlayerState:
     ui_messages: list = field(default_factory=list)
     autoplay: bool = False
     player_loop_task: Optional[asyncio.Task] = None
+    consecutive_failures: int = 0
 
 
 class StateManager:
