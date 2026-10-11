@@ -53,3 +53,9 @@ autoplay:
   skip_penalty_window_seconds: 15    # skipping a recommendation this quickly counts against its author
   database_path: "data/music/taste.db"  # SQLite file keeping each guild's taste across restarts
   banned_keywords: ["1 hour", "10 hours", "slowed", "nightcore", "reaction", "8d audio"]
+
+# Where songs may come from. Every key is optional; these are the defaults.
+sources:
+  allowed_hosts: ["youtube.com", "youtu.be", "soundcloud.com"]   # links to other hosts are only used as search text
+  spotify: true                      # turn Spotify track links into a YouTube search for "artist title"
+  spotify_timeout_seconds: 10        # how long to wait for the Spotify page

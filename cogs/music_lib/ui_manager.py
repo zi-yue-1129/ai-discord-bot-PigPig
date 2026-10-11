@@ -189,7 +189,7 @@ class UIManager:
         embed.add_field(name=queue_text, value=queue_empty_text, inline=False)
         
         # Add thumbnail
-        thumbnail = youtube_manager.get_thumbnail_url(item['video_id'])
+        thumbnail = item.get('thumbnail') or youtube_manager.get_thumbnail_url(item['video_id'])
         embed.set_thumbnail(url=thumbnail)
         
         # Add footer

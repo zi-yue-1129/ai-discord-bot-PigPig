@@ -257,6 +257,26 @@ class AutoplaySettings:
         object.__setattr__(self, "banned_keywords", tuple(self.banned_keywords))
 
 
+@dataclass(frozen=True)
+class SourcesSettings:
+    """Where songs may come from (``sources:`` block of music.yaml).
+
+    Attributes:
+        allowed_hosts: Hosts whose links are opened by yt-dlp (subdomains included). Links to
+            any other host are treated as search text.
+        spotify: Whether Spotify track links are turned into a YouTube search.
+        spotify_timeout_seconds: How long to wait for a Spotify page.
+    """
+
+    allowed_hosts: tuple = ("youtube.com", "youtu.be", "soundcloud.com")
+    spotify: bool = True
+    spotify_timeout_seconds: int = 10
+
+    def __post_init__(self) -> None:
+        # YAML gives a list; keep the field immutable like the rest of the dataclass.
+        object.__setattr__(self, "allowed_hosts", tuple(str(host).lower() for host in self.allowed_hosts))
+
+
 class MusicConfig:
     """Configuration object mapped from config/music.yaml"""
 
@@ -270,6 +290,7 @@ class MusicConfig:
         self.ai: MusicAISettings = MusicAISettings(**(data.get("ai") or {}))
         self.streaming: StreamingSettings = StreamingSettings(**(data.get("streaming") or {}))
         self.autoplay: AutoplaySettings = AutoplaySettings(**(data.get("autoplay") or {}))
+        self.sources: SourcesSettings = SourcesSettings(**(data.get("sources") or {}))
 
 class PromptConfig:
     """Configuration object mapped from config/prompt/*.yaml"""

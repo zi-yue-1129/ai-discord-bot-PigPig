@@ -11,6 +11,7 @@ from youtube_search import YoutubeSearch
 from addons.settings import music_config
 from addons.logging import get_logger
 from .context import PlaybackContext
+from .sources import is_preview_only, thumbnail_of
 from .recommender import TasteMemory, filter_candidates, rank_candidates
 
 log = get_logger(source=__name__, server_id="system")
@@ -27,6 +28,7 @@ async def check_ffmpeg(ffmpeg_path='/usr/bin/ffmpeg'):
 
 # YoutubeSearch has no timeout of its own and can retry forever on a consent or captcha page.
 SEARCH_TIMEOUT_SECONDS = 15
+PREVIEW_ONLY_ERROR = "此曲目只提供 30 秒試聽，無法完整播放"
 # Reading a YouTube Mix takes about a second; give up well before autoplay feels stuck.
 MIX_TIMEOUT_SECONDS = 20
 
@@ -290,6 +292,9 @@ class YouTubeManager:
             info_dict = await extract_info()
             is_live = info_dict.get('is_live', False)
 
+            if is_preview_only(info_dict):
+                return None, PREVIEW_ONLY_ERROR
+
             if not is_live and info_dict.get('duration', 0) > self.time_limit:
                 log.info(f"[音樂] 伺服器 ID: {ctx.guild.id}, 影片時長過長！")
                 return None, "影片時長過長！超過 30 分鐘"
@@ -299,6 +304,7 @@ class YouTubeManager:
                 "title": info_dict.get('title', '未知標題'),
                 "url": info_dict.get('webpage_url', url),
                 "stream_url": info_dict.get('url') if is_live else None,
+                "thumbnail": thumbnail_of(info_dict),
                 "duration": info_dict.get('duration', 0),
                 "video_id": info_dict.get('id', '未知ID'),
                 "author": info_dict.get('uploader', '未知上傳者'),
@@ -355,6 +361,8 @@ class YouTubeManager:
             log.warning(f"[音樂] 取得串流網址失敗，改用下載: {e}")
             return None, None
 
+        if is_preview_only(info):
+            return None, PREVIEW_ONLY_ERROR
         if info.get('is_live') or not info.get('url'):
             return None, None
         if info.get('duration', 0) > self.time_limit:
@@ -365,6 +373,7 @@ class YouTubeManager:
             "file_path": None,
             "stream_url": info['url'],
             "stream_headers": dict(info.get('http_headers') or {}),
+            "thumbnail": thumbnail_of(info),
             "title": info.get('title', '未知標題'),
             "url": info.get('webpage_url', url),
             "duration": info.get('duration', 0),
@@ -528,6 +537,9 @@ class YouTubeManager:
                                 "is_live": True,
                             }, None
 
+                        if is_preview_only(info_dict):
+                            return None, PREVIEW_ONLY_ERROR
+
                         if info_dict.get('duration', 0) > self.time_limit:
                             log.info(f"[音樂] 伺服器 ID: {ctx.guild.id}, 影片時長過長！")
                             return None, "影片時長過長！超過 30 分鐘"
@@ -594,6 +606,7 @@ class YouTubeManager:
                 "title": info_dict.get('title', '未知標題'),
                 "url": info_dict.get('webpage_url', url),
                 "stream_url": None,
+                "thumbnail": thumbnail_of(info_dict),
                 "duration": info_dict.get('duration', 0),
                 "video_id": info_dict.get('id', '未知ID'),
                 "author": info_dict.get('uploader', '未知上傳者'),

@@ -258,6 +258,13 @@ class YTMusic(commands.Cog):
         # 如果有提供查詢，將音樂加入播放清單
         logger.info(f"[音樂] 伺服器 ID： {interaction.guild.name}, 使用者名稱： {interaction.user.name}, 使用者輸入： {query}")
         
+        query, problem = await self.service.resolve_query(query)
+        if problem:
+            title = self.lang_manager.translate(str(interaction.guild.id), "commands", "play", "errors", "spotify_failed")
+            embed = discord.Embed(title=f"❌ | {title}", color=discord.Color.red())
+            await interaction.edit_original_response(embed=embed)
+            return
+
         query_kind = classify_query(query)
         if query_kind == "playlist":
             await self._handle_playlist(interaction, query.strip())

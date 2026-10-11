@@ -11,7 +11,8 @@
         "playlist_download_failed": "プレイリスト情報のダウンロードに失敗しました。",
         "queue_full_desc": "キューがいっぱいです。",
         "queue_full_title": "キュー満杯",
-        "video_info_failed": "ビデオ情報の取得に失敗しました。"
+        "video_info_failed": "ビデオ情報の取得に失敗しました。",
+        "spotify_failed": "このSpotifyリンクを読み取れませんでした（曲のリンクのみ対応しています）。"
     },
     "responses": {
         "playlist_added": "プレイリストがキューに追加されました。",

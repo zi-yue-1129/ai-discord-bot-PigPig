@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import parse_qs, urlparse
 
 import discord
 
@@ -19,6 +18,7 @@ from addons.logging import get_logger
 from addons.settings import MusicAISettings, StreamingSettings, music_config
 
 from .context import PlaybackContext, user_shares_voice_channel
+from .sources import classify_url, fetch_spotify_search_query
 from .queue_manager import PlayMode
 
 log = get_logger(source=__name__, server_id="system")
@@ -43,7 +43,6 @@ FAILURE_REASONS = (
 
 # How long the bot stays in the channel after a request that could not be served.
 FAILED_PLAY_DISCONNECT_SECONDS = 60
-_YOUTUBE_HOSTS = ("youtube.com", "youtu.be")
 _SEARCH_CANDIDATES = 3
 # Songs queued immediately from a playlist; the rest wait in the playlist buffer.
 _PLAYLIST_INITIAL_SLOTS = 5
@@ -73,17 +72,12 @@ def classify_query(query: str) -> str:
         query: What the user typed after ``/play`` (or asked the AI to play).
 
     Returns:
-        ``"playlist"`` for a YouTube URL carrying a ``list`` parameter,
-        ``"video"`` for any other YouTube URL, otherwise ``"search"``.
+        ``"playlist"`` for a YouTube playlist link or SoundCloud set, ``"video"`` for any
+        other allowed YouTube or SoundCloud link, ``"spotify"`` for a Spotify track link,
+        ``"spotify_unsupported"`` for other Spotify links, otherwise ``"search"``.
     """
-    text = query.strip()
-    candidate = text if "://" in text else f"https://{text}"
-    parsed = urlparse(candidate)
-    host = (parsed.hostname or "").lower()
-    is_youtube = any(host == name or host.endswith(f".{name}") for name in _YOUTUBE_HOSTS)
-    if not is_youtube or " " in text:
-        return "search"
-    return "playlist" if "list" in parse_qs(parsed.query) else "video"
+    sources = music_config.sources
+    return classify_url(query, allowed_hosts=sources.allowed_hosts, spotify_enabled=sources.spotify)
 
 
 def _channel_name(channel: Any) -> str:
@@ -282,8 +276,30 @@ class MusicService:
                 and queue_manager.is_queue_empty(ctx.guild.id)):
             await self._cog._start_disconnect_timer(ctx.guild.id, FAILED_PLAY_DISCONNECT_SECONDS)
 
+    async def resolve_query(self, query: str) -> Tuple[str, Optional[ActionResult]]:
+        """Turns a Spotify link into search text; every other query is returned unchanged.
+
+        Args:
+            query: What the user typed or asked the AI to play.
+
+        Returns:
+            ``(query, None)``, or ``("", failure)`` when a Spotify link cannot be used.
+        """
+        kind = classify_query(query)
+        if kind == "spotify_unsupported":
+            return "", _fail("lookup_failed", "Only Spotify track links are supported, not albums or playlists.")
+        if kind != "spotify":
+            return query, None
+        found = await fetch_spotify_search_query(query.strip(), timeout=music_config.sources.spotify_timeout_seconds)
+        if found is None:
+            return "", _fail("lookup_failed", "Could not read that Spotify link.")
+        return found, None
+
     async def _queue_and_start(self, ctx: PlaybackContext, query: str, play_next: bool = False) -> ActionResult:
         """Queues what ``query`` names and starts playback when nothing is playing."""
+        query, problem = await self.resolve_query(query)
+        if problem:
+            return problem
         kind = classify_query(query)
         data: Dict[str, Any]
         info: Dict[str, Any] = {}

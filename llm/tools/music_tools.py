@@ -157,8 +157,9 @@ class MusicTools:
             the user explicitly asks to cut in or to play the song next (插播).
 
             Args:
-                query: A YouTube video or playlist URL, or search keywords such as
-                    a song title and artist.
+                query: A YouTube or SoundCloud link, a Spotify track link, or search
+                    keywords such as a song title and artist. Pass links through
+                    unchanged.
                 play_next: Cut in so the song plays right after the current one.
 
             Returns:
