@@ -50,7 +50,9 @@ class FakeVoiceClient:
         self.paused = False
         self.stop_calls = 0
         self.pause_calls = 0
+        self.resume_calls = 0
         self.disconnected = False
+        self.moved_to: Optional[object] = None
 
     def is_connected(self) -> bool:
         return True
@@ -65,8 +67,17 @@ class FakeVoiceClient:
         self.stop_calls += 1
         self.playing = False
 
+    async def move_to(self, channel: object) -> None:
+        self.moved_to = channel
+        self.channel = channel
+
     async def disconnect(self) -> None:
         self.disconnected = True
+
+    def resume(self) -> None:
+        self.resume_calls += 1
+        self.paused = False
+        self.playing = True
 
     def pause(self) -> None:
         self.pause_calls += 1
