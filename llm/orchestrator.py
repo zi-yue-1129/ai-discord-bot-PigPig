@@ -673,7 +673,7 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                 # Use the analysis from info_agent for message generation.
                 # Tool calls and results become one internal block instead of fake
                 # assistant/system turns, which the reply agent would imitate in its output.
-                clean_info_messages: List[BaseMessage] = build_message_agent_history(info_message)
+                clean_info_messages: List[BaseMessage] = build_message_agent_history(info_message, history_length=len(messages_for_info_agent))
                 messages_for_message_agent = list(clean_info_messages)
                 if _announcement_msg is not None:
                     messages_for_message_agent.append(_announcement_msg)

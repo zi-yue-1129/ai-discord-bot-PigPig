@@ -369,3 +369,85 @@ def test_status_when_idle(service: MusicService) -> None:
     assert status["state"] == "idle"
     assert status["current"] is None
     assert status["queue"] == []
+
+
+@pytest.mark.asyncio
+async def test_play_reports_the_voice_channel_name(
+    service: MusicService, ctx: PlaybackContext, youtube: FakeYouTube, played: List[PlaybackContext],
+    voice_client: FakeVoiceClient,
+) -> None:
+    voice_client.channel = SimpleNamespace(name="General")
+    ctx.user.voice.channel = voice_client.channel
+
+    result = await service.play(ctx, "稻香")
+
+    assert result.data["channel"] == "General"
+
+
+@pytest.mark.asyncio
+async def test_a_queued_song_reports_what_is_playing_now(
+    service: MusicService, cog: YTMusic, ctx: PlaybackContext, youtube: FakeYouTube,
+    played: List[PlaybackContext], voice_client: FakeVoiceClient,
+) -> None:
+    voice_client.playing = True
+    cog.state_manager.update_state(GUILD_ID, current_song=make_song(0))
+
+    result = await service.play(ctx, "稻香")
+
+    assert result.data["current"] == "song 0"
+
+
+@pytest.mark.asyncio
+async def test_skip_reports_the_next_song(
+    service: MusicService, cog: YTMusic, ctx: PlaybackContext, voice_client: FakeVoiceClient,
+) -> None:
+    voice_client.playing = True
+    cog.state_manager.update_state(GUILD_ID, current_song=make_song(0))
+    await cog.queue_manager.add_to_queue(GUILD_ID, make_song(1))
+
+    result = await service.skip(ctx)
+
+    assert result.data == {"skipped": "song 0", "next": "song 1"}
+
+
+@pytest.mark.asyncio
+async def test_pause_reports_the_song_title(
+    service: MusicService, cog: YTMusic, ctx: PlaybackContext, voice_client: FakeVoiceClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def no_timer(guild_id: int) -> None:
+        return None
+
+    monkeypatch.setattr(cog, "_start_disconnect_timer", no_timer)
+    voice_client.playing = True
+    cog.state_manager.update_state(GUILD_ID, current_song=make_song(0))
+
+    result = await service.pause(ctx)
+
+    assert result.data == {"title": "song 0"}
+
+
+@pytest.mark.asyncio
+async def test_stop_reports_how_many_queued_songs_were_dropped(
+    service: MusicService, cog: YTMusic, ctx: PlaybackContext, voice_client: FakeVoiceClient,
+) -> None:
+    voice_client.playing = True
+    await cog.queue_manager.add_to_queue(GUILD_ID, make_song(1))
+    await cog.queue_manager.add_to_queue(GUILD_ID, make_song(2))
+
+    result = await service.stop(ctx)
+
+    assert result.data == {"cleared": 2}
+
+
+@pytest.mark.asyncio
+async def test_a_refused_request_names_the_channel_the_bot_is_in(
+    service: MusicService, guild: SimpleNamespace, text_channel: FakeChannel, voice_client: FakeVoiceClient,
+) -> None:
+    voice_client.channel = SimpleNamespace(name="Music Room")
+    voice_client.playing = True
+    outsider = PlaybackContext(guild=guild, channel=text_channel, user=make_member(5, voice_channel=object()))
+
+    result = await service.skip(outsider)
+
+    assert "Music Room" in result.detail

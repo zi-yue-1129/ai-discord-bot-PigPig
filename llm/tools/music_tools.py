@@ -43,22 +43,41 @@ from llm.music_context import format_seconds, render_music_context
 _logger = get_logger(server_id="Bot", source="llm.tools.music_tools")
 
 
+def _in_channel(data: dict) -> str:
+    """Returns " in the voice channel 'X'" when the channel is known."""
+    channel = data.get("channel")
+    return f" in the voice channel '{channel}'" if channel else ""
+
+
 def _format_queued(result: ActionResult) -> str:
-    """Describes what a successful ``play`` queued."""
+    """Describes exactly what a successful ``play`` did."""
     data = result.data
     if data.get("kind") == "playlist":
         titles = ", ".join(data.get("titles", [])[:5])
         return (
-            f"Queued {data.get('added')} of {data.get('total')} songs from the playlist "
-            f"(the rest load as the queue plays): {titles}."
+            f"Queued {data.get('added')} of {data.get('total')} songs from the playlist"
+            f"{_in_channel(data)} (the rest load as the queue plays): {titles}."
         )
     title = f"'{data.get('title')}' ({format_seconds(data.get('duration'))})"
     if data.get("started"):
-        return f"Now playing {title}."
-    position = data.get("position")
-    if position:
-        return f"Queued {title} at position {position}; it plays after the current song."
-    return f"Queued {title}."
+        return f"Now playing {title}{_in_channel(data)}."
+    position = f" at position {data['position']}" if data.get("position") else ""
+    after = f"; it plays after '{data['current']}'" if data.get("current") else ""
+    return f"Queued {title}{position}{_in_channel(data)}{after}."
+
+
+def _quoted(title: Optional[str]) -> str:
+    """Returns ``'title'`` or a neutral phrase when the title is unknown."""
+    return f"'{title}'" if title else "the current song"
+
+
+def _requester_voice(ctx: PlaybackContext) -> str:
+    """States whether, and where, the requester is in a voice channel."""
+    voice_state = getattr(ctx.user, "voice", None)
+    channel = getattr(voice_state, "channel", None)
+    if channel is None:
+        return "Requester is not in a voice channel."
+    return f"Requester is in the voice channel '{getattr(channel, 'name', 'unknown')}'."
 
 
 class MusicTools:
@@ -133,8 +152,10 @@ class MusicTools:
             """Plays music in the voice channel of the user who asked.
 
             Call this when the user asks to play, queue or put on a song, an artist
-            or a YouTube link. The user must already be in a voice channel; if the
-            bot is not connected it joins that channel.
+            or a YouTube link. The bot joins the requester's voice channel by itself,
+            so do not refuse and do not try to work out where anyone is: always call
+            this tool. If the user is not in a voice channel, the tool tells them so
+            in the channel.
 
             Args:
                 query: A YouTube video or playlist URL, or search keywords such as
@@ -163,8 +184,11 @@ class MusicTools:
             result = await service.skip(ctx)
             if not result.ok:
                 return await _failure(ctx, result)
-            skipped = result.data.get("skipped")
-            return f"Skipped '{skipped}'." if skipped else "Skipped the current song."
+            skipped = _quoted(result.data.get("skipped"))
+            upcoming = result.data.get("next")
+            if upcoming:
+                return f"Skipped {skipped}. Up next: '{upcoming}'."
+            return f"Skipped {skipped}. The queue is now empty."
 
         @tool
         async def pause_music() -> str:
@@ -177,7 +201,9 @@ class MusicTools:
             if error:
                 return error
             result = await service.pause(ctx)
-            return "Paused the music." if result.ok else await _failure(ctx, result)
+            if not result.ok:
+                return await _failure(ctx, result)
+            return f"Paused {_quoted(result.data.get('title'))}."
 
         @tool
         async def resume_music() -> str:
@@ -190,7 +216,9 @@ class MusicTools:
             if error:
                 return error
             result = await service.resume(ctx)
-            return "Resumed the music." if result.ok else await _failure(ctx, result)
+            if not result.ok:
+                return await _failure(ctx, result)
+            return f"Resumed {_quoted(result.data.get('title'))}."
 
         @tool
         async def stop_music() -> str:
@@ -206,7 +234,13 @@ class MusicTools:
             if error:
                 return error
             result = await service.stop(ctx)
-            return "Stopped the music and left the voice channel." if result.ok else await _failure(ctx, result)
+            if not result.ok:
+                return await _failure(ctx, result)
+            cleared = result.data.get("cleared", 0)
+            if not cleared:
+                return "Stopped the music and left the voice channel."
+            noun = "song" if cleared == 1 else "songs"
+            return f"Stopped the music, dropped {cleared} queued {noun} and left the voice channel."
 
         @tool
         async def set_music_loop_mode(mode: str) -> str:
@@ -306,20 +340,20 @@ class MusicTools:
             service, ctx, error = resolve()
             if error:
                 return error
-            ai_settings = music_config.ai
-            return render_music_context(
+            status_text = render_music_context(
                 service.status(ctx.guild.id),
                 list_titles=True,
-                max_titles=ai_settings.max_queue_titles,
+                max_titles=music_config.ai.max_queue_titles,
             )
+            return f"{status_text}\n{_requester_voice(ctx)}"
 
+        # All music tools run in the info agent: its tool results are handed to the reply
+        # agent, whereas the reply agent calls the model once and never sees tool results
+        # (and its tool calls are cut off after 10 seconds, too short for a download).
         action_tools = (
             play_music, skip_music, pause_music, resume_music,
             stop_music, set_music_loop_mode, set_music_shuffle,
             set_music_volume, remove_song_from_queue, clear_music_queue,
         )
-        # Actions are executed by the message agent; status is read by the info agent.
-        for action_tool in action_tools:
-            action_tool.__dict__["target_agent_mode"] = "message"
 
         return [*action_tools, get_music_status]

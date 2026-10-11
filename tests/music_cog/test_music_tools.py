@@ -97,12 +97,13 @@ def test_exposes_the_expected_tools() -> None:
     assert set(tools) == ACTION_TOOLS | {"get_music_status"}
 
 
-def test_actions_belong_to_the_message_agent_and_status_to_the_info_agent() -> None:
+def test_every_music_tool_belongs_to_the_info_agent() -> None:
+    """The info agent's tool results are handed to the reply agent, which never sees the
+    results of its own tools; music replies depend on what actually happened."""
     tools = _tools(_runtime(FakeService()))
 
-    for name in ACTION_TOOLS:
-        assert tools[name].__dict__["target_agent_mode"] == "message", name
-    assert tools["get_music_status"].__dict__.get("target_agent_mode", "info") == "info"
+    for name, tool in tools.items():
+        assert tool.__dict__.get("target_agent_mode", "info") == "info", name
 
 
 @pytest.mark.asyncio
@@ -237,3 +238,89 @@ async def test_volume_failures_are_returned_as_error_text() -> None:
     reply = await _tools(_runtime(service))["set_music_volume"].ainvoke({"percent": 500})
 
     assert reply == "Error: Volume must be between 0 and 100."
+
+
+@pytest.mark.asyncio
+async def test_status_states_where_the_requester_is() -> None:
+    runtime = _runtime(FakeService())
+    runtime.message.author = make_member(42, voice_channel=SimpleNamespace(name="General"))
+
+    reply = await _tools(runtime)["get_music_status"].ainvoke({})
+
+    assert "Requester is in the voice channel 'General'" in reply
+
+
+@pytest.mark.asyncio
+async def test_status_states_when_the_requester_is_not_in_a_voice_channel() -> None:
+    runtime = _runtime(FakeService())
+    runtime.message.author = make_member(42, voice_channel=None)
+
+    reply = await _tools(runtime)["get_music_status"].ainvoke({})
+
+    assert "Requester is not in a voice channel" in reply
+
+
+@pytest.mark.asyncio
+async def test_play_reports_the_voice_channel_it_plays_in() -> None:
+    service = FakeService()
+    service.result = ActionResult(
+        ok=True, data={"kind": "video", "title": "綠光", "duration": 200, "started": True, "channel": "General"}
+    )
+
+    reply = await _tools(_runtime(service))["play_music"].ainvoke({"query": "綠光"})
+
+    assert reply == "Now playing '綠光' (03:20) in the voice channel 'General'."
+
+
+@pytest.mark.asyncio
+async def test_a_queued_song_names_the_one_it_waits_behind() -> None:
+    service = FakeService()
+    service.result = ActionResult(
+        ok=True,
+        data={"kind": "video", "title": "綠光", "duration": 200, "started": False, "position": 2,
+              "current": "稻香", "channel": "General"},
+    )
+
+    reply = await _tools(_runtime(service))["play_music"].ainvoke({"query": "綠光"})
+
+    assert reply == "Queued '綠光' (03:20) at position 2 in the voice channel 'General'; it plays after '稻香'."
+
+
+@pytest.mark.asyncio
+async def test_skip_names_the_next_song() -> None:
+    service = FakeService()
+    service.result = ActionResult(ok=True, data={"skipped": "稻香", "next": "綠光"})
+
+    reply = await _tools(_runtime(service))["skip_music"].ainvoke({})
+
+    assert reply == "Skipped '稻香'. Up next: '綠光'."
+
+
+@pytest.mark.asyncio
+async def test_skip_says_when_nothing_follows() -> None:
+    service = FakeService()
+    service.result = ActionResult(ok=True, data={"skipped": "稻香", "next": None})
+
+    reply = await _tools(_runtime(service))["skip_music"].ainvoke({})
+
+    assert reply == "Skipped '稻香'. The queue is now empty."
+
+
+@pytest.mark.asyncio
+async def test_stop_says_how_many_queued_songs_were_dropped() -> None:
+    service = FakeService()
+    service.result = ActionResult(ok=True, data={"cleared": 3})
+
+    reply = await _tools(_runtime(service))["stop_music"].ainvoke({})
+
+    assert reply == "Stopped the music, dropped 3 queued songs and left the voice channel."
+
+
+@pytest.mark.asyncio
+async def test_pause_names_the_song() -> None:
+    service = FakeService()
+    service.result = ActionResult(ok=True, data={"title": "稻香"})
+
+    reply = await _tools(_runtime(service))["pause_music"].ainvoke({})
+
+    assert reply == "Paused '稻香'."

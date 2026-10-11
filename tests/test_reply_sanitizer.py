@@ -110,3 +110,13 @@ def test_ordinary_content_is_left_alone(text: str) -> None:
 
 def test_blank_lines_are_collapsed() -> None:
     assert sanitize_reply("<som>a\n\n\n\n\nb<eom>") == "a\n\nb"
+
+
+def test_gemma_channel_markers_are_removed() -> None:
+    raw = "<|channel>thought\n<channel|><som> 哈囉 <eom>"
+
+    assert sanitize_reply(raw) == "哈囉"
+
+
+def test_gemma_channel_markers_are_removed_without_reply_markers() -> None:
+    assert sanitize_reply("<|channel>thought\nplan the answer<channel|>哈囉") == "哈囉"

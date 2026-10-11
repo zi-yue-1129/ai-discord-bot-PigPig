@@ -72,9 +72,7 @@ async def build_music_context(bot: Any, guild: Any, settings: MusicAISettings) -
     if cog is None:
         return ""
     status = cog.service.status(guild.id)
-    nothing_going_on = status["state"] == "disconnected" or (
-        status["state"] == "idle" and not status["current"] and not status["queue"]
-    )
+    nothing_going_on = status["state"] == "idle" and not status["current"] and not status["queue"]
     if nothing_going_on:
         return ""
     return render_music_context(

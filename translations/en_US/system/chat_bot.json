@@ -26,6 +26,17 @@
             "get_user_discord_info": "👤 Looking up user Discord profile...",
             "get_user_stats": "📊 Generating stats card...",
             "get_bot_changelog": "📋 Checking bot update log...",
+            "play_music": "🎵 Handling your song request...",
+            "skip_music": "⏭️ Skipping the song...",
+            "pause_music": "⏸️ Pausing the music...",
+            "resume_music": "▶️ Resuming playback...",
+            "stop_music": "⏹️ Stopping the music...",
+            "set_music_loop_mode": "🔁 Setting the loop mode...",
+            "set_music_shuffle": "🔀 Setting shuffle...",
+            "set_music_volume": "🔊 Adjusting the volume...",
+            "remove_song_from_queue": "🗑️ Removing the song...",
+            "clear_music_queue": "🧹 Clearing the queue...",
+            "get_music_status": "🎶 Checking the player...",
             "default": "🛠️ Using {tool_name}..."
         }
     }

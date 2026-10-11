@@ -194,8 +194,9 @@ class MusicAISettings:
         status_in_context: Add the player status to every conversation's context.
         list_queue_titles: Include the titles of upcoming songs in that status.
         max_queue_titles: How many upcoming titles to list at most.
-        announce_failures: Post a channel message when an AI music action fails,
-            because the reply agent cannot see tool results.
+        announce_failures: Also post a channel message when an AI music action fails.
+            Off by default: music tools run in the info agent, so the reply agent sees
+            the failure and reports it itself.
         start_confirm_timeout_seconds: How long ``play_music`` waits for playback
             to actually start before reporting failure; 0 disables the check.
     """
@@ -203,7 +204,7 @@ class MusicAISettings:
     status_in_context: bool = True
     list_queue_titles: bool = True
     max_queue_titles: int = 10
-    announce_failures: bool = True
+    announce_failures: bool = False
     start_confirm_timeout_seconds: float = 5.0
 
 

@@ -50,12 +50,13 @@ def _status(**overrides: Any) -> dict:
 # --- settings ---------------------------------------------------------------------
 
 
-def test_ai_settings_default_to_enabled() -> None:
+def test_ai_settings_defaults() -> None:
     settings = MusicAISettings()
 
     assert settings.status_in_context is True
     assert settings.list_queue_titles is True
-    assert settings.announce_failures is True
+    # The info agent's tool results reach the reply agent, which reports failures itself.
+    assert settings.announce_failures is False
     assert settings.max_queue_titles == 10
     assert settings.start_confirm_timeout_seconds == pytest.approx(5.0)
 
@@ -68,7 +69,7 @@ def test_music_config_reads_the_ai_block(tmp_path: Path) -> None:
 
     assert config.ai.list_queue_titles is False
     assert config.ai.max_queue_titles == 3
-    assert config.ai.announce_failures is True
+    assert config.ai.announce_failures is False
 
 
 def test_music_config_rejects_unknown_ai_keys(tmp_path: Path) -> None:
@@ -256,6 +257,7 @@ class RefusingService:
 @pytest.mark.asyncio
 async def test_a_failed_action_is_announced_publicly(cog: YTMusic, monkeypatch: pytest.MonkeyPatch) -> None:
     channel = FakeChannel()
+    monkeypatch.setattr(music_config, "ai", replace(music_config.ai, announce_failures=True))
     monkeypatch.setattr(cog, "service", RefusingService())
     tools = {tool.name: tool for tool in MusicTools(_tool_runtime(cog, channel)).get_tools()}
 

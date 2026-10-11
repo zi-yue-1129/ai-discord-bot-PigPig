@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import re
 
+# Gemma wraps its reasoning as "<|channel>thought ... <channel|>".
+_CHANNEL_BLOCK = re.compile(r"<\|channel>.*?<channel\|>", re.DOTALL)
+_CHANNEL_TOKEN = re.compile(r"</?\|?channel\|?>")
 _THINK_BLOCK = re.compile(r"<(think|thinking)>.*?</\1>\s*", re.DOTALL)
 _UNCLOSED_THINK = re.compile(r"<(?:think|thinking)>.*\Z", re.DOTALL)
 _SOM_SEGMENT = re.compile(r"<som>(.*?)(?:<eom>|\Z)", re.DOTALL)
@@ -70,7 +73,8 @@ def sanitize_reply(raw: str) -> str:
     Returns:
         The text to post, or an empty string when nothing postable remains.
     """
-    text = _drop_thinking(raw)
+    text = _CHANNEL_TOKEN.sub("", _CHANNEL_BLOCK.sub("", raw))
+    text = _drop_thinking(text)
     text = _marked_body(text)
     text = _IDENTITY_PREFIX.sub("", text)
     for pattern in (_TIMESTAMP_GROUP, _REPLYING_GROUP, _FIELD_GROUP, _ASSISTANT_PLACEHOLDER, _SYSTEM_HEADER):

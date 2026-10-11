@@ -84,6 +84,17 @@ def classify_query(query: str) -> str:
     return "playlist" if "list" in parse_qs(parsed.query) else "video"
 
 
+def _channel_name(channel: Any) -> str:
+    """Returns a voice channel's name for use in messages."""
+    return str(getattr(channel, "name", None) or "the voice channel")
+
+
+def _current_title(cog: Any, guild_id: int) -> Optional[str]:
+    """Returns the title of the song that is playing, if any."""
+    song = cog.state_manager.get_state(guild_id).current_song
+    return song["title"] if song else None
+
+
 def _fail(reason: str, detail: str) -> ActionResult:
     """Builds a failed result."""
     return ActionResult(ok=False, reason=reason, detail=detail)
@@ -123,7 +134,11 @@ class MusicService:
                 return _fail("nothing_playing", "The bot is not connected to a voice channel.")
             return None
         if not user_shares_voice_channel(ctx.user, voice_client):
-            return _fail("not_in_bot_channel", "The user must be in the same voice channel as the bot.")
+            return _fail(
+                "not_in_bot_channel",
+                f"Nothing was changed: the requester is not in the voice channel '{_channel_name(voice_client.channel)}' "
+                "where the bot is playing.",
+            )
         return None
 
     async def _ensure_voice(self, ctx: PlaybackContext) -> Optional[ActionResult]:
@@ -134,7 +149,7 @@ class MusicService:
         """
         voice_state = getattr(ctx.user, "voice", None)
         if voice_state is None or voice_state.channel is None:
-            return _fail("user_not_in_voice", "The user must join a voice channel first.")
+            return _fail("user_not_in_voice", "Nothing was played: the requester is not in a voice channel.")
 
         voice_client = ctx.guild.voice_client
         if voice_client is None:
@@ -150,7 +165,11 @@ class MusicService:
 
         busy = voice_client.is_playing() or voice_client.is_paused() or not self._cog.queue_manager.is_queue_empty(ctx.guild.id)
         if busy:
-            return _fail("not_in_bot_channel", "The bot is already playing in another voice channel.")
+            return _fail(
+                "not_in_bot_channel",
+                f"Nothing was played: the bot is already playing in the voice channel "
+                f"'{_channel_name(voice_client.channel)}' and the requester is not in it.",
+            )
         await voice_client.move_to(voice_state.channel)
         return None
 
@@ -234,9 +253,11 @@ class MusicService:
                     "duration": info.get("duration", 0)}
 
         voice_client = ctx.guild.voice_client
+        data["channel"] = _channel_name(voice_client.channel)
         if voice_client.is_playing() or voice_client.is_paused():
             self._cog.prefetcher.schedule(ctx)
             data["started"] = False
+            data["current"] = _current_title(self._cog, ctx.guild.id)
             if data["kind"] == "video":
                 data["position"] = self._queue_position(ctx.guild.id, info.get("video_id"))
             return ActionResult(ok=True, detail="Queued behind the current song.", data=data)
@@ -303,6 +324,8 @@ class MusicService:
         guild_id = ctx.guild.id
         state = self._cog.state_manager.get_state(guild_id)
         skipped = state.current_song["title"] if state.current_song else None
+        queued = self.queue_titles(guild_id)
+        upcoming = queued[0] if queued else None
         view = self._refresh_buttons(guild_id)
         if view:
             view.stop_progress_updater()
@@ -311,7 +334,7 @@ class MusicService:
             await view.update_button_state()
         if state.autoplay:
             asyncio.create_task(self._cog._trigger_autoplay(ctx, guild_id))
-        return ActionResult(ok=True, detail="Skipped.", data={"skipped": skipped})
+        return ActionResult(ok=True, detail="Skipped.", data={"skipped": skipped, "next": upcoming})
 
     async def pause(self, ctx: PlaybackContext, *, refresh_buttons: bool = True) -> ActionResult:
         """Pauses playback and starts the idle-disconnect timer."""
@@ -329,7 +352,7 @@ class MusicService:
         view = self._refresh_buttons(ctx.guild.id)
         if view and refresh_buttons:
             await view.update_button_state()
-        return ActionResult(ok=True, detail="Paused.")
+        return ActionResult(ok=True, detail="Paused.", data={"title": _current_title(self._cog, ctx.guild.id)})
 
     async def resume(self, ctx: PlaybackContext, *, refresh_buttons: bool = True) -> ActionResult:
         """Resumes paused playback."""
@@ -347,7 +370,7 @@ class MusicService:
         view = self._refresh_buttons(ctx.guild.id)
         if view and refresh_buttons:
             await view.update_button_state()
-        return ActionResult(ok=True, detail="Resumed.")
+        return ActionResult(ok=True, detail="Resumed.", data={"title": _current_title(self._cog, ctx.guild.id)})
 
     async def stop(self, ctx: PlaybackContext) -> ActionResult:
         """Stops playback, clears the queue and leaves the voice channel."""
@@ -355,9 +378,10 @@ class MusicService:
         if denied:
             return denied
         guild_id = ctx.guild.id
+        cleared = len(self.queue_titles(guild_id))
         await self._cog._cancel_disconnect_timer(guild_id)
         await self._cog._cleanup_voice_session(guild_id)
-        return ActionResult(ok=True, detail="Stopped and disconnected.")
+        return ActionResult(ok=True, detail="Stopped and disconnected.", data={"cleared": cleared})
 
     async def set_mode(self, ctx: PlaybackContext, mode: str) -> ActionResult:
         """Sets the loop mode (``no_loop``, ``loop_queue`` or ``loop_single``)."""
@@ -470,14 +494,16 @@ class MusicService:
         """Describes the player of a guild.
 
         Returns:
-            A dict with ``state`` (``disconnected``/``idle``/``playing``/``paused``),
+            A dict with ``state`` (``idle``/``playing``/``paused``),
             ``current``, ``queue``, ``mode``, ``shuffle``, ``autoplay`` and ``volume``.
         """
         cog = self._cog
         voice_client = cog.get_voice_client(guild_id)
         state = cog.state_manager.get_state(guild_id)
         if voice_client is None or not voice_client.is_connected():
-            player_state = "disconnected"
+            # Being connected is an implementation detail (play_music joins the
+            # requester's channel itself); for everyone else it simply means idle.
+            player_state = "idle"
         elif voice_client.is_paused():
             player_state = "paused"
         elif voice_client.is_playing():

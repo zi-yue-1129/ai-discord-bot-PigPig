@@ -26,6 +26,17 @@
             "get_user_discord_info": "👤 正在查詢使用者 Discord 資料...",
             "get_user_stats": "📊 正在生成統計名片...",
             "get_bot_changelog": "📋 正在查詢機器人更新日誌...",
+            "play_music": "🎵 正在處理點歌...",
+            "skip_music": "⏭️ 正在跳過歌曲...",
+            "pause_music": "⏸️ 正在暫停音樂...",
+            "resume_music": "▶️ 正在繼續播放...",
+            "stop_music": "⏹️ 正在停止音樂...",
+            "set_music_loop_mode": "🔁 正在設定循環模式...",
+            "set_music_shuffle": "🔀 正在設定隨機播放...",
+            "set_music_volume": "🔊 正在調整音量...",
+            "remove_song_from_queue": "🗑️ 正在移除歌曲...",
+            "clear_music_queue": "🧹 正在清空待播清單...",
+            "get_music_status": "🎶 正在查看播放狀態...",
             "default": "🛠️ 正在使用 {tool_name}..."
         }
     }
