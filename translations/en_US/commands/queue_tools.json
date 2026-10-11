@@ -1,0 +1,11 @@
+{
+    "responses": {
+        "removed": "Removed #{position}: {title}",
+        "cleared": "Queue cleared ({count} songs removed)."
+    },
+    "errors": {
+        "invalid_volume": "Volume must be between 0 and 100.",
+        "invalid_position": "There is no song at that position.",
+        "nothing_playing": "Nothing is playing."
+    }
+}

@@ -139,6 +139,23 @@ class QueueManager:
             return []
         return list(queue._queue).copy()
 
+    def remove_at(self, guild_id: int, index: int) -> Optional[Dict[str, Any]]:
+        """Remove and return the queued song at a zero-based index.
+
+        Args:
+            guild_id: The guild whose queue is edited.
+            index: Zero-based position in the queue.
+
+        Returns:
+            The removed song, or ``None`` if the index is outside the queue.
+        """
+        queue = self.guild_queues.get(guild_id)
+        if queue is None or not 0 <= index < len(queue._queue):
+            return None
+        song = queue._queue[index]
+        del queue._queue[index]
+        return song
+
     def is_queue_empty(self, guild_id: int) -> bool:
         """Check if the queue is empty."""
         q = self.guild_queues.get(guild_id)

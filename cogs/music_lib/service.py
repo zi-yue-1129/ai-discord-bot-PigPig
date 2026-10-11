@@ -337,6 +337,69 @@ class MusicService:
             await view.update_button_state()
         return ActionResult(ok=True, detail=f"Shuffle {'on' if enabled else 'off'}.", data={"shuffle": enabled})
 
+    async def set_volume(self, ctx: PlaybackContext, percent: int) -> ActionResult:
+        """Sets the playback volume of the guild.
+
+        Args:
+            ctx: The playback context.
+            percent: Volume from 0 to 100.
+        """
+        denied = self._check_control(ctx, require_connection=False)
+        if denied:
+            return denied
+        if not 0 <= percent <= 100:
+            return _fail("invalid_volume", "Volume must be between 0 and 100.")
+        volume = percent / 100
+        self._cog.state_manager.update_state(ctx.guild.id, volume=volume)
+        source = getattr(ctx.guild.voice_client, "source", None)
+        if source is not None and hasattr(source, "volume"):
+            source.volume = volume
+        return ActionResult(ok=True, detail=f"Volume set to {percent}%.", data={"volume": percent})
+
+    async def _discard_files(self, guild_id: int, songs: List[Dict[str, Any]]) -> None:
+        """Deletes the downloaded files of songs that left the queue.
+
+        The file of the song that is playing right now is never touched.
+        """
+        playing = self._cog.state_manager.get_state(guild_id).current_song
+        playing_path = playing.get("file_path") if playing else None
+        for song in songs:
+            path = song.get("file_path")
+            if path and path != playing_path:
+                await self._cog.audio_manager.delete_file(guild_id, path)
+
+    async def remove_from_queue(self, ctx: PlaybackContext, position: int) -> ActionResult:
+        """Removes one song from the queue.
+
+        Args:
+            ctx: The playback context.
+            position: One-based position in the queue (1 is the next song).
+        """
+        denied = self._check_control(ctx, require_connection=False)
+        if denied:
+            return denied
+        guild_id = ctx.guild.id
+        removed = self._cog.queue_manager.remove_at(guild_id, position - 1) if position >= 1 else None
+        if removed is None:
+            size = len(self._cog.queue_manager.get_queue_snapshot(guild_id))
+            return _fail("invalid_position", f"Position must be between 1 and {size}.")
+        await self._discard_files(guild_id, [removed])
+        return ActionResult(ok=True, detail="Removed.", data={"title": removed["title"], "position": position})
+
+    async def clear_queue(self, ctx: PlaybackContext) -> ActionResult:
+        """Empties the queue (and the buffered playlist) without touching the current song."""
+        denied = self._check_control(ctx, require_connection=False)
+        if denied:
+            return denied
+        guild_id = ctx.guild.id
+        queue_manager = self._cog.queue_manager
+        removed = queue_manager.get_queue_snapshot(guild_id)
+        queue_manager.clear_queue(guild_id)
+        queue_manager.set_playlist(guild_id, [])
+        await self._cog.prefetcher.cancel(guild_id)
+        await self._discard_files(guild_id, removed)
+        return ActionResult(ok=True, detail="Queue cleared.", data={"removed": len(removed)})
+
     # ------------------------------------------------------------------- queries
     def queue_titles(self, guild_id: int) -> List[str]:
         """Returns the titles waiting in the queue, in play order."""

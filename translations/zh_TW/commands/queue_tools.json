@@ -1,0 +1,11 @@
+{
+    "responses": {
+        "removed": "已移除第 {position} 首：{title}",
+        "cleared": "已清空待播清單（移除 {count} 首）。"
+    },
+    "errors": {
+        "invalid_volume": "音量必須介於 0 到 100。",
+        "invalid_position": "沒有這個位置的歌曲。",
+        "nothing_playing": "目前沒有播放音樂。"
+    }
+}

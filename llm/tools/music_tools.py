@@ -244,6 +244,57 @@ class MusicTools:
             return f"Shuffle is now {'on' if enabled else 'off'}." if result.ok else _failure(result)
 
         @tool
+        async def set_music_volume(percent: int) -> str:
+            """Sets the music volume.
+
+            Args:
+                percent: Volume from 0 (silent) to 100 (full volume).
+
+            Returns:
+                A confirmation, or an error if the value is out of range.
+            """
+            service, ctx, error = resolve()
+            if error:
+                return error
+            result = await service.set_volume(ctx, percent)
+            return f"Volume is now {percent}%." if result.ok else _failure(result)
+
+        @tool
+        async def remove_song_from_queue(position: int) -> str:
+            """Removes one upcoming song from the queue.
+
+            Use get_music_status first to see the positions.
+
+            Args:
+                position: Position in the queue, starting at 1 for the next song.
+
+            Returns:
+                The removed song, or an error if the position does not exist.
+            """
+            service, ctx, error = resolve()
+            if error:
+                return error
+            result = await service.remove_from_queue(ctx, position)
+            if not result.ok:
+                return _failure(result)
+            return f"Removed '{result.data.get('title')}' from position {position}."
+
+        @tool
+        async def clear_music_queue() -> str:
+            """Removes every upcoming song from the queue; the current song keeps playing.
+
+            Returns:
+                How many songs were removed, or an error explaining why not.
+            """
+            service, ctx, error = resolve()
+            if error:
+                return error
+            result = await service.clear_queue(ctx)
+            if not result.ok:
+                return _failure(result)
+            return f"Cleared the queue ({result.data.get('removed')} songs removed)."
+
+        @tool
         async def get_music_status() -> str:
             """Reports what the music player is doing right now.
 
@@ -262,6 +313,7 @@ class MusicTools:
         action_tools = (
             play_music, skip_music, pause_music, resume_music,
             stop_music, set_music_loop_mode, set_music_shuffle,
+            set_music_volume, remove_song_from_queue, clear_music_queue,
         )
         # Actions are executed by the message agent; status is read by the info agent.
         for action_tool in action_tools:

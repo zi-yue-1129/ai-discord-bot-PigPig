@@ -2,7 +2,7 @@ import os
 import asyncio
 from typing import Dict, Any, Optional
 from addons.logging import get_logger
-from discord import FFmpegPCMAudio
+from discord import AudioSource, FFmpegPCMAudio, PCMVolumeTransformer
 
 log = get_logger(source=__name__, server_id="system")
 
@@ -12,8 +12,19 @@ class AudioManager:
         # Per-guild audio source tracking to avoid cross-guild interference.
         self._current_audio: Dict[int, Optional[FFmpegPCMAudio]] = {}
 
-    def create_audio_source(self, song: Dict[str, Any]) -> FFmpegPCMAudio:
-        """Create an FFmpeg audio source based on song information."""
+    def create_audio_source(self, song: Dict[str, Any], volume: float = 1.0) -> AudioSource:
+        """Create an FFmpeg audio source based on song information.
+
+        Args:
+            song: The song entry (``file_path``, or ``stream_url`` for live streams).
+            volume: Playback volume from 0.0 to 1.0.
+
+        Returns:
+            An audio source whose volume can be changed while it plays.
+
+        Raises:
+            ValueError: If the song has no playable file or stream URL.
+        """
         is_live = song.get('is_live', False)
 
         if is_live:
@@ -24,12 +35,12 @@ class AudioManager:
                 'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
                 'options': '-vn',
             }
-            return FFmpegPCMAudio(stream_url, **ffmpeg_options)
+            return PCMVolumeTransformer(FFmpegPCMAudio(stream_url, **ffmpeg_options), volume=volume)
 
         file_path = song.get('file_path')
         if not file_path or not os.path.exists(file_path):
             raise ValueError(f"Audio file does not exist or invalid path: {file_path}")
-        return FFmpegPCMAudio(file_path)
+        return PCMVolumeTransformer(FFmpegPCMAudio(file_path), volume=volume)
 
     async def delete_file(self, guild_id: int, file_path: str):
         """Non-blocking file deletion using asyncio.to_thread."""

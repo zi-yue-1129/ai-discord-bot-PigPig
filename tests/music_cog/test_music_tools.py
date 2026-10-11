@@ -20,6 +20,9 @@ ACTION_TOOLS = {
     "stop_music",
     "set_music_loop_mode",
     "set_music_shuffle",
+    "set_music_volume",
+    "remove_song_from_queue",
+    "clear_music_queue",
 }
 
 
@@ -58,6 +61,15 @@ class FakeService:
 
     async def set_shuffle(self, ctx: PlaybackContext, enabled: bool) -> ActionResult:
         return await self._record("set_shuffle", ctx, enabled)
+
+    async def set_volume(self, ctx: PlaybackContext, percent: int) -> ActionResult:
+        return await self._record("set_volume", ctx, percent)
+
+    async def remove_from_queue(self, ctx: PlaybackContext, position: int) -> ActionResult:
+        return await self._record("remove_from_queue", ctx, position)
+
+    async def clear_queue(self, ctx: PlaybackContext) -> ActionResult:
+        return await self._record("clear_queue", ctx)
 
     def status(self, guild_id: int) -> Dict[str, Any]:
         self.calls.append(("status", guild_id))
@@ -141,6 +153,9 @@ async def test_failures_are_returned_as_error_text_the_model_can_relay() -> None
         ("stop_music", {}, ("stop",)),
         ("set_music_loop_mode", {"mode": "loop_queue"}, ("set_mode", "loop_queue")),
         ("set_music_shuffle", {"enabled": True}, ("set_shuffle", True)),
+        ("set_music_volume", {"percent": 30}, ("set_volume", 30)),
+        ("remove_song_from_queue", {"position": 2}, ("remove_from_queue", 2)),
+        ("clear_music_queue", {}, ("clear_queue",)),
     ],
 )
 async def test_each_control_calls_the_matching_service_method(
@@ -190,3 +205,33 @@ async def test_tools_report_a_missing_music_cog() -> None:
 
     assert reply.startswith("Error:")
     assert "not loaded" in reply
+
+
+@pytest.mark.asyncio
+async def test_remove_song_reports_which_song_was_removed() -> None:
+    service = FakeService()
+    service.result = ActionResult(ok=True, data={"title": "稻香", "position": 2})
+
+    reply = await _tools(_runtime(service))["remove_song_from_queue"].ainvoke({"position": 2})
+
+    assert "稻香" in reply
+
+
+@pytest.mark.asyncio
+async def test_clear_queue_reports_how_many_songs_were_removed() -> None:
+    service = FakeService()
+    service.result = ActionResult(ok=True, data={"removed": 4})
+
+    reply = await _tools(_runtime(service))["clear_music_queue"].ainvoke({})
+
+    assert "4" in reply
+
+
+@pytest.mark.asyncio
+async def test_volume_failures_are_returned_as_error_text() -> None:
+    service = FakeService()
+    service.result = ActionResult(ok=False, reason="invalid_volume", detail="Volume must be between 0 and 100.")
+
+    reply = await _tools(_runtime(service))["set_music_volume"].ainvoke({"percent": 500})
+
+    assert reply == "Error: Volume must be between 0 and 100."
