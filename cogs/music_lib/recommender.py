@@ -6,7 +6,7 @@ import random
 import re
 from collections import Counter, deque
 from dataclasses import dataclass, field
-from typing import Any, Deque, Dict, Iterable, List, Set, Tuple
+from typing import Any, Deque, Dict, Iterable, List, Optional, Set, Tuple
 
 # Score weights, relative to a Mix order score that runs from 1.0 (first) down to 0.
 REQUEST_BONUS_PER_REQUEST = 0.3
@@ -35,25 +35,37 @@ def normalize_author(author: str) -> str:
 
 @dataclass
 class TasteMemory:
-    """What one guild has played, requested and skipped (kept in memory only).
+    """What one guild has played, requested and skipped.
+
+    With a ``store`` the memory is loaded from it and every change is saved to it, so it
+    survives restarts; without one it lives in memory only.
 
     Attributes:
         history_size: How many recently played video IDs are remembered.
         requested: Count of explicit user requests per normalized author.
         skipped: Count of quickly skipped recommendations per normalized author.
+        store: Where the memory is persisted, if anywhere.
+        guild_id: The guild this memory belongs to (key in the store).
     """
 
     history_size: int
     requested: Counter = field(default_factory=Counter)
     skipped: Counter = field(default_factory=Counter)
+    store: Optional[Any] = None
+    guild_id: int = 0
     _history: Deque[str] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._history = deque(maxlen=self.history_size)
+        if self.store is not None:
+            played, self.requested, self.skipped = self.store.load(self.guild_id, self.history_size)
+            self._history.extend(played)
 
     def record_played(self, video_id: str) -> None:
         """Remembers that a song was played."""
         self._history.append(video_id)
+        if self.store is not None:
+            self.store.add_played(self.guild_id, video_id, self.history_size)
 
     def played_ids(self) -> Set[str]:
         """Returns the recently played video IDs."""
@@ -61,11 +73,17 @@ class TasteMemory:
 
     def record_request(self, author: str) -> None:
         """Counts a user's explicit request for a song by ``author``."""
-        self.requested[normalize_author(author)] += 1
+        name = normalize_author(author)
+        self.requested[name] += 1
+        if self.store is not None:
+            self.store.add_request(self.guild_id, name)
 
     def record_skip(self, author: str) -> None:
         """Counts a recommendation by ``author`` that was skipped right away."""
-        self.skipped[normalize_author(author)] += 1
+        name = normalize_author(author)
+        self.skipped[name] += 1
+        if self.store is not None:
+            self.store.add_skip(self.guild_id, name)
 
 
 def filter_candidates(

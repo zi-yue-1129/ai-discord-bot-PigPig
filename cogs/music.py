@@ -18,6 +18,7 @@ from .music_lib.queue_manager import QueueManager, PlayMode
 from .music_lib.context import PlaybackContext, user_shares_voice_channel
 from .music_lib.prefetch import Prefetcher
 from .music_lib.recommender import TasteMemory
+from .music_lib.taste_store import TasteStore
 from .music_lib.service import MusicService, classify_query
 from .music_lib.ui_manager import UIManager
 from .music_lib.ui.song_select import SongSelectView
@@ -55,6 +56,7 @@ class YTMusic(commands.Cog):
         # Monotonic clock used to measure how long a song has really played (replaced in tests).
         self._clock = time.monotonic
         # What each guild plays, requests and skips; guides autoplay recommendations.
+        self._taste_store = TasteStore(music_config.autoplay.database_path)
         self._taste: Dict[int, TasteMemory] = {}
         self.service = MusicService(self, music_config.ai, music_config.streaming)
         self.prefetcher = Prefetcher(
@@ -66,7 +68,9 @@ class YTMusic(commands.Cog):
     def taste_for(self, guild_id: int) -> TasteMemory:
         """Returns the taste memory of a guild, creating it on first use."""
         if guild_id not in self._taste:
-            self._taste[guild_id] = TasteMemory(history_size=music_config.autoplay.history_size)
+            self._taste[guild_id] = TasteMemory(
+                history_size=music_config.autoplay.history_size, store=self._taste_store, guild_id=guild_id
+            )
         return self._taste[guild_id]
 
     async def setup_hook(self):

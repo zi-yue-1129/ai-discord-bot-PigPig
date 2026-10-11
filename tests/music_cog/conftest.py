@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -21,6 +22,7 @@ from music_cog.helpers import (
 from cogs.music import YTMusic
 from cogs.music_lib.context import PlaybackContext
 from cogs.music_lib.state_manager import StateManager
+from cogs.music_lib.taste_store import TasteStore
 
 
 @pytest.fixture
@@ -46,7 +48,7 @@ def guild(voice_client: FakeVoiceClient) -> SimpleNamespace:
 
 @pytest.fixture
 def cog(
-    guild: SimpleNamespace, voice_client: FakeVoiceClient, monkeypatch: pytest.MonkeyPatch
+    guild: SimpleNamespace, voice_client: FakeVoiceClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> YTMusic:
     """A music cog wired to fakes; no Discord connection or network is used."""
 
@@ -70,6 +72,8 @@ def cog(
     )
     music = YTMusic(bot)
     music.lang_manager = FakeLangManager()
+    # Never touch the real data/music/taste.db from a test.
+    music._taste_store = TasteStore(tmp_path / "taste.db")
     return music
 
 

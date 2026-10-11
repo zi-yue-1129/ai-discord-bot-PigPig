@@ -239,6 +239,7 @@ class AutoplaySettings:
         max_per_author: Cap on songs by one author in one recommendation batch.
         history_size: How many recently played songs per guild are never recommended again.
         skip_penalty_window_seconds: Skipping a recommendation within this time counts against its author.
+        database_path: SQLite file where each guild's taste (played, requested, skipped) is kept.
         banned_keywords: Titles containing any of these (case-insensitive) are not recommended.
     """
 
@@ -248,6 +249,7 @@ class AutoplaySettings:
     max_per_author: int = 2
     history_size: int = 50
     skip_penalty_window_seconds: int = 15
+    database_path: str = "data/music/taste.db"
     banned_keywords: tuple = ("1 hour", "10 hours", "slowed", "nightcore", "reaction", "8d audio")
 
     def __post_init__(self) -> None:

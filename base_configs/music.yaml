@@ -51,4 +51,5 @@ autoplay:
   max_per_author: 2                  # at most this many songs by one author per batch
   history_size: 50                   # recently played songs per guild that are never recommended again
   skip_penalty_window_seconds: 15    # skipping a recommendation this quickly counts against its author
+  database_path: "data/music/taste.db"  # SQLite file keeping each guild's taste across restarts
   banned_keywords: ["1 hour", "10 hours", "slowed", "nightcore", "reaction", "8d audio"]
