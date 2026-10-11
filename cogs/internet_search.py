@@ -184,7 +184,10 @@ class InternetSearchCog(commands.Cog):
                         blocked_msg = "❌ 搜尋服務暫時不可用，請稍後再試。(Search service is temporarily unavailable, please try again later.)"
                     await interaction.followup.send(content=blocked_msg)
                 else:
-                    await interaction.followup.send(content=f"Search failed: {e}")
+                    failed = self.lang_manager.translate(
+                        guild_id, "commands", "internet_search", "responses", "search_failed", error=type(e).__name__
+                    ) if self.lang_manager else f"Search failed: {type(e).__name__}"
+                    await interaction.followup.send(content=failed)
             except Exception:
                 pass
 
@@ -429,6 +432,15 @@ class InternetSearchCog(commands.Cog):
                 guild_id, "commands", "internet_search", "responses", "search_failed", error=str(e)
             ) if self.lang_manager else f"Search failed: {e}"
 
+    async def _remove_loading(self, message: Optional[discord.Message]) -> None:
+        """Deletes the "searching" card once the search failed, so it does not stay forever."""
+        if message is None:
+            return
+        try:
+            await message.delete()
+        except discord.HTTPException:
+            self.logger.warning("Could not remove the eat loading card", exc_info=True)
+
     async def eat_search(self, ctx, keyword: str = "_", message_to_edit: discord.Message = None):
         """Food recommendation search using WeightedRecommender and restaurant providers."""
         guild_id = "0"
@@ -480,6 +492,7 @@ class InternetSearchCog(commands.Cog):
                     guild_id, "commands", "internet_search", "errors", "eat_system_error",
                     keyword=keyword, error="No restaurants found"
                 ) if self.lang_manager else f"No restaurants found for {keyword}"
+                await self._remove_loading(followup_msg)
                 return error_msg
 
             # Step 4: Real-time fetch for the first result
@@ -528,6 +541,7 @@ class InternetSearchCog(commands.Cog):
 
         except Exception as e:
             await func.report_error(e, f"eat_search: {e}")
+            await self._remove_loading(followup_msg)
             return self.lang_manager.translate(
                 guild_id, "commands", "internet_search", "errors", "eat_system_error",
                 keyword=keyword, error=str(e)

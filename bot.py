@@ -45,6 +45,7 @@ import sys
 import os
 import traceback
 import update
+from addons.command_errors import describe_command_error
 from function import func, ROOT_DIR
 import json
 import asyncio
@@ -492,45 +493,7 @@ class PigPig(commands.Bot):
 
             lang_manager = self.get_cog("LanguageManager")
 
-            # Handle specific expected errors first
-            if isinstance(error, discord.app_commands.CommandOnCooldown):
-                if lang_manager:
-                    try:
-                        error_msg = lang_manager.translate(guild_id_str, "errors", "cooldown")
-                        if error_msg:
-                            error_msg = error_msg.format(retry_after=round(error.retry_after, 1))
-                        else:
-                            error_msg = f"⏳ 請稍後再試。此指令還在冷卻中，需等待 {error.retry_after:.1f} 秒。(Command on cooldown)"
-                    except Exception:
-                        error_msg = f"⏳ 請稍後再試。此指令還在冷卻中，需等待 {error.retry_after:.1f} 秒。(Command on cooldown)"
-                else:
-                    error_msg = f"⏳ 此指令冷卻中，請再等候 {error.retry_after:.1f} 秒。(Command on cooldown. Please wait {error.retry_after:.1f}s.)"
-
-            elif isinstance(error, discord.app_commands.MissingPermissions):
-                if lang_manager:
-                    try:
-                        error_msg = lang_manager.translate(guild_id_str, "errors", "permission_denied")
-                        if not error_msg:
-                            error_msg = "❌ 你沒有權限使用此指令。(Permission denied)"
-                    except Exception:
-                        error_msg = "❌ 你沒有權限使用此指令。(Permission denied)"
-                else:
-                    error_msg = "🚫 您沒有足夠的權限執行此指令。(You do not have permission to execute this command.)"
-
-            elif isinstance(error, discord.app_commands.BotMissingPermissions):
-                error_msg = "🤖 機器人缺少必要的權限來執行此指令。(The bot is missing necessary permissions to execute this command.)"
-
-            else:
-                # Send a general user-friendly error message
-                if lang_manager:
-                    try:
-                        error_msg = lang_manager.translate(guild_id_str, "system", "errors", "unexpected")
-                        if not error_msg or error_msg.startswith("[Translation not found"):
-                            error_msg = "❌ 抱歉，執行此指令時發生未預期的錯誤。(An unexpected error occurred.)"
-                    except Exception:
-                        error_msg = "❌ 抱歉，執行此指令時發生未預期的錯誤。(An unexpected error occurred.)"
-                else:
-                    error_msg = "❌ 抱歉，執行此指令時發生未預期的錯誤。(An unexpected error occurred.)"
+            error_msg = describe_command_error(error, lang_manager, guild_id_str)
 
             try:
                 if not interaction.response.is_done():

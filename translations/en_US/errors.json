@@ -1,3 +1,4 @@
 {
-    "permission_denied": "You don't have permission to use this command."
+    "permission_denied": "You don't have permission to use this command.",
+    "cooldown": "⏳ Please try again later. This command is on cooldown for {retry_after}s."
 }

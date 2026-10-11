@@ -70,7 +70,9 @@ class ChannelManager(commands.Cog):
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=4, ensure_ascii=False)
         except Exception as e:
+            # Report it, then let the command fail instead of telling the user the setting was saved.
             asyncio.create_task(func.report_error(e, f"saving config for guild {guild_id}"))
+            raise
 
     async def check_admin_permissions(self, interaction: discord.Interaction, *, defer: bool = False) -> bool:
         """Check if the user has administrator permissions or is the bot owner."""
@@ -96,6 +98,7 @@ class ChannelManager(commands.Cog):
             await interaction.response.send_message(error_message, ephemeral=True)
         return False
 
+    @app_commands.guild_only()
     @app_commands.command(name="set_server_mode", description="Set the server-wide response mode (Whitelist/Blacklist)")
     @app_commands.choices(mode=[
         app_commands.Choice(name="Unrestricted", value="unrestricted"),
@@ -124,6 +127,7 @@ class ChannelManager(commands.Cog):
 
         await interaction.edit_original_response(content=response)
 
+    @app_commands.guild_only()
     @app_commands.command(name="set_channel_mode", description="Set a special mode for a specific channel (e.g., Story Mode)")
     @app_commands.describe(channel="The channel to set", mode="The mode to set for this channel")
     @app_commands.choices(mode=[
@@ -170,6 +174,7 @@ class ChannelManager(commands.Cog):
         self.save_config(guild_id, config)
         await interaction.edit_original_response(content=message)
 
+    @app_commands.guild_only()
     @app_commands.command(name="add_channel", description="Add channel to whitelist or blacklist")
     @app_commands.choices(list_type=[
         app_commands.Choice(name="Whitelist", value="whitelist"),
@@ -213,6 +218,7 @@ class ChannelManager(commands.Cog):
             
             await interaction.edit_original_response(content=exists_message)
 
+    @app_commands.guild_only()
     @app_commands.command(name="remove_channel", description="Remove channel from whitelist or blacklist")
     @app_commands.choices(list_type=[
         app_commands.Choice(name="Whitelist", value="whitelist"),
@@ -256,6 +262,7 @@ class ChannelManager(commands.Cog):
             
             await interaction.edit_original_response(content=not_found_message)
 
+    @app_commands.guild_only()
     @app_commands.command(name="auto_response", description="Set channel auto-response")
     async def auto_response_command(self, interaction: discord.Interaction, channel: Union[discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.Thread], enabled: bool):
         """Enable or disable automatic bot responses in a specific channel."""
