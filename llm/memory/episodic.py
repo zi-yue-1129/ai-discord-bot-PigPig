@@ -18,12 +18,32 @@ from function import func
 
 _LOGGER = get_logger(server_id="Bot", source="llm.memory.episodic")
 
-# Messages shorter than this word count (after stripping mentions) are skipped
-# to avoid meaningless vector searches on greetings like "hi" or "ok".
+# Messages shorter than this many tokens (after stripping mentions) are skipped
+# to avoid meaningless vector searches on greetings like "hi" or "早安".
 _MIN_QUERY_TOKENS = 4
+
+# Fragments scoring below this cosine similarity are not injected. Measured on the
+# live collection (qwen3-embedding-4b): noise queries ("哈哈哈哈", "asdf qwer zxcv",
+# arithmetic) peak at 0.63-0.65, while questions about real past topics hit 0.69-0.79.
+_MIN_RELEVANCE_SCORE = 0.68
 
 # Pattern to strip Discord mention tags from message content
 _MENTION_RE = re.compile(r"<@!?\d+>")
+
+# CJK ideographs, kana and hangul: these scripts do not separate words with spaces
+_CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]")
+
+
+def _query_tokens(query: str) -> int:
+    """Counts query tokens: each CJK character plus each space-separated word.
+
+    Args:
+        query: Message text without mentions.
+
+    Returns:
+        The token count used for the minimum-length check.
+    """
+    return len(_CJK_RE.findall(query)) + len(_CJK_RE.sub(" ", query).split())
 
 
 class EpisodicMemoryProvider:
@@ -94,7 +114,7 @@ class EpisodicMemoryProvider:
         query = _MENTION_RE.sub("", raw).strip()
 
         # Skip trivially short messages (greetings, reactions, single words)
-        if len(query.split()) < _MIN_QUERY_TOKENS:
+        if _query_tokens(query) < _MIN_QUERY_TOKENS:
             return None
 
         channel_id = str(message.channel.id)
@@ -124,6 +144,7 @@ class EpisodicMemoryProvider:
                     query_text=query,
                     limit=self.top_k,
                     channel_id=channel_id,
+                    min_score=_MIN_RELEVANCE_SCORE,
                 )
             except Exception as e:
                 await func.report_error(e, "EpisodicMemoryProvider.get: vector search failed")

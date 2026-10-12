@@ -257,16 +257,7 @@ class PigPig(commands.Bot):
                     message.author.display_name
                 ))
 
-            # Record message event for dashboard statistics
-            try:
-                if hasattr(self, 'stats_collector') and self.stats_collector:
-                    await self.stats_collector.record_message(
-                        guild_id=str(message.guild.id),
-                        user_id=str(message.author.id),
-                        channel_id=str(message.channel.id),
-                    )
-            except Exception:
-                pass  # Stats recording must never block message handling
+            # Dashboard message events are recorded by StatsCog.on_message.
 
             guild_id = str(message.guild.id)
             self.setup_logger_for_guild(guild_id)

@@ -140,9 +140,8 @@ class UserMemoryTools:
                 user_id: The Discord user's ID.
     
             Returns:
-                A string containing the stored memory. If no memory is found,
-                it returns a "not found" message. If the requested user is not in
-                the DB, fallback to the message author when available.
+                A string containing the stored memory, or ``data_not_found`` when
+                nothing is stored for that user.
             """
             cog = get_cog()
             if not cog:
@@ -154,80 +153,15 @@ class UserMemoryTools:
                     extra={"user_id": user_id}
                 )
     
-                # Determine effective user id. If the LLM provided an invalid value,
-                # default to the author of the triggering message (if available).
-                effective_id = None
+                # Only the requested user's memory is ever returned; an unknown user is
+                # reported as such instead of being replaced by the message author.
                 try:
-                    # Accept ints and int-like strings
                     effective_id = int(user_id)
-                except Exception:
-                    msg = getattr(runtime, "message", None)
-                    if msg and getattr(msg, "author", None):
-                        logger.warning(
-                            "read_user_memory: LLM provided invalid user_id; defaulting to message author",
-                            extra={"provided_user_id": user_id, "author_id": getattr(msg.author, "id", None)}
-                        )
-                        effective_id = msg.author.id
-                    else:
-                        # No message context: fall back to string form of provided id.
-                        logger.warning(
-                            "read_user_memory: invalid user_id and no message context; using raw value",
-                            extra={"user_id": user_id}
-                        )
-                        effective_id = user_id
-    
-                # If the provided id exists in DB use it; otherwise fallback to message author (if available).
-                try:
-                    user_mgr = getattr(cog, "user_manager", None)
-                    if user_mgr:
-                        exists = await user_mgr.get_user_info(str(effective_id))
-                        if not exists:
-                            msg = getattr(runtime, "message", None)
-                            author_id = None
-                            if msg and getattr(msg, "author", None):
-                                author_id = getattr(msg.author, "id", None)
-                            # If no author found, try interaction user on runtime.message if it's an Interaction
-                            if not author_id:
-                                maybe_interaction = getattr(runtime, "message", None)
-                                if isinstance(maybe_interaction, discord.Interaction) and getattr(maybe_interaction, "user", None):
-                                    author_id = getattr(maybe_interaction.user, "id", None)
-                            
-                            # Fallback to author if original effective_id wasn't valid, but if effective_id IS valid
-                            # (or author_id is effective_id), we initialize their record to ensure they exist.
-                            target_id = author_id if author_id else effective_id
-                            if target_id:
-                                effective_id = target_id
-                                
-                                # Validate against Discord API before creating
-                                bot = self._get_bot()
-                                is_valid = False
-                                if bot:
-                                    try:
-                                        fetched = bot.get_user(int(effective_id)) or await bot.fetch_user(int(effective_id))
-                                        if fetched:
-                                            is_valid = True
-                                    except Exception as e:
-                                        logger.warning(f"Validation failed for {effective_id}: {e}")
-                                
-                                if is_valid:
-                                    logger.info(
-                                        "User not in DB. Initializing basic record.",
-                                        extra={"target_id": target_id}
-                                    )
-                                    # Use discord name and nickname for initialization
-                                    discord_name = getattr(fetched, "name", str(effective_id))
-                                    nickname = getattr(fetched, "display_name", None)
-                                    await user_mgr.update_user_activity(str(effective_id), discord_name, nickname)
-                                    exists = True
-                                else:
-                                    logger.warning(f"Refusing to initialize {effective_id}: Not a valid Discord ID.")
-                                    # Do not return data_not_found here, just let it fail naturally to cog fallback
-                                    pass
+                except (TypeError, ValueError):
+                    return f"Error: invalid user_id {user_id!r}; pass the numeric Discord user ID."
 
-                except Exception as e:
-                    logger.warning(f"read_user_memory: fallback existence check or initialization failed: {e}")
-    
-                if not exists:
+                user_mgr = getattr(cog, "user_manager", None)
+                if user_mgr and not await user_mgr.get_user_info(str(effective_id)):
                     return "data_not_found"
                     
                 # Ensure cog receives a string user_id (storage uses text keys).

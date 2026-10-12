@@ -1,0 +1,233 @@
+"""Knowledge stays within a size budget; user memory is never swapped for the asker's."""
+
+from __future__ import annotations
+
+import asyncio
+from types import SimpleNamespace
+from typing import Any, Dict, List, Optional
+
+import pytest
+
+from cogs import userdata
+from cogs.memory.db.knowledge_storage import MAX_KNOWLEDGE_CHARS
+from cogs.userdata import UserDataCog
+from llm.tools.user_data import UserMemoryTools
+
+TARGET = "111"
+ASKER = "222"
+
+
+class _Logger:
+    def __init__(self) -> None:
+        self.lines: List[str] = []
+
+    def info(self, text: str, *args: Any, **kwargs: Any) -> None:
+        self.lines.append(text)
+
+    warning = error = info
+
+
+class _FakeModel:
+    def __init__(self, reply: Any) -> None:
+        self.reply = reply
+        self.messages: List[Dict[str, str]] = []
+
+    def with_structured_output(self, schema: Any) -> "_FakeModel":
+        assert schema is userdata.UserDataResponse
+        return self
+
+    async def ainvoke(self, messages: List[Dict[str, str]]) -> Any:
+        self.messages = messages
+        return self.reply
+
+
+@pytest.fixture
+def fake_model(monkeypatch: pytest.MonkeyPatch) -> _FakeModel:
+    model = _FakeModel(SimpleNamespace(content="### General Info\n- merged"))
+    monkeypatch.setattr(userdata, "ModelManager", lambda: SimpleNamespace(get_model=lambda name, guild_id: ("m", None)))
+    monkeypatch.setattr(userdata, "create_model_instance", lambda model_id, guild_id, max_retries: model)
+    return model
+
+
+# ------------------------------------------------------- #12 knowledge size
+
+
+@pytest.mark.asyncio
+async def test_the_merge_prompt_states_the_size_budget(fake_model: _FakeModel) -> None:
+    cog = SimpleNamespace(logger=_Logger())
+
+    await UserDataCog._invoke_knowledge_merge_agent(cog, "old", "new fact", "guild", "general", guild_id="1")
+
+    assert str(MAX_KNOWLEDGE_CHARS) in fake_model.messages[1]["content"]
+
+
+class _KnowledgeStore:
+    def __init__(self) -> None:
+        self.saved: List[str] = []
+
+    async def get_knowledge(self, target_type: str, target_id: str) -> Optional[str]:
+        return "old knowledge"
+
+    async def update_knowledge(self, target_type: str, target_id: str, content: str) -> bool:
+        self.saved.append(content)
+        return True
+
+
+def _knowledge_cog(merges: List[str]) -> SimpleNamespace:
+    pending = list(merges)
+    requests: List[str] = []
+
+    async def merge(existing: Optional[str], new: str, target_type: str, category: str, *, guild_id: str) -> str:
+        requests.append(new)
+        return pending.pop(0)
+
+    return SimpleNamespace(
+        _knowledge_lock=asyncio.Lock(),
+        _get_guild_id_from_context=lambda context: "1",
+        _invoke_knowledge_merge_agent=merge,
+        knowledge_storage=_KnowledgeStore(),
+        logger=_Logger(),
+        bot=SimpleNamespace(orchestrator=None),
+        requests=requests,
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_merge_is_condensed_before_saving() -> None:
+    cog = _knowledge_cog(["x" * (MAX_KNOWLEDGE_CHARS + 1), "condensed"])
+
+    await UserDataCog._save_knowledge_data(cog, "guild", "1", "new fact", "general", context=None)
+
+    assert cog.knowledge_storage.saved == ["condensed"]
+    assert len(cog.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_knowledge_that_cannot_be_condensed_is_not_saved() -> None:
+    too_long = "x" * (MAX_KNOWLEDGE_CHARS + 1)
+    cog = _knowledge_cog([too_long, too_long])
+
+    result = await UserDataCog._save_knowledge_data(cog, "guild", "1", "new fact", "general", context=None)
+
+    assert cog.knowledge_storage.saved == []
+    assert str(MAX_KNOWLEDGE_CHARS) in result
+
+
+class _Followup:
+    def __init__(self, sent: List[str]) -> None:
+        self.sent = sent
+
+    async def send(self, content: str, ephemeral: bool = False) -> None:
+        assert ephemeral
+        self.sent.append(content)
+
+
+class _Interaction:
+    def __init__(self) -> None:
+        self.sent: List[str] = []
+        self.guild_id = 1
+        self.channel_id = 2
+        self.response = SimpleNamespace(defer=self._defer)
+        self.followup = _Followup(self.sent)
+
+    async def _defer(self, thinking: bool, ephemeral: bool) -> None:
+        assert ephemeral
+
+    async def edit_original_response(self, content: str) -> None:
+        self.sent.append(content)
+
+
+@pytest.mark.asyncio
+async def test_showing_long_knowledge_is_split_into_discord_sized_messages() -> None:
+    lines = "\n".join(f"- fact number {index} " + "y" * 40 for index in range(60))
+    store = _KnowledgeStore()
+
+    async def stored(target_type: str, target_id: str) -> str:
+        return lines
+
+    store.get_knowledge = stored
+    cog = SimpleNamespace(
+        lang_manager=object(),
+        knowledge_storage=store,
+        logger=_Logger(),
+        _translate=lambda guild_id, *path, fallback_key, **kwargs: kwargs.get("content", fallback_key),
+    )
+    interaction = _Interaction()
+
+    await UserDataCog.knowledge_show.callback(cog, interaction, SimpleNamespace(value="guild"))
+
+    assert len(interaction.sent) > 1
+    assert all(len(message) <= 2000 for message in interaction.sent)
+    assert "\n".join(interaction.sent) == lines
+
+
+# ------------------------------------------------------ #13 user memory
+
+
+@pytest.mark.asyncio
+async def test_user_memory_is_merged_without_translating(
+    fake_model: _FakeModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(userdata.prompt_config, "get_system_prompt", lambda name: None)
+    fake_model.reply = userdata.UserDataResponse(procedural_memory="likes ramen")
+
+    await UserDataCog._invoke_ai_merge_agent(SimpleNamespace(), None, "喜歡拉麵", TARGET, guild_id="1")
+
+    system, user = (message["content"] for message in fake_model.messages)
+    assert "Traditional Chinese" not in system
+    assert "translate" in user
+
+
+class _Users:
+    def __init__(self) -> None:
+        self.asked: List[str] = []
+        self.created: List[str] = []
+
+    async def update_user_activity(self, user_id: str, name: str, nickname: Optional[str]) -> None:
+        self.created.append(user_id)
+
+    async def get_user_info(self, user_id: str) -> Optional[Any]:
+        self.asked.append(user_id)
+        if user_id == ASKER:
+            return SimpleNamespace(procedural_memory="asker secret", user_background="", display_names=[])
+        return None
+
+
+@pytest.mark.asyncio
+async def test_reading_an_unknown_user_does_not_return_the_askers_memory() -> None:
+    users = _Users()
+    cog = SimpleNamespace(
+        user_manager=users,
+        logger=_Logger(),
+        _get_guild_id_from_context=lambda context: "1",
+        _extract_user_id_from_context=lambda context: ASKER,
+        _translate=lambda guild_id, *path, fallback_key, **kwargs: fallback_key,
+    )
+    message = SimpleNamespace(author=SimpleNamespace(id=int(ASKER)))
+
+    result = await UserDataCog._read_user_data(cog, TARGET, message)
+
+    assert result == "data_not_found"
+    assert users.asked == [TARGET]
+
+
+@pytest.mark.asyncio
+async def test_the_read_tool_reports_an_unknown_user_instead_of_the_asker() -> None:
+    users = _Users()
+    reads: List[str] = []
+
+    async def read(user_id: str, context: Any) -> str:
+        reads.append(user_id)
+        return "data"
+
+    cog = SimpleNamespace(user_manager=users, _read_user_data=read)
+    bot = SimpleNamespace(get_cog=lambda name: cog, get_user=lambda user_id: SimpleNamespace(id=user_id, name="n"))
+    message = SimpleNamespace(author=SimpleNamespace(id=int(ASKER)), guild=SimpleNamespace(id=1))
+    runtime = SimpleNamespace(bot=bot, message=message, logger=_Logger())
+    (tool,) = [t for t in UserMemoryTools(runtime).get_tools() if t.name == "read_user_memory"]
+
+    result = await tool.ainvoke({"user_id": int(TARGET)})
+
+    assert result == "data_not_found"
+    assert reads == []
+    assert users.created == []

@@ -11,7 +11,7 @@ import re
 import sqlite3
 import asyncio
 from collections import Counter
-from datetime import datetime, date
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set
 
 from .connection import DatabaseConnection
@@ -56,6 +56,9 @@ _DISCORD_EMOJI_RE = re.compile(r"<a?:\w+:\d+>")
 
 # Maximum number of words to keep in top_words to prevent unbounded growth
 _MAX_TOP_WORDS = 200
+
+# config-table key: first log day (UTC, YYYYMMDD) whose messages were counted live
+_LIVE_SINCE_KEY = "stats.live_since"
 
 
 class StatsStorage:
@@ -139,118 +142,8 @@ class StatsStorage:
         channel_id: str,
         timestamp: str,
     ) -> None:
-        # Parse timestamp
-        try:
-            dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-        except (ValueError, AttributeError):
-            dt = datetime.utcnow()
-
-        hour_key = str(dt.hour)
-        today_str = dt.strftime("%Y-%m-%d")
-
-        # Extract emojis
-        emojis = _extract_emojis(message_content)
-
-        # Segment words with jieba
-        words = _segment_words(message_content)
-
         with self.db.get_connection() as conn:
-            # Read existing row
-            cursor = conn.execute(
-                "SELECT * FROM user_stats WHERE user_id = ? AND guild_id = ?",
-                (user_id, guild_id),
-            )
-            existing = cursor.fetchone()
-
-            if existing:
-                row = dict(existing)
-                total = row.get("total_messages", 0) + 1
-
-                # Merge JSON fields
-                active_hours = _safe_json_load(row.get("active_hours", "{}"))
-                active_hours[hour_key] = active_hours.get(hour_key, 0) + 1
-
-                top_channels = _safe_json_load(row.get("top_channels", "{}"))
-                if channel_id:
-                    top_channels[channel_id] = (
-                        top_channels.get(channel_id, 0) + 1
-                    )
-
-                top_emojis = _safe_json_load(row.get("top_emojis", "{}"))
-                for em in emojis:
-                    top_emojis[em] = top_emojis.get(em, 0) + 1
-
-                top_words_dict = _safe_json_load(row.get("top_words", "{}"))
-                for w in words:
-                    top_words_dict[w] = top_words_dict.get(w, 0) + 1
-                top_words_dict = _trim_top_words(top_words_dict)
-
-                # Streak calculation
-                streak_last = row.get("streak_last_date")
-                streak_days = row.get("streak_days", 0)
-                streak_days, streak_last_date = _compute_streak(
-                    streak_days, streak_last, today_str
-                )
-
-                first_message_at = row.get("first_message_at") or timestamp
-
-                conn.execute(
-                    """
-                    UPDATE user_stats SET
-                        total_messages = ?,
-                        active_hours = ?,
-                        top_channels = ?,
-                        top_emojis = ?,
-                        top_words = ?,
-                        streak_days = ?,
-                        streak_last_date = ?,
-                        last_active_at = ?,
-                        first_message_at = ?
-                    WHERE user_id = ? AND guild_id = ?
-                    """,
-                    (
-                        total,
-                        json.dumps(active_hours, ensure_ascii=False),
-                        json.dumps(top_channels, ensure_ascii=False),
-                        json.dumps(top_emojis, ensure_ascii=False),
-                        json.dumps(top_words_dict, ensure_ascii=False),
-                        streak_days,
-                        streak_last_date,
-                        timestamp,
-                        first_message_at,
-                        user_id,
-                        guild_id,
-                    ),
-                )
-            else:
-                # First message ever for this user in this guild
-                active_hours = {hour_key: 1}
-                top_channels = {channel_id: 1} if channel_id else {}
-                top_emojis_dict = dict(Counter(emojis))
-                top_words_dict = dict(Counter(words))
-                top_words_dict = _trim_top_words(top_words_dict)
-
-                conn.execute(
-                    """
-                    INSERT INTO user_stats (
-                        user_id, guild_id, total_messages,
-                        active_hours, top_channels, top_emojis, top_words,
-                        streak_days, streak_last_date,
-                        last_active_at, first_message_at
-                    ) VALUES (?, ?, 1, ?, ?, ?, ?, 1, ?, ?, ?)
-                    """,
-                    (
-                        user_id,
-                        guild_id,
-                        json.dumps(active_hours, ensure_ascii=False),
-                        json.dumps(top_channels, ensure_ascii=False),
-                        json.dumps(top_emojis_dict, ensure_ascii=False),
-                        json.dumps(top_words_dict, ensure_ascii=False),
-                        today_str,
-                        timestamp,
-                        timestamp,
-                    ),
-                )
+            _apply_message(conn, user_id, guild_id, message_content, channel_id, timestamp)
             conn.commit()
 
     async def bulk_upsert_user_stats(self, records: List[Dict[str, Any]]) -> None:
@@ -266,115 +159,14 @@ class StatsStorage:
     def _bulk_upsert_user_stats_sync(self, records: List[Dict[str, Any]]) -> None:
         with self.db.get_connection() as conn:
             for rec in records:
-                user_id = rec["user_id"]
-                guild_id = rec["guild_id"]
-                message_content = rec["message_content"]
-                channel_id = rec["channel_id"]
-                timestamp = rec["timestamp"]
-
-                try:
-                    dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-                except (ValueError, AttributeError):
-                    dt = datetime.utcnow()
-
-                hour_key = str(dt.hour)
-                today_str = dt.strftime("%Y-%m-%d")
-
-                emojis = _extract_emojis(message_content)
-                words = _segment_words(message_content)
-
-                cursor = conn.execute(
-                    "SELECT * FROM user_stats WHERE user_id = ? AND guild_id = ?",
-                    (user_id, guild_id),
+                _apply_message(
+                    conn,
+                    rec["user_id"],
+                    rec["guild_id"],
+                    rec["message_content"],
+                    rec["channel_id"],
+                    rec["timestamp"],
                 )
-                existing = cursor.fetchone()
-
-                if existing:
-                    row = dict(existing)
-                    total = row.get("total_messages", 0) + 1
-
-                    active_hours = _safe_json_load(row.get("active_hours", "{}"))
-                    active_hours[hour_key] = active_hours.get(hour_key, 0) + 1
-
-                    top_channels = _safe_json_load(row.get("top_channels", "{}"))
-                    if channel_id:
-                        top_channels[channel_id] = (
-                            top_channels.get(channel_id, 0) + 1
-                        )
-
-                    top_emojis = _safe_json_load(row.get("top_emojis", "{}"))
-                    for em in emojis:
-                        top_emojis[em] = top_emojis.get(em, 0) + 1
-
-                    top_words_dict = _safe_json_load(row.get("top_words", "{}"))
-                    for w in words:
-                        top_words_dict[w] = top_words_dict.get(w, 0) + 1
-                    top_words_dict = _trim_top_words(top_words_dict)
-
-                    streak_last = row.get("streak_last_date")
-                    streak_days = row.get("streak_days", 0)
-                    streak_days, streak_last_date = _compute_streak(
-                        streak_days, streak_last, today_str
-                    )
-
-                    first_message_at = row.get("first_message_at") or timestamp
-
-                    conn.execute(
-                        """
-                        UPDATE user_stats SET
-                            total_messages = ?,
-                            active_hours = ?,
-                            top_channels = ?,
-                            top_emojis = ?,
-                            top_words = ?,
-                            streak_days = ?,
-                            streak_last_date = ?,
-                            last_active_at = ?,
-                            first_message_at = ?
-                        WHERE user_id = ? AND guild_id = ?
-                        """,
-                        (
-                            total,
-                            json.dumps(active_hours, ensure_ascii=False),
-                            json.dumps(top_channels, ensure_ascii=False),
-                            json.dumps(top_emojis, ensure_ascii=False),
-                            json.dumps(top_words_dict, ensure_ascii=False),
-                            streak_days,
-                            streak_last_date,
-                            timestamp,
-                            first_message_at,
-                            user_id,
-                            guild_id,
-                        ),
-                    )
-                else:
-                    active_hours = {hour_key: 1}
-                    top_channels = {channel_id: 1} if channel_id else {}
-                    top_emojis_dict = dict(Counter(emojis))
-                    top_words_dict = dict(Counter(words))
-                    top_words_dict = _trim_top_words(top_words_dict)
-
-                    conn.execute(
-                        """
-                        INSERT INTO user_stats (
-                            user_id, guild_id, total_messages,
-                            active_hours, top_channels, top_emojis, top_words,
-                            streak_days, streak_last_date,
-                            last_active_at, first_message_at
-                        ) VALUES (?, ?, 1, ?, ?, ?, ?, 1, ?, ?, ?)
-                        """,
-                        (
-                            user_id,
-                            guild_id,
-                            json.dumps(active_hours, ensure_ascii=False),
-                            json.dumps(top_channels, ensure_ascii=False),
-                            json.dumps(top_emojis_dict, ensure_ascii=False),
-                            json.dumps(top_words_dict, ensure_ascii=False),
-                            today_str,
-                            timestamp,
-                            timestamp,
-                        ),
-                    )
             conn.commit()
 
     # ------------------------------------------------------------------
@@ -422,10 +214,162 @@ class StatsStorage:
             )
             conn.commit()
 
+    async def get_or_init_live_since(self, today: str) -> str:
+        """Returns the first log day whose messages were already counted live.
+
+        Logs are written by the running bot, which counts every message as it
+        arrives, so only days before this marker may be imported from logs. The
+        marker is set once: after the earliest recorded import when upgrading
+        (every later day was counted live), otherwise today.
+
+        Args:
+            today: Today's log-folder date (UTC, ``YYYYMMDD``).
+
+        Returns:
+            The marker date (``YYYYMMDD``).
+        """
+        return await asyncio.to_thread(self._get_or_init_live_since_sync, today)
+
+    def _get_or_init_live_since_sync(self, today: str) -> str:
+        with self.db.get_connection() as conn:
+            row = conn.execute("SELECT value FROM config WHERE key = ?", (_LIVE_SINCE_KEY,)).fetchone()
+            if row:
+                return row["value"]
+            earliest = conn.execute("SELECT MIN(last_processed_date) AS day FROM log_migration_state").fetchone()
+            if earliest and earliest["day"]:
+                live_since = (datetime.strptime(earliest["day"], "%Y%m%d") + timedelta(days=1)).strftime("%Y%m%d")
+            else:
+                live_since = today
+            conn.execute("INSERT INTO config (key, value) VALUES (?, ?)", (_LIVE_SINCE_KEY, live_since))
+            conn.commit()
+            return live_since
+
 
 # ======================================================================
 # Helper functions (module-private)
 # ======================================================================
+
+
+def _local_time(timestamp: str) -> datetime:
+    """Parses a message timestamp and converts it to the server's local time.
+
+    Discord and the logs give UTC; hours and streak days are shown as local time.
+
+    Args:
+        timestamp: ISO-8601 timestamp, possibly ending in ``Z``.
+
+    Returns:
+        The aware local datetime (now, when the timestamp cannot be parsed).
+    """
+    try:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        logger.warning("Unparseable stats timestamp %r; using the current time.", timestamp)
+        return datetime.now().astimezone()
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone()
+
+
+def _apply_message(
+    conn: sqlite3.Connection,
+    user_id: str,
+    guild_id: str,
+    message_content: str,
+    channel_id: str,
+    timestamp: str,
+) -> None:
+    """Adds one message to a user's cumulative stats row (without committing).
+
+    Args:
+        conn: Open connection to the procedural database.
+        user_id: Author's Discord ID.
+        guild_id: Guild the message was sent in.
+        message_content: Message text.
+        channel_id: Channel the message was sent in.
+        timestamp: ISO-8601 send time.
+    """
+    local_time = _local_time(timestamp)
+    hour_key = str(local_time.hour)
+    today_str = local_time.strftime("%Y-%m-%d")
+    emojis = _extract_emojis(message_content)
+    words = _segment_words(message_content)
+
+    existing = conn.execute(
+        "SELECT * FROM user_stats WHERE user_id = ? AND guild_id = ?",
+        (user_id, guild_id),
+    ).fetchone()
+
+    if not existing:
+        conn.execute(
+            """
+            INSERT INTO user_stats (
+                user_id, guild_id, total_messages,
+                active_hours, top_channels, top_emojis, top_words,
+                streak_days, streak_last_date,
+                last_active_at, first_message_at
+            ) VALUES (?, ?, 1, ?, ?, ?, ?, 1, ?, ?, ?)
+            """,
+            (
+                user_id,
+                guild_id,
+                json.dumps({hour_key: 1}, ensure_ascii=False),
+                json.dumps({channel_id: 1} if channel_id else {}, ensure_ascii=False),
+                json.dumps(dict(Counter(emojis)), ensure_ascii=False),
+                json.dumps(_add_words({}, words), ensure_ascii=False),
+                today_str,
+                timestamp,
+                timestamp,
+            ),
+        )
+        return
+
+    row = dict(existing)
+    active_hours = _safe_json_load(row.get("active_hours", "{}"))
+    active_hours[hour_key] = active_hours.get(hour_key, 0) + 1
+
+    top_channels = _safe_json_load(row.get("top_channels", "{}"))
+    if channel_id:
+        top_channels[channel_id] = top_channels.get(channel_id, 0) + 1
+
+    top_emojis = _safe_json_load(row.get("top_emojis", "{}"))
+    for em in emojis:
+        top_emojis[em] = top_emojis.get(em, 0) + 1
+
+    top_words = _add_words(_safe_json_load(row.get("top_words", "{}")), words)
+
+    streak_days, streak_last_date = _compute_streak(
+        row.get("streak_days", 0), row.get("streak_last_date"), today_str
+    )
+
+    conn.execute(
+        """
+        UPDATE user_stats SET
+            total_messages = ?,
+            active_hours = ?,
+            top_channels = ?,
+            top_emojis = ?,
+            top_words = ?,
+            streak_days = ?,
+            streak_last_date = ?,
+            last_active_at = ?,
+            first_message_at = ?
+        WHERE user_id = ? AND guild_id = ?
+        """,
+        (
+            row.get("total_messages", 0) + 1,
+            json.dumps(active_hours, ensure_ascii=False),
+            json.dumps(top_channels, ensure_ascii=False),
+            json.dumps(top_emojis, ensure_ascii=False),
+            json.dumps(top_words, ensure_ascii=False),
+            streak_days,
+            streak_last_date,
+            timestamp,
+            row.get("first_message_at") or timestamp,
+            user_id,
+            guild_id,
+        ),
+    )
 
 
 def _safe_json_load(raw: Any) -> Dict[str, int]:
@@ -490,12 +434,32 @@ def _segment_words(text: str) -> List[str]:
     return words
 
 
-def _trim_top_words(words_dict: Dict[str, int]) -> Dict[str, int]:
-    """Keep only the top N words by frequency to prevent unbounded growth."""
-    if len(words_dict) <= _MAX_TOP_WORDS:
-        return words_dict
-    sorted_items = sorted(words_dict.items(), key=lambda x: x[1], reverse=True)
-    return dict(sorted_items[:_MAX_TOP_WORDS])
+def _add_words(top_words: Dict[str, int], words: List[str]) -> Dict[str, int]:
+    """Counts words into a bounded table with the Space-Saving algorithm.
+
+    When the table is full, a new word replaces the least-counted entry and
+    inherits its count plus one. Plain top-N trimming would drop every new word
+    (count 1) forever once the table filled, freezing the word cloud; with
+    Space-Saving any word used often enough is guaranteed to get in.
+
+    Args:
+        top_words: Existing word counts (modified and returned).
+        words: Words from one message.
+
+    Returns:
+        The updated table, at most ``_MAX_TOP_WORDS`` entries.
+    """
+    while len(top_words) > _MAX_TOP_WORDS:
+        del top_words[min(top_words, key=top_words.get)]
+    for word in words:
+        if word in top_words:
+            top_words[word] += 1
+        elif len(top_words) < _MAX_TOP_WORDS:
+            top_words[word] = 1
+        else:
+            evicted = min(top_words, key=top_words.get)
+            top_words[word] = top_words.pop(evicted) + 1
+    return top_words
 
 
 def _compute_streak(

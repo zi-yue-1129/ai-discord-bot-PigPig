@@ -177,9 +177,9 @@ class StatsCog(commands.Cog):
                 )
 
         except Exception as e:
-            # Non-critical: log and continue; do not break message flow
-            logger.warning(
-                "StatsCog on_message stats update failed: %s", e
+            # Stats are non-critical: log and continue so message handling is unaffected
+            logger.error(
+                "StatsCog on_message stats update failed: %s", e, exc_info=True
             )
 
     # ------------------------------------------------------------------
@@ -219,10 +219,13 @@ class StatsCog(commands.Cog):
                 if d.is_dir() and d.name.isdigit()
             )
 
+            live_since = await self.stats_storage.get_or_init_live_since(
+                datetime.now(timezone.utc).strftime("%Y%m%d")
+            )
             for guild_dir in guild_dirs:
                 guild_id = guild_dir.name
                 try:
-                    await self._migrate_guild_logs(guild_id, guild_dir)
+                    await self._migrate_guild_logs(guild_id, guild_dir, live_since)
                 except asyncio.CancelledError:
                     logger.info("Migration cancelled for guild %s", guild_id)
                     return
@@ -243,13 +246,15 @@ class StatsCog(commands.Cog):
             await func.report_error(e, "Background log migration failed")
 
     async def _migrate_guild_logs(
-        self, guild_id: str, guild_dir: Path
+        self, guild_id: str, guild_dir: Path, live_since: str
     ) -> None:
         """Migrate log files for a single guild.
 
         Args:
             guild_id: The guild's Discord snowflake ID.
             guild_dir: Path to the guild's log directory.
+            live_since: First log day (``YYYYMMDD``) already counted live by
+                ``on_message``; it and later days are never imported.
         """
         # Get last processed date
         last_processed = await self.stats_storage.get_migration_state(guild_id)
@@ -268,8 +273,10 @@ class StatsCog(commands.Cog):
         for date_dir in date_dirs:
             date_str = date_dir.name
 
-            # Skip already-processed dates
+            # Skip already-processed dates and days counted live
             if last_processed and date_str <= last_processed:
+                continue
+            if date_str >= live_since:
                 continue
 
             jsonl_path = date_dir / "info.jsonl"
