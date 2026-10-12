@@ -38,7 +38,12 @@
             "clear_music_queue": "🧹 正在清空待播清單...",
             "default": "🛠️ 正在使用 {tool_name}...",
             "list_reminders": "📋 正在查看你的提醒...",
-            "cancel_reminder": "🗑️ 正在取消提醒..."
-        }
+            "cancel_reminder": "🗑️ 正在取消提醒...",
+            "change_own_nickname": "✏️ 正在更改暱稱...",
+            "clear_user_memory": "🧹 正在清除使用者記憶...",
+            "delete_own_last_message": "🗑️ 正在刪除上一則訊息...",
+            "dramatic_pause": "⏳ 正在醞釀氣氛..."
+        },
+        "switching_model": "⏳ 這個模型沒有回應，正在改用備用模型..."
     }
 }

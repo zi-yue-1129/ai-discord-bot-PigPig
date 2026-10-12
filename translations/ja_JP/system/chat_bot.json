@@ -38,7 +38,12 @@
             "clear_music_queue": "🧹 キューを空にしています...",
             "default": "🛠️ {tool_name} を使用中...",
             "list_reminders": "📋 リマインダーを確認中...",
-            "cancel_reminder": "🗑️ リマインダーを取り消し中..."
-        }
+            "cancel_reminder": "🗑️ リマインダーを取り消し中...",
+            "change_own_nickname": "✏️ ニックネームを変更中...",
+            "clear_user_memory": "🧹 ユーザーの記憶を消去中...",
+            "delete_own_last_message": "🗑️ 直前のメッセージを削除中...",
+            "dramatic_pause": "⏳ 雰囲気を盛り上げ中..."
+        },
+        "switching_model": "⏳ モデルが応答しないため、予備のモデルに切り替えています..."
     }
 }

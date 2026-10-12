@@ -36,6 +36,7 @@ from llm.memory.episodic import EpisodicMemoryProvider
 from llm.memory.knowledge import KnowledgeMemoryProvider
 from cogs.memory.db.knowledge_storage import KnowledgeStorage
 from llm.callbacks import ToolFeedbackCallbackHandler
+from llm.utils.progress import announce_model_switch
 from llm.model_circuit_breaker import get_model_circuit_breaker
 
 
@@ -607,6 +608,9 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                         # Briefly wait if transient to allow network/model state to stabilize
                         if category.name == "TRANSIENT":
                             await asyncio.sleep(0.5)
+                        await announce_model_switch(
+                            message_edit, lang_manager, guild_id, has_next_model=model_index < len(info_model_list) - 1
+                        )
                         # Continue to next model immediately
                 
                 if info_result is None:
@@ -769,6 +773,9 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                         # Briefly wait if transient to allow network/model state to stabilize
                         if category.name == "TRANSIENT":
                             await asyncio.sleep(0.5)
+                        await announce_model_switch(
+                            message_edit, lang_manager, guild_id, has_next_model=model_index < len(model_priority_list) - 1
+                        )
                         # Continue to next model immediately
                     
                     # If we got a result, break out of the model loop

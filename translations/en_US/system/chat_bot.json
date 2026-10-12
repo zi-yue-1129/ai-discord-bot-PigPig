@@ -38,7 +38,12 @@
             "clear_music_queue": "🧹 Clearing the queue...",
             "default": "🛠️ Using {tool_name}...",
             "list_reminders": "📋 Checking your reminders...",
-            "cancel_reminder": "🗑️ Cancelling the reminder..."
-        }
+            "cancel_reminder": "🗑️ Cancelling the reminder...",
+            "change_own_nickname": "✏️ Changing my nickname...",
+            "clear_user_memory": "🧹 Clearing the user's memory...",
+            "delete_own_last_message": "🗑️ Deleting my last message...",
+            "dramatic_pause": "⏳ Building up the mood..."
+        },
+        "switching_model": "⏳ The model did not respond, switching to a backup model..."
     }
 }
