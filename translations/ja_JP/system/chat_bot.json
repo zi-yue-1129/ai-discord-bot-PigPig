@@ -36,7 +36,9 @@
             "set_music_volume": "🔊 音量を調整中...",
             "remove_song_from_queue": "🗑️ 曲を削除中...",
             "clear_music_queue": "🧹 キューを空にしています...",
-            "default": "🛠️ {tool_name} を使用中..."
+            "default": "🛠️ {tool_name} を使用中...",
+            "list_reminders": "📋 リマインダーを確認中...",
+            "cancel_reminder": "🗑️ リマインダーを取り消し中..."
         }
     }
 }

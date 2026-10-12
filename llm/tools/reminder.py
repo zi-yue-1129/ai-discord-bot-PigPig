@@ -26,8 +26,10 @@ This module provides LangChain-compatible tools for setting reminders
 using the ReminderCog.
 """
 
+from datetime import datetime
+
 from addons.logging import get_logger
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, Tuple, TYPE_CHECKING
 
 from langchain_core.tools import tool
 
@@ -171,4 +173,61 @@ class ReminderTools:
                 )
                 return f"Error: Failed to set reminder: {e}"
 
-        return [set_reminder]
+        def _reminder_cog_and_user() -> Tuple[Optional[ReminderCog], Optional[int], Optional[str]]:
+            """Returns the reminder cog and the asking user's ID, or an error text."""
+            bot = getattr(runtime, "bot", None)
+            cog: Optional[ReminderCog] = bot.get_cog("ReminderCog") if bot else None
+            if cog is None:
+                return None, None, "Error: ReminderCog is not loaded."
+            author = getattr(getattr(runtime, "message", None), "author", None)
+            if author is None:
+                return None, None, "Error: the requesting user is unknown."
+            return cog, author.id, None
+
+        @tool
+        async def list_reminders() -> str:
+            """Lists the pending reminders the requesting user has set.
+
+            Call this when the user asks what reminders they have, or before cancelling
+            one to find its ID. Only the requesting user's own reminders are listed.
+
+            Returns:
+                One line per reminder with its ID, due time, target and text, or a note
+                that there are none.
+            """
+            cog, user_id, error = _reminder_cog_and_user()
+            if error:
+                return error
+            pending = cog.store.list_for_creator(user_id)
+            if not pending:
+                return "You have no pending reminders."
+            lines = ["Pending reminders (ID | due | target | text):"]
+            for reminder in pending:
+                due = datetime.fromtimestamp(reminder.due_at).strftime("%Y-%m-%d %H:%M")
+                lines.append(
+                    f"#{reminder.id} | {due} (unix {int(reminder.due_at)}) | <@{reminder.target_id}> | {reminder.message}"
+                )
+            return "\n".join(lines)
+
+        @tool
+        async def cancel_reminder(reminder_id: int) -> str:
+            """Cancels one of the requesting user's pending reminders.
+
+            Use list_reminders first if the ID is not known. A user can only cancel
+            reminders they set themselves.
+
+            Args:
+                reminder_id: The reminder's ID, as shown by list_reminders.
+
+            Returns:
+                A confirmation naming the cancelled reminder, or a not-found message.
+            """
+            cog, user_id, error = _reminder_cog_and_user()
+            if error:
+                return error
+            mine = {reminder.id: reminder for reminder in cog.store.list_for_creator(user_id)}
+            if reminder_id not in mine or not cog.store.cancel(reminder_id, user_id):
+                return f"Reminder #{reminder_id} was not found among your pending reminders."
+            return f"Cancelled reminder #{reminder_id}: {mine[reminder_id].message}"
+
+        return [set_reminder, list_reminders, cancel_reminder]
