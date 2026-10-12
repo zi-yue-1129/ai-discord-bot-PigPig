@@ -96,6 +96,7 @@ class VectorStoreInterface(ABC):
         user_id: Optional[str] = None,
         channel_id: Optional[str] = None,
         min_score: Optional[float] = None,
+        guild_id: Optional[str] = None,
     ) -> List[MemoryFragment]:
         """
         Search memories using vector similarity.
@@ -118,7 +119,8 @@ class VectorStoreInterface(ABC):
         query_text: str,
         user_id: Optional[str] = None,
         channel_id: Optional[str] = None,
-        k: int = 5
+        k: int = 5,
+        guild_id: Optional[str] = None,
     ) -> List[MemoryFragment]:
         """
         Search memories using keyword / full-text payload matching.
@@ -154,7 +156,8 @@ class VectorStoreInterface(ABC):
         vector_query: Optional[str] = None,
         keyword_query: Optional[str] = None,
         user_id: Optional[str] = None,
-        channel_id: Optional[str] = None
+        channel_id: Optional[str] = None,
+        guild_id: Optional[str] = None,
     ) -> List[MemoryFragment]:
         """
         Performs a hybrid search using separate vector and keyword queries.

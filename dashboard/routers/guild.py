@@ -636,6 +636,40 @@ async def update_channel_prompt(
     return JSONResponse({"detail": "Channel prompt updated"})
 
 
+def _require_channel_access(request: Request, guild_id: str, channel_id: str, user: dict[str, Any]) -> Any:
+    """Checks that a channel belongs to the guild and that the user may read it.
+
+    Memory tables are keyed by channel ID alone, so without this check any member of
+    one guild could read another guild's (or a private channel's) memory by ID.
+
+    Args:
+        request: The request (gives access to the bot).
+        guild_id: The guild in the URL; the user must already have access to it.
+        channel_id: The channel in the URL.
+        user: Decoded JWT payload.
+
+    Returns:
+        The Discord channel.
+
+    Raises:
+        HTTPException: 404 when the channel is not in this guild, 403 when the user
+            cannot read it.
+    """
+    bot = _get_bot(request)
+    try:
+        channel = bot.get_channel(int(channel_id))
+    except ValueError:
+        channel = None
+    if channel is None or str(getattr(getattr(channel, "guild", None), "id", "")) != str(guild_id):
+        raise HTTPException(status_code=404, detail="Channel not found in this guild")
+    if user.get("role") == "owner":
+        return channel
+    member = channel.guild.get_member(int(user.get("sub", 0)))
+    if member is None or not channel.permissions_for(member).read_messages:
+        raise HTTPException(status_code=403, detail="No access to this channel")
+    return channel
+
+
 @router.get("/{guild_id}/channels/{channel_id}/memory")
 async def get_channel_memory(
     guild_id: str,
@@ -645,6 +679,7 @@ async def get_channel_memory(
 ) -> JSONResponse:
     """Return the memory (episodic summary + knowledge + fragments) for a specific channel."""
     require_guild_access(guild_id, user)
+    _require_channel_access(request, guild_id, channel_id, user)
 
     summary = None
     knowledge = None
