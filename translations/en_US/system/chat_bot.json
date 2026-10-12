@@ -36,7 +36,9 @@
             "set_music_volume": "🔊 Adjusting the volume...",
             "remove_song_from_queue": "🗑️ Removing the song...",
             "clear_music_queue": "🧹 Clearing the queue...",
-            "default": "🛠️ Using {tool_name}..."
+            "default": "🛠️ Using {tool_name}...",
+            "list_reminders": "📋 Checking your reminders...",
+            "cancel_reminder": "🗑️ Cancelling the reminder..."
         }
     }
 }
