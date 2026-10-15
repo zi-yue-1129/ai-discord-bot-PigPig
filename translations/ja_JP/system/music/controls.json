@@ -11,6 +11,7 @@
     "now_playing_prefix": "再生中",
     "queue_songs": "キュー内の曲",
     "queue_total": "計 {count} 曲",
+    "recommended": "おすすめ",
     "commands": {
         "music": {
             "controls": {

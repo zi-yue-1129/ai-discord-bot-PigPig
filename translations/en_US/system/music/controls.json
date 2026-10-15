@@ -11,6 +11,7 @@
     "now_playing_prefix": "Now Playing",
     "queue_songs": "Songs in Queue",
     "queue_total": "{count} in total",
+    "recommended": "Recommended",
     "commands": {
         "music": {
             "controls": {

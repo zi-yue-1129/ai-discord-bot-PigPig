@@ -11,6 +11,7 @@
     "now_playing_prefix": "正在播放",
     "queue_songs": "队列中的歌曲",
     "queue_total": "共 {count} 首",
+    "recommended": "自动推荐",
     "commands": {
         "music": {
             "controls": {

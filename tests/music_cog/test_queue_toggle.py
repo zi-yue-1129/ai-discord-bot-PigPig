@@ -7,10 +7,11 @@ from typing import Any, List
 
 import discord
 import pytest
-from music_cog.helpers import GUILD_ID, FakeMessage, make_interaction, make_song
+from music_cog.helpers import BOT_USER_ID, GUILD_ID, FakeMessage, make_interaction, make_song
 
 from cogs.music import YTMusic
 from cogs.music_lib.context import PlaybackContext
+from cogs.music_lib.ui.text import display_width, shorten
 from cogs.music_lib.ui_manager import UIManager
 
 QUEUE_FIELD = "system.music.player.queue"
@@ -173,10 +174,64 @@ async def test_the_queue_list_says_how_many_songs_are_queued(cog: YTMusic) -> No
 
 
 @pytest.mark.asyncio
-async def test_the_queue_list_says_zero_when_only_the_current_song_is_left(cog: YTMusic) -> None:
+async def test_the_queue_list_shows_the_empty_notice_when_only_the_current_song_is_left(cog: YTMusic) -> None:
     text = await _queue_text(cog, 0, playing=True)
 
-    assert "total=0" in text
+    assert text == "system.music.player.queue_empty"
+
+
+@pytest.mark.asyncio
+async def test_the_queue_list_does_not_repeat_the_song_that_is_playing(cog: YTMusic) -> None:
+    text = await _queue_text(cog, 2, playing=True)
+
+    assert "song 0" not in text
+    assert "now_playing_prefix" not in text
+
+
+@pytest.mark.asyncio
+async def test_each_queued_song_names_who_asked_for_it(cog: YTMusic, requester: Any) -> None:
+    cog.lang_manager = _Texts()
+    song = make_song(1) | {"requester": requester}
+    await cog.queue_manager.add_to_queue(GUILD_ID, song)
+
+    text = await cog.get_queue_text(GUILD_ID)
+
+    assert f"1. song 1 | 02:00 · {requester.name}" in text
+
+
+@pytest.mark.asyncio
+async def test_a_recommended_song_is_marked_as_recommended(cog: YTMusic) -> None:
+    cog.lang_manager = _Texts()
+    await cog.queue_manager.add_to_queue(GUILD_ID, make_song(1, added_by=BOT_USER_ID))
+
+    text = await cog.get_queue_text(GUILD_ID)
+
+    assert "1. song 1 | 02:00 · system.music.controls.recommended" in text
+
+
+@pytest.mark.asyncio
+async def test_a_long_title_is_shortened_in_the_queue_list(cog: YTMusic) -> None:
+    cog.lang_manager = _Texts()
+    long_title = "Official髭男dism - Pretender［Official Video］with a very long suffix"
+    await cog.queue_manager.add_to_queue(GUILD_ID, make_song(1) | {"title": long_title})
+
+    text = await cog.get_queue_text(GUILD_ID)
+
+    (line,) = [row for row in text.split("\n") if row.startswith("1. ")]
+    assert long_title not in line
+    assert "Official髭男dism" in line and "…" in line
+
+
+def test_display_width_counts_wide_characters_twice() -> None:
+    assert display_width("abc") == 3
+    assert display_width("米津玄師") == 8
+
+
+def test_shortening_keeps_short_titles_and_cuts_long_ones_to_the_width() -> None:
+    assert shorten("King Gnu - SPECIALZ", 30) == "King Gnu - SPECIALZ"
+    cut = shorten("米津玄師 - LOSER , Kenshi Yonezu", 12)
+    assert cut.endswith("…")
+    assert display_width(cut) <= 12
 
 
 @pytest.mark.asyncio

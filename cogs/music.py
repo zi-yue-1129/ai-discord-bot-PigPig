@@ -22,6 +22,7 @@ from .music_lib.taste_store import TasteStore
 from .music_lib.service import MusicService, classify_query
 from .music_lib.ui_manager import UIManager
 from .music_lib.ui.controls import remove_queue_field, set_queue_field
+from .music_lib.ui.text import shorten
 from .music_lib.ui.song_select import SongSelectView
 from cogs.language_manager import LanguageManager # Import LanguageManager
 from function import func
@@ -32,6 +33,10 @@ MAX_CONSECUTIVE_FAILURES = 3
 PAUSED_DISCONNECT_SECONDS = 300
 # How long the "queue finished" message stays before the bot leaves the voice channel.
 QUEUE_END_DISCONNECT_SECONDS = 10
+
+# Columns a song title may take in the queue list (full-width characters count twice), so a
+# line with its length and requester still fits on one row of the player interface.
+QUEUE_TITLE_WIDTH = 36
 
 
 class PlaybackAbortedError(RuntimeError):
@@ -951,43 +956,59 @@ class YTMusic(commands.Cog):
             logger.info(f"[音樂] 伺服器 ID: {guild_id}, Autoplay 已啟用且待播清單為空，立即觸發推薦填充。")
             self.bot.loop.create_task(self._trigger_autoplay(ctx, guild_id, notify=True))
 
+    def _requester_label(self, guild_id_str: str, item: Dict[str, Any]) -> str:
+        """Names who queued a song: the requester, or "recommended" for the bot's own picks.
+
+        Args:
+            guild_id_str: The guild (for the language).
+            item: The queue entry.
+
+        Returns:
+            The label, or an empty string when the requester is unknown.
+        """
+        if item.get("added_by") == self.bot.user.id:
+            return self.lang_manager.translate(guild_id_str, "system", "music", "controls", "recommended")
+        requester = item.get("requester")
+        return str(getattr(requester, "display_name", None) or getattr(requester, "name", None) or "")
+
     async def get_queue_text(self, guild_id: int) -> str:
-        """Generates the text for the queue display."""
+        """Generates the text for the queue display.
+
+        The song that is playing is not listed: the player interface already shows it.
+
+        Args:
+            guild_id: The guild.
+
+        Returns:
+            The number of queued songs and one line per song (title, length, requester).
+        """
         guild_id_str = str(guild_id)
-        state = self.state_manager.get_state(guild_id)
-        
         queue_items = self.queue_manager.get_queue_snapshot(guild_id)
-        
-        text = ""
-        if state.current_song:
-            minutes, seconds = divmod(float(state.current_song.get("duration", 0)), 60)
-            prefix = self.lang_manager.translate(guild_id_str, "system", "music", "controls", "now_playing_prefix")
-            text += f"{prefix} {state.current_song['title']} | {int(minutes):02d}:{int(seconds):02d}\n\n"
-        
-        if queue_items or state.current_song:
-            label = self.lang_manager.translate(guild_id_str, "system", "music", "controls", "queue_songs")
-            total = self.lang_manager.translate(
-                guild_id_str, "system", "music", "controls", "queue_total", count=len(queue_items)
-            )
-            text += f"{label} · {total}\n"
-            for i, item in enumerate(queue_items, 1):
-                duration = item.get("duration", 0)
-                minutes, seconds = divmod(float(duration), 60)
-                line = f"{i}. {item['title']} | {int(minutes):02d}:{int(seconds):02d}\n"
-                
-                # Check if adding the current line exceeds embed field limit (1024 chars).
-                # Keep a 100 character buffer for the "more songs" localized suffix.
-                if len(text) + len(line) + 100 > 1024:
-                    remaining_count = len(queue_items) - i + 1
-                    more_songs_text = self.lang_manager.translate(
-                        guild_id_str, "system", "music", "player", "more_songs", count=remaining_count
-                    )
-                    text += more_songs_text
-                    break
-                
-                text += line
-        
-        return text if text.strip() else self.lang_manager.translate(guild_id_str, "system", "music", "player", "queue_empty")
+        if not queue_items:
+            return self.lang_manager.translate(guild_id_str, "system", "music", "player", "queue_empty")
+
+        total = self.lang_manager.translate(
+            guild_id_str, "system", "music", "controls", "queue_total", count=len(queue_items)
+        )
+        text = f"{total}\n"
+        for i, item in enumerate(queue_items, 1):
+            minutes, seconds = divmod(float(item.get("duration", 0)), 60)
+            requester = self._requester_label(guild_id_str, item)
+            suffix = f" · {requester}" if requester else ""
+            line = f"{i}. {shorten(item['title'], QUEUE_TITLE_WIDTH)} | {int(minutes):02d}:{int(seconds):02d}{suffix}\n"
+
+            # Check if adding the current line exceeds embed field limit (1024 chars).
+            # Keep a 100 character buffer for the "more songs" localized suffix.
+            if len(text) + len(line) + 100 > 1024:
+                remaining_count = len(queue_items) - i + 1
+                text += self.lang_manager.translate(
+                    guild_id_str, "system", "music", "player", "more_songs", count=remaining_count
+                )
+                break
+
+            text += line
+
+        return text
 
     async def _cleanup_voice_session(self, guild_id: int):
         """Cleans up the voice session for a guild."""
