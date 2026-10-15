@@ -10,6 +10,7 @@
     "update_failed": "Failed to update music interface",
     "now_playing_prefix": "Now Playing",
     "queue_songs": "Songs in Queue",
+    "queue_total": "{count} in total",
     "commands": {
         "music": {
             "controls": {

@@ -10,6 +10,7 @@
     "update_failed": "音楽インターフェースの更新に失敗しました",
     "now_playing_prefix": "再生中",
     "queue_songs": "キュー内の曲",
+    "queue_total": "計 {count} 曲",
     "commands": {
         "music": {
             "controls": {

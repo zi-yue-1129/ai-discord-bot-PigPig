@@ -2,7 +2,7 @@ import asyncio
 import discord
 from typing import Optional, Dict, Any
 from .context import PlaybackContext
-from .ui.controls import MusicControlView
+from .ui.controls import MusicControlView, set_queue_field
 from .ui.progress import ProgressDisplay
 from cogs.language_manager import LanguageManager
 from addons.logging import get_logger
@@ -84,6 +84,7 @@ class UIManager:
                 "get_state_manager": music_cog.get_state_manager,
                 "get_voice_client": lambda: music_cog.get_voice_client(guild_id),
                 "get_lang_manager": music_cog.get_lang_manager,
+                "get_queue_text": music_cog.get_queue_text,
             }
 
             # Before creating a new view, stop the previous view's background tasks
@@ -95,6 +96,10 @@ class UIManager:
             self.views[guild_id] = view
 
             state = music_cog.state_manager.get_state(guild_id)
+            if state.show_queue:
+                # The queue button is a switch: keep the list on every new song's interface.
+                set_queue_field(embed, self._translate_music(guild_id_str, "player", "queue"),
+                                await music_cog.get_queue_text(guild_id))
             
             # Clean up all previous UI messages
             for old_message in state.ui_messages:
@@ -143,8 +148,6 @@ class UIManager:
             duration_text = self._translate_music(guild_id, "player", "duration")
             views_text = self._translate_music(guild_id, "player", "views")
             progress_text = self._translate_music(guild_id, "player", "progress")
-            queue_text = self._translate_music(guild_id, "player", "queue")
-            queue_empty_text = self._translate_music(guild_id, "player", "queue_empty")
             added_by_text = self._translate_music(guild_id, "player", "added_by", user=item['requester'].name)
         else:
             # Fallback mechanism
@@ -153,8 +156,6 @@ class UIManager:
             duration_text = self._get_fallback_text("duration")
             views_text = self._get_fallback_text("views")
             progress_text = self._get_fallback_text("progress")
-            queue_text = self._get_fallback_text("queue")
-            queue_empty_text = self._get_fallback_text("queue_empty")
             added_by_text = self._get_fallback_text("added_by", user=item['requester'].name)
         
         embed = discord.Embed(
@@ -187,7 +188,6 @@ class UIManager:
             progress_bar = ProgressDisplay.create_progress_bar(0, item['duration'])
             embed.add_field(name=progress_text, value=progress_bar, inline=False)
         
-        embed.add_field(name=queue_text, value=queue_empty_text, inline=False)
         
         # Add thumbnail
         thumbnail = item.get('thumbnail') or youtube_manager.get_thumbnail_url(item['video_id'])

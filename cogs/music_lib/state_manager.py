@@ -12,6 +12,8 @@ class PlayerState:
     current_view: Optional[Any] = None
     ui_messages: list = field(default_factory=list)
     autoplay: bool = False
+    # Whether the queue list is shown on the player interface (the queue button is a switch).
+    show_queue: bool = False
     player_loop_task: Optional[asyncio.Task] = None
     consecutive_failures: int = 0
     volume: float = 1.0

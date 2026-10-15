@@ -10,6 +10,7 @@
     "update_failed": "无法更新音乐界面",
     "now_playing_prefix": "正在播放",
     "queue_songs": "队列中的歌曲",
+    "queue_total": "共 {count} 首",
     "commands": {
         "music": {
             "controls": {

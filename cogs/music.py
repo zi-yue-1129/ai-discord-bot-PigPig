@@ -21,6 +21,7 @@ from .music_lib.recommender import TasteMemory
 from .music_lib.taste_store import TasteStore
 from .music_lib.service import MusicService, classify_query
 from .music_lib.ui_manager import UIManager
+from .music_lib.ui.controls import remove_queue_field, set_queue_field
 from .music_lib.ui.song_select import SongSelectView
 from cogs.language_manager import LanguageManager # Import LanguageManager
 from function import func
@@ -906,15 +907,15 @@ class YTMusic(commands.Cog):
             await interaction.response.send_message(self.lang_manager.translate(str(guild_id), "system", "music", "controls", "update_failed"), ephemeral=True)
             return
 
-        queue_text = await self.get_queue_text(guild_id)
+        state = self.state_manager.get_state(guild_id)
+        state.show_queue = not state.show_queue
         queue_name = self.lang_manager.translate(str(guild_id), "system", "music", "player", "queue")
-        embed = view.current_embed
-        position = next((index for index, field in enumerate(embed.fields) if field.name == queue_name), None)
-        if position is None:
-            embed.add_field(name=queue_name, value=queue_text, inline=False)
+        if state.show_queue:
+            set_queue_field(view.current_embed, queue_name, await self.get_queue_text(guild_id))
         else:
-            embed.set_field_at(position, name=queue_name, value=queue_text, inline=False)
+            remove_queue_field(view.current_embed, queue_name)
         await view.update_embed(interaction, view.current_embed.title, view.current_embed.color)
+        await view.update_button_state()
 
     async def handle_toggle_autoplay(self, interaction: discord.Interaction):
         """切換自動播放模式"""
@@ -963,9 +964,12 @@ class YTMusic(commands.Cog):
             prefix = self.lang_manager.translate(guild_id_str, "system", "music", "controls", "now_playing_prefix")
             text += f"{prefix} {state.current_song['title']} | {int(minutes):02d}:{int(seconds):02d}\n\n"
         
-        if queue_items:
+        if queue_items or state.current_song:
             label = self.lang_manager.translate(guild_id_str, "system", "music", "controls", "queue_songs")
-            text += f"{label}\n"
+            total = self.lang_manager.translate(
+                guild_id_str, "system", "music", "controls", "queue_total", count=len(queue_items)
+            )
+            text += f"{label} · {total}\n"
             for i, item in enumerate(queue_items, 1):
                 duration = item.get("duration", 0)
                 minutes, seconds = divmod(float(duration), 60)
