@@ -104,10 +104,11 @@ class UIManager:
                     pass
             state.ui_messages.clear()
 
-            # Always send a new message to ensure it's at the bottom
+            # Always send a new message to ensure it's at the bottom. It replaces the previous
+            # player on every song change, so it is sent silently: no sound or push notification.
             message = None
             try:
-                message = await ctx.channel.send(embed=embed, view=view)
+                message = await ctx.channel.send(embed=embed, view=view, silent=True)
             except discord.errors.Forbidden:
                 log.warning(f"Failed to send player UI in guild {guild_id}: Forbidden (Missing Access). Music will play without UI.")
 
