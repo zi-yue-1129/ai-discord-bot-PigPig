@@ -12,6 +12,7 @@ from music_cog.helpers import (
     BOT_USER_ID,
     GUILD_ID,
     REQUESTER_ID,
+    EditableChannel,
     FakeChannel,
     FakeLangManager,
     FakeVoiceClient,
@@ -23,6 +24,7 @@ from cogs.music import YTMusic
 from cogs.music_lib.context import PlaybackContext
 from cogs.music_lib.state_manager import StateManager
 from cogs.music_lib.taste_store import TasteStore
+from cogs.music_lib.ui_manager import UIManager
 
 
 @pytest.fixture
@@ -90,3 +92,19 @@ def ctx(
     return PlaybackContext(guild=guild, channel=text_channel, user=requester)
 
 
+
+
+@pytest.fixture
+def editable_channel() -> EditableChannel:
+    return EditableChannel()
+
+
+@pytest.fixture
+def player(
+    cog: YTMusic, guild: SimpleNamespace, requester: SimpleNamespace, editable_channel: EditableChannel
+) -> PlaybackContext:
+    """A context posting into a channel whose messages can be edited, with the real UI manager in the cog."""
+    manager = UIManager(bot=None)
+    manager.lang_manager = cog.lang_manager
+    cog.ui_manager = manager
+    return PlaybackContext(guild=guild, channel=editable_channel, user=requester)

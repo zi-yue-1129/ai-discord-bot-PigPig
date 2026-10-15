@@ -21,5 +21,10 @@
         }
     },
     "not_in_channel": "你需要和機器人在同一個語音頻道才能控制音樂",
-    "no_songs": "❌ 沒有可播放的歌曲！"
+    "no_songs": "❌ 沒有可播放的歌曲！",
+    "queue_play_next_placeholder": "⏭️ 選一首插播到下一首",
+    "queue_remove_placeholder": "🗑️ 選一首從佇列移除",
+    "queue_select_empty": "佇列是空的",
+    "queue_played_next": "{user} 把「{title}」插播到下一首",
+    "queue_removed": "{user} 從佇列移除了「{title}」"
 }

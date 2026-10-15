@@ -2,67 +2,18 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any, List
 
 import discord
 import pytest
-from music_cog.helpers import BOT_USER_ID, GUILD_ID, FakeMessage, make_interaction, make_song
+from music_cog.helpers import BOT_USER_ID, GUILD_ID, make_interaction, make_song
+from music_cog.helpers import post_player as _post
 
 from cogs.music import YTMusic
 from cogs.music_lib.context import PlaybackContext
 from cogs.music_lib.ui.text import display_width, shorten
-from cogs.music_lib.ui_manager import UIManager
 
 QUEUE_FIELD = "system.music.player.queue"
-
-
-class _EditableMessage(FakeMessage):
-    """A channel message that also records edits."""
-
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self.edits: List[dict] = []
-
-    async def edit(self, **kwargs: Any) -> None:
-        self.edits.append(kwargs)
-
-
-class _Channel:
-    def __init__(self) -> None:
-        self.sent: List[_EditableMessage] = []
-
-    async def send(self, **kwargs: Any) -> _EditableMessage:
-        message = _EditableMessage(**kwargs)
-        self.sent.append(message)
-        return message
-
-
-class _Thumbnails:
-    def get_thumbnail_url(self, video_id: str) -> str:
-        return f"https://example.invalid/{video_id}.jpg"
-
-
-@pytest.fixture
-def channel() -> _Channel:
-    return _Channel()
-
-
-@pytest.fixture
-def player(
-    cog: YTMusic, guild: SimpleNamespace, requester: SimpleNamespace, channel: _Channel
-) -> PlaybackContext:
-    """A context posting into a channel whose messages can be edited, with the real UI manager in the cog."""
-    manager = UIManager(bot=None)
-    manager.lang_manager = cog.lang_manager
-    cog.ui_manager = manager
-    return PlaybackContext(guild=guild, channel=channel, user=requester)
-
-
-async def _post(cog: YTMusic, ctx: PlaybackContext, index: int = 1) -> _EditableMessage:
-    song = make_song(index) | {"requester": ctx.user, "user_avatar": "https://example.invalid/a.png"}
-    cog.state_manager.update_state(GUILD_ID, current_song=song)
-    return await cog.ui_manager.update_player_ui(ctx, song, None, _Thumbnails(), cog)
 
 
 def _queue_fields(cog: YTMusic) -> List[discord.embeds.EmbedProxy]:

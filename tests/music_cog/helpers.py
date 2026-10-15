@@ -110,6 +110,9 @@ class FakeResponse:
         self.done = True
         self.sent.append({"args": args, **kwargs})
 
+    async def defer(self, *args: Any, **kwargs: Any) -> None:
+        self.done = True
+
 
 class FakeFollowup:
     """Interaction followup that records replies."""
@@ -142,6 +145,7 @@ def make_member(user_id: int, voice_channel: Optional[object]) -> SimpleNamespac
     return SimpleNamespace(
         id=user_id,
         name=f"user{user_id}",
+        display_name=f"user{user_id}",
         voice=voice,
         display_avatar=SimpleNamespace(url="https://example.invalid/a.png"),
     )
@@ -177,3 +181,40 @@ def make_interaction(
         response=FakeResponse(),
         followup=FakeFollowup(),
     )
+
+
+class EditableMessage(FakeMessage):
+    """A channel message that also records edits."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.edits: List[dict] = []
+
+    async def edit(self, **kwargs: Any) -> None:
+        self.edits.append(kwargs)
+
+
+class EditableChannel:
+    """A text channel whose sent messages can be edited (the player interface edits itself)."""
+
+    def __init__(self) -> None:
+        self.sent: List[EditableMessage] = []
+
+    async def send(self, **kwargs: Any) -> EditableMessage:
+        message = EditableMessage(**kwargs)
+        self.sent.append(message)
+        return message
+
+
+class FakeThumbnails:
+    """Stands in for the YouTube manager, which only supplies thumbnail URLs to the player embed."""
+
+    def get_thumbnail_url(self, video_id: str) -> str:
+        return f"https://example.invalid/{video_id}.jpg"
+
+
+async def post_player(cog: Any, ctx: Any, index: int = 1) -> EditableMessage:
+    """Posts the player interface for ``make_song(index)`` as the song that is playing."""
+    song = make_song(index) | {"requester": ctx.user, "user_avatar": "https://example.invalid/a.png"}
+    cog.state_manager.update_state(GUILD_ID, current_song=song)
+    return await cog.ui_manager.update_player_ui(ctx, song, None, FakeThumbnails(), cog)

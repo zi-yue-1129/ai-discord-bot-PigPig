@@ -12,5 +12,6 @@
     "invalid_volume": "音量必須介於 0 到 100。",
     "invalid_position": "待播清單中沒有這個位置的歌曲。",
     "playback_not_started": "歌曲已加入，但沒有成功開始播放。",
-    "already_playing": "這首歌正在播放，所以沒有重複加入。"
+    "already_playing": "這首歌正在播放，所以沒有重複加入。",
+    "not_in_queue": "這首歌已經不在佇列中了。"
 }

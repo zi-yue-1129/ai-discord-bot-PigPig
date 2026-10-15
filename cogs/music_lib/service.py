@@ -40,6 +40,7 @@ FAILURE_REASONS = (
     "invalid_position",
     "playback_not_started",
     "already_playing",
+    "not_in_queue",
 )
 
 # How long the bot stays in the channel after a request that could not be served.
@@ -581,6 +582,50 @@ class MusicService:
         await self._cog.prefetcher.cancel_song(guild_id, removed.get("video_id"))
         await self._discard_files(guild_id, [removed])
         return ActionResult(ok=True, detail="Removed.", data={"title": removed["title"], "position": position})
+
+    def _queued_index(self, guild_id: int, video_id: str) -> Optional[int]:
+        """Returns the zero-based queue position of ``video_id``, if it is still queued."""
+        snapshot = self._cog.queue_manager.get_queue_snapshot(guild_id)
+        return next((index for index, song in enumerate(snapshot) if song.get("video_id") == video_id), None)
+
+    async def play_queued_next(self, ctx: PlaybackContext, video_id: str) -> ActionResult:
+        """Moves a queued song to the front so it plays right after the current one.
+
+        Args:
+            ctx: The playback context (the user must share the bot's voice channel).
+            video_id: The song, as listed in the player's menu.
+
+        Returns:
+            The outcome; on success ``data`` holds the song's title.
+        """
+        denied = self._check_control(ctx, require_connection=False)
+        if denied:
+            return denied
+        guild_id = ctx.guild.id
+        index = self._queued_index(guild_id, video_id)
+        song = self._cog.queue_manager.move_to_front(guild_id, index) if index is not None else None
+        if song is None:
+            return _fail("not_in_queue", "That song is no longer in the queue.")
+        self._cog.prefetcher.schedule(ctx)
+        return ActionResult(ok=True, detail="It plays next.", data={"title": song["title"]})
+
+    async def remove_queued(self, ctx: PlaybackContext, video_id: str) -> ActionResult:
+        """Removes a queued song chosen by its video ID (positions shift as songs play).
+
+        Args:
+            ctx: The playback context (the user must share the bot's voice channel).
+            video_id: The song, as listed in the player's menu.
+
+        Returns:
+            The outcome; on success ``data`` holds the song's title.
+        """
+        denied = self._check_control(ctx, require_connection=False)
+        if denied:
+            return denied
+        index = self._queued_index(ctx.guild.id, video_id)
+        if index is None:
+            return _fail("not_in_queue", "That song is no longer in the queue.")
+        return await self.remove_from_queue(ctx, index + 1)
 
     async def clear_queue(self, ctx: PlaybackContext) -> ActionResult:
         """Empties the queue (and the buffered playlist) without touching the current song."""

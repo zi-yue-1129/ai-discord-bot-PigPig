@@ -12,5 +12,6 @@
     "invalid_volume": "Volume must be between 0 and 100.",
     "invalid_position": "There is no song at that position in the queue.",
     "playback_not_started": "The song was queued but playback did not start.",
-    "already_playing": "That song is already playing, so it was not queued again."
+    "already_playing": "That song is already playing, so it was not queued again.",
+    "not_in_queue": "That song is no longer in the queue."
 }

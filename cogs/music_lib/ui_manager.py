@@ -9,6 +9,11 @@ from addons.logging import get_logger
 
 log = get_logger(server_id="system", source=__name__)
 
+def _member_name(member: Any) -> str:
+    """Returns a member's server nickname, falling back to the global or account name."""
+    return str(getattr(member, "display_name", None) or getattr(member, "name", ""))
+
+
 class UIManager:
     def __init__(self, bot=None):
         self.views: Dict[int, MusicControlView] = {}
@@ -85,6 +90,8 @@ class UIManager:
                 "get_voice_client": lambda: music_cog.get_voice_client(guild_id),
                 "get_lang_manager": music_cog.get_lang_manager,
                 "get_queue_text": music_cog.get_queue_text,
+                "get_queue_options": music_cog.queue_menu_options,
+                "queue_select_callback": music_cog.handle_queue_select,
             }
 
             # Before creating a new view, stop the previous view's background tasks
@@ -148,7 +155,7 @@ class UIManager:
             duration_text = self._translate_music(guild_id, "player", "duration")
             views_text = self._translate_music(guild_id, "player", "views")
             progress_text = self._translate_music(guild_id, "player", "progress")
-            added_by_text = self._translate_music(guild_id, "player", "added_by", user=item['requester'].name)
+            added_by_text = self._translate_music(guild_id, "player", "added_by", user=_member_name(item['requester']))
         else:
             # Fallback mechanism
             title_text = self._get_fallback_text("now_playing")
@@ -156,7 +163,7 @@ class UIManager:
             duration_text = self._get_fallback_text("duration")
             views_text = self._get_fallback_text("views")
             progress_text = self._get_fallback_text("progress")
-            added_by_text = self._get_fallback_text("added_by", user=item['requester'].name)
+            added_by_text = self._get_fallback_text("added_by", user=_member_name(item['requester']))
         
         embed = discord.Embed(
             title=title_text,

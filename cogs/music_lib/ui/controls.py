@@ -10,6 +10,10 @@ from addons.logging import get_logger
 log = get_logger(source=__name__, server_id="system")
 
 
+# Value of the placeholder option shown while the queue is empty (the menu is disabled then).
+_EMPTY_QUEUE_VALUE = "__empty__"
+
+
 def set_queue_field(embed: discord.Embed, name: str, text: str) -> None:
     """Shows the queue on a player embed, replacing the field when it is already there.
 
@@ -45,7 +49,7 @@ class MusicControlView(discord.ui.View):
                 previous_callback, toggle_playback_callback, skip_callback, stop_callback,
                 toggle_mode_callback, toggle_shuffle_callback, show_queue_callback, toggle_autoplay_callback,
                 get_queue_manager, get_state_manager, get_voice_client, get_lang_manager,
-                get_queue_text=None):
+                get_queue_text=None, get_queue_options=None, queue_select_callback=None):
         super().__init__(timeout=None)
         self.guild = ctx.guild
         self.message = None
@@ -72,8 +76,59 @@ class MusicControlView(discord.ui.View):
         self.get_voice_client = get_voice_client
         self.get_lang_manager = get_lang_manager
         self.get_queue_text = get_queue_text
+        self.get_queue_options = get_queue_options
+        self.queue_select_callback = queue_select_callback
+        self._queue_menus: list = []
+        if get_queue_options and queue_select_callback:
+            self._queue_menus = [
+                self._add_queue_menu("queue_play_next", "play_next", row=2),
+                self._add_queue_menu("queue_remove", "remove", row=3),
+            ]
+            self.refresh_queue_menus()
 
         asyncio.create_task(self.update_button_state(update_message=False))
+
+    def _add_queue_menu(self, custom_id: str, action: str, *, row: int) -> discord.ui.Select:
+        """Adds a menu that applies ``action`` to the queued song the user picks.
+
+        Args:
+            custom_id: The menu's ID (its placeholder text is ``<custom_id>_placeholder``).
+            action: ``"play_next"`` or ``"remove"``, passed to the cog's callback.
+            row: The row under the buttons.
+
+        Returns:
+            The added menu.
+        """
+        menu = discord.ui.Select(
+            custom_id=custom_id,
+            placeholder=self._translate_music("controls", f"{custom_id}_placeholder"),
+            options=[discord.SelectOption(label="-", value=_EMPTY_QUEUE_VALUE)],
+            row=row,
+        )
+
+        async def choose(interaction: discord.Interaction) -> None:
+            await self.queue_select_callback(interaction, action, menu.values[0])
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+
+        menu.callback = choose
+        self.add_item(menu)
+        return menu
+
+    def refresh_queue_menus(self) -> None:
+        """Lists the current queue in both menus (disabled while the queue is empty)."""
+        if not self._queue_menus:
+            return
+        options = self.get_queue_options(self.guild.id)
+        for menu in self._queue_menus:
+            if options:
+                menu.options = list(options)
+                menu.disabled = False
+            else:
+                menu.options = [
+                    discord.SelectOption(label=self._translate_music("controls", "queue_select_empty"), value=_EMPTY_QUEUE_VALUE)
+                ]
+                menu.disabled = True
 
     def _get_lang_manager(self):
         """Get language manager instance"""
@@ -141,6 +196,8 @@ class MusicControlView(discord.ui.View):
         voice_client = self.get_voice_client()
         guild_id = self.guild.id
         queue_manager = self.get_queue_manager()
+
+        self.refresh_queue_menus()
 
         # Update button states
         for child in self.children:

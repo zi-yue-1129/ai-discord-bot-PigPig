@@ -21,5 +21,10 @@
         }
     },
     "not_in_channel": "音楽を操作するには、ボットと同じボイスチャンネルに参加している必要があります",
-    "no_songs": "❌ 再生できる曲がありません！"
+    "no_songs": "❌ 再生できる曲がありません！",
+    "queue_play_next_placeholder": "⏭️ 次に再生する曲を選ぶ",
+    "queue_remove_placeholder": "🗑️ キューから削除する曲を選ぶ",
+    "queue_select_empty": "キューは空です",
+    "queue_played_next": "{user} が「{title}」を次に再生します",
+    "queue_removed": "{user} が「{title}」をキューから削除しました"
 }

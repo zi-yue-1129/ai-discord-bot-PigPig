@@ -8,7 +8,7 @@ from addons.logging import get_logger
 log = get_logger(source=__name__, server_id="system")
 logger = log
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from addons.settings import music_config
 from .music_lib.youtube import YouTubeManager
@@ -37,6 +37,9 @@ QUEUE_END_DISCONNECT_SECONDS = 10
 # Columns a song title may take in the queue list (full-width characters count twice), so a
 # line with its length and requester still fits on one row of the player interface.
 QUEUE_TITLE_WIDTH = 36
+# Discord allows 25 options per menu and 100 characters per option label.
+QUEUE_MENU_LIMIT = 25
+QUEUE_MENU_LABEL_WIDTH = 90
 
 
 class PlaybackAbortedError(RuntimeError):
@@ -970,6 +973,75 @@ class YTMusic(commands.Cog):
             return self.lang_manager.translate(guild_id_str, "system", "music", "controls", "recommended")
         requester = item.get("requester")
         return str(getattr(requester, "display_name", None) or getattr(requester, "name", None) or "")
+
+    def queue_menu_options(self, guild_id: int) -> List[discord.SelectOption]:
+        """Builds the player menus' options: the first 25 queued songs, in order.
+
+        Args:
+            guild_id: The guild.
+
+        Returns:
+            One option per song (value: its video ID), empty when the queue is.
+        """
+        guild_id_str = str(guild_id)
+        options: List[discord.SelectOption] = []
+        seen = set()
+        for i, item in enumerate(self.queue_manager.get_queue_snapshot(guild_id)[:QUEUE_MENU_LIMIT], 1):
+            video_id = item.get("video_id")
+            if not video_id or video_id in seen:
+                continue
+            seen.add(video_id)
+            minutes, seconds = divmod(float(item.get("duration", 0)), 60)
+            requester = self._requester_label(guild_id_str, item)
+            description = f"{int(minutes):02d}:{int(seconds):02d}" + (f" · {requester}" if requester else "")
+            options.append(discord.SelectOption(
+                label=shorten(f"{i}. {item['title']}", QUEUE_MENU_LABEL_WIDTH),
+                value=video_id,
+                description=shorten(description, QUEUE_MENU_LABEL_WIDTH),
+            ))
+        return options
+
+    async def handle_queue_select(self, interaction: discord.Interaction, action: str, video_id: str) -> None:
+        """Plays the chosen queued song next, or removes it, from the player's menus.
+
+        Args:
+            interaction: The menu interaction.
+            action: ``"play_next"`` or ``"remove"``.
+            video_id: The chosen song.
+        """
+        guild_id = interaction.guild.id
+        ctx = PlaybackContext.from_interaction(interaction)
+        if action == "play_next":
+            result = await self.service.play_queued_next(ctx, video_id)
+            message_key = "queue_played_next"
+        else:
+            result = await self.service.remove_queued(ctx, video_id)
+            message_key = "queue_removed"
+        if not result.ok:
+            await self._reply_menu_failure(interaction, result)
+            return
+
+        view = self.ui_manager.get_current_view(guild_id)
+        if view:
+            await view.refresh_queue_field()
+            title = self.lang_manager.translate(
+                str(guild_id), "system", "music", "controls", message_key,
+                user=interaction.user.display_name, title=shorten(result.data["title"], QUEUE_TITLE_WIDTH),
+            )
+            await view.update_embed(interaction, title)
+            await view.update_button_state()
+
+    async def _reply_menu_failure(self, interaction: discord.Interaction, result: Any) -> None:
+        """Tells the user (only them) why a queue menu action did nothing."""
+        guild_id = str(interaction.guild.id)
+        if result.reason == "not_in_bot_channel":
+            text = self.lang_manager.translate(guild_id, "system", "music", "controls", "not_in_channel")
+        else:
+            text = self.lang_manager.translate(guild_id, "system", "music", "ai_errors", result.reason, detail=result.detail)
+        if interaction.response.is_done():
+            await interaction.followup.send(text, ephemeral=True)
+        else:
+            await interaction.response.send_message(text, ephemeral=True)
 
     async def get_queue_text(self, guild_id: int) -> str:
         """Generates the text for the queue display.
