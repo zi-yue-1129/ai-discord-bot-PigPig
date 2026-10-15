@@ -933,7 +933,7 @@ class YTMusic(commands.Cog):
         status_key = "enabled" if state.autoplay else "disabled"
         status_str = self.lang_manager.translate(str(guild_id), "system", "music", "autoplay", status_key)
         
-        title = self.lang_manager.translate(str(guild_id), "system", "music", "autoplay", "toggled", status=status_str)
+        title = self.lang_manager.translate(str(guild_id), "system", "music", "autoplay", "toggled", user=interaction.user.name, status=status_str)
         
         await interaction.response.send_message(f"✅ | {title}", ephemeral=True)
 

@@ -11,5 +11,6 @@
     "invalid_mode": "そのループモードには対応していません。",
     "invalid_volume": "音量は 0 から 100 の間で指定してください。",
     "invalid_position": "キューのその位置に曲はありません。",
-    "playback_not_started": "曲は追加されましたが、再生を開始できませんでした。"
+    "playback_not_started": "曲は追加されましたが、再生を開始できませんでした。",
+    "already_playing": "その曲はすでに再生中のため、重複して追加しませんでした。"
 }

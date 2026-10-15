@@ -87,6 +87,31 @@ def classify_url(query: str, *, allowed_hosts: Tuple[str, ...], spotify_enabled:
     return "search"
 
 
+def extract_youtube_id(url: str) -> Optional[str]:
+    """Reads the video ID from a YouTube link.
+
+    Args:
+        url: A link in any YouTube form.
+
+    Returns:
+        The video ID, or None when ``url`` is not a YouTube video link.
+    """
+    text = url.strip()
+    if not text or " " in text:
+        return None
+    parsed = urlparse(text if "://" in text else f"https://{text}")
+    host = (parsed.hostname or "").lower()
+    segments = [segment for segment in parsed.path.split("/") if segment]
+    if _host_matches(host, "youtu.be"):
+        return segments[0] if segments else None
+    if not _host_matches(host, "youtube.com"):
+        return None
+    if segments and segments[0] in ("shorts", "live", "embed") and len(segments) > 1:
+        return segments[1]
+    video_ids = parse_qs(parsed.query).get("v")
+    return video_ids[0] if video_ids else None
+
+
 def _http_get(url: str, timeout: float) -> str:
     """Fetches a page as text (at most 2 MB)."""
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})

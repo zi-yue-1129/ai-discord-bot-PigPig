@@ -18,7 +18,7 @@ from addons.logging import get_logger
 from addons.settings import MusicAISettings, StreamingSettings, music_config
 
 from .context import PlaybackContext, user_shares_voice_channel
-from .sources import classify_url, fetch_spotify_search_query
+from .sources import classify_url, extract_youtube_id, fetch_spotify_search_query
 from .queue_manager import PlayMode
 
 log = get_logger(source=__name__, server_id="system")
@@ -39,6 +39,7 @@ FAILURE_REASONS = (
     "invalid_volume",
     "invalid_position",
     "playback_not_started",
+    "already_playing",
 )
 
 # How long the bot stays in the channel after a request that could not be served.
@@ -339,6 +340,20 @@ class MusicService:
         data["started"] = started
         return ActionResult(ok=True, detail="Playing." if started else "Queued.", data=data)
 
+    def _playing_video_id(self, ctx: PlaybackContext) -> Optional[str]:
+        """Returns the video ID of the song that is playing (or paused) right now, if any."""
+        voice_client = ctx.guild.voice_client
+        if voice_client is None or not (voice_client.is_playing() or voice_client.is_paused()):
+            return None
+        song = self._cog.state_manager.get_state(ctx.guild.id).current_song
+        return song.get("video_id") if song else None
+
+    @staticmethod
+    def _already_playing(title: Optional[str]) -> ActionResult:
+        """Builds the refusal for a request for the song that is playing."""
+        name = f"'{title}'" if title else "That song"
+        return _fail("already_playing", f"{name} is already playing, so it was not queued again.")
+
     def _queue_position(self, guild_id: int, video_id: Optional[str]) -> Optional[int]:
         """Returns the one-based queue position of ``video_id``, if it is queued."""
         snapshot = self._cog.queue_manager.get_queue_snapshot(guild_id)
@@ -363,12 +378,21 @@ class MusicService:
         self, ctx: PlaybackContext, query: str, kind: str, play_next: bool = False
     ) -> Tuple[Optional[dict], Optional[ActionResult]]:
         """Queues a single video URL, or the first search result that can be queued."""
+        playing_id = self._playing_video_id(ctx)
         if kind == "video":
+            if playing_id is not None and extract_youtube_id(query) == playing_id:
+                return None, self._already_playing(_current_title(self._cog, ctx.guild.id))
             return await self.enqueue_video(ctx, query.strip(), play_next)
 
         results = await self._cog.youtube.search_videos(query, max_results=5)
         if not results:
             return None, _fail("no_results", f"No results found for {query!r}.")
+        # A search often ranks the song that is playing first; queueing it would play it twice.
+        if playing_id is not None:
+            others = [r for r in results if r.get("video_id") != playing_id]
+            if not others:
+                return None, self._already_playing(_current_title(self._cog, ctx.guild.id))
+            results = others
         # The search already reports each duration (0 means unknown, e.g. a live stream), so
         # videos over the limit are dropped here instead of costing a yt-dlp probe each.
         time_limit = self._cog.youtube.time_limit
