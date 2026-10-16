@@ -227,6 +227,8 @@ async def test_the_idle_disconnect_leaves_the_channel_and_removes_the_messages(
 async def test_the_idle_disconnect_does_not_interrupt_a_song_that_started_meanwhile(
     cog: YTMusic, ctx: PlaybackContext, voice_client: FakeVoiceClient
 ) -> None:
+    # A real voice channel always lists its members; someone is listening to the new song.
+    voice_client.channel = SimpleNamespace(members=[SimpleNamespace(id=1, bot=False)])
     voice_client.playing = True
 
     await cog._disconnect_after_delay(GUILD_ID, delay=0)

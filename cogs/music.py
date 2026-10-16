@@ -31,6 +31,8 @@ from function import func
 MAX_CONSECUTIVE_FAILURES = 3
 # How long a paused player may sit idle before the bot leaves the voice channel.
 PAUSED_DISCONNECT_SECONDS = 300
+# How long the bot waits in a voice channel nobody is in before it leaves and removes the panel.
+EMPTY_CHANNEL_DISCONNECT_SECONDS = 60
 # How long the "queue finished" message stays before the bot leaves the voice channel.
 QUEUE_END_DISCONNECT_SECONDS = 10
 
@@ -587,6 +589,9 @@ class YTMusic(commands.Cog):
         self.state_manager.cancel_player_loop(guild_id)
         task = self.bot.loop.create_task(self._player_loop(ctx, song))
         self.state_manager.update_state(guild_id, player_loop_task=task)
+        if not self._has_listeners(voice_client):
+            # Everyone left while this song was being prepared: nobody would ever pause it.
+            await self._handle_empty_channel(guild_id, voice_client)
 
     async def _handle_after_play(self, ctx: PlaybackContext, song: dict) -> None:
         """Handle cleanup and queue transitions after a song finishes playing.
@@ -1094,8 +1099,14 @@ class YTMusic(commands.Cog):
             if voice_client.is_connected():
                 await voice_client.disconnect()
 
-        # Clean up all UI messages
-        for message in state.ui_messages:
+        # Clean up all UI messages. The progress updater re-posts the panel every few minutes and
+        # only the view knows the newest copy, so it is deleted too.
+        panels = list(state.ui_messages)
+        view = self.ui_manager.get_current_view(guild_id)
+        live_panel = getattr(view, "message", None)
+        if live_panel is not None and all(live_panel is not message for message in panels):
+            panels.append(live_panel)
+        for message in panels:
             try:
                 await message.delete()
             except (discord.errors.NotFound, discord.errors.Forbidden):
@@ -1145,7 +1156,8 @@ class YTMusic(commands.Cog):
         await asyncio.sleep(delay)
 
         voice_client = self.get_voice_client(guild_id)
-        if voice_client and voice_client.is_connected() and not voice_client.is_playing():
+        nobody_listening = voice_client is not None and not self._has_listeners(voice_client)
+        if voice_client and voice_client.is_connected() and (not voice_client.is_playing() or nobody_listening):
             logger.info(f"[音樂] 伺服器 ID: {guild_id}, 閒置超過 {delay:g} 秒，自動斷線。")
             # Leaving the channel triggers on_voice_state_update, which cancels the guild's timer;
             # unregister first so that does not cancel this running task mid-cleanup.
@@ -1201,17 +1213,7 @@ class YTMusic(commands.Cog):
             human_members = [m for m in voice_client.channel.members if not m.bot]
             
             if not human_members:
-                # No one left, pause the player and start disconnect timer
-                if voice_client.is_playing():
-                    logger.info(f"[音樂] 伺服器 ID: {member.guild.id}, 頻道內無人，自動暫停播放。")
-                    voice_client.pause()
-                    self.state_manager.update_state(member.guild.id, auto_paused=True)
-                    await self._start_disconnect_timer(member.guild.id)
-
-                    # Update UI button state (progress updater handles paused state on its own)
-                    view = self.ui_manager.get_current_view(member.guild.id)
-                    if view:
-                        await view.update_button_state()
+                await self._handle_empty_channel(member.guild.id, voice_client)
 
             else:
                 # Someone is in the channel, resume if paused
@@ -1226,6 +1228,36 @@ class YTMusic(commands.Cog):
                         view = self.ui_manager.get_current_view(member.guild.id)
                         if view:
                             await view.update_button_state()
+
+    @staticmethod
+    def _has_listeners(voice_client: Any) -> bool:
+        """Tells whether any human is in the voice channel the bot is in."""
+        channel = getattr(voice_client, "channel", None)
+        return any(not member.bot for member in getattr(channel, "members", []))
+
+    async def _handle_empty_channel(self, guild_id: int, voice_client: Any) -> None:
+        """Makes the bot leave a voice channel nobody is in.
+
+        A playing song is paused (and resumes if someone comes back). Whatever the player
+        is doing - playing, paused by a user, or between two songs - a disconnect timer
+        runs, unless one that will fire sooner is already running.
+
+        Args:
+            guild_id: The guild.
+            voice_client: The bot's voice client in that guild.
+        """
+        if voice_client.is_playing():
+            logger.info(f"[音樂] 伺服器 ID: {guild_id}, 頻道內無人，自動暫停播放。")
+            voice_client.pause()
+            self.state_manager.update_state(guild_id, auto_paused=True)
+            # Update UI button state (progress updater handles paused state on its own)
+            view = self.ui_manager.get_current_view(guild_id)
+            if view:
+                await view.update_button_state()
+        timer = self.disconnect_timers.get(guild_id)
+        if timer is None or timer.done():
+            logger.info(f"[音樂] 伺服器 ID: {guild_id}, 頻道內無人，{EMPTY_CHANNEL_DISCONNECT_SECONDS} 秒後離開。")
+            await self._start_disconnect_timer(guild_id, EMPTY_CHANNEL_DISCONNECT_SECONDS)
 
     @staticmethod
     def _is_idle(voice_client: Any) -> bool:
