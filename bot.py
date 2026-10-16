@@ -46,10 +46,12 @@ import os
 import traceback
 import update
 from addons.command_errors import describe_command_error
+from addons.watchdog import start_loop_watchdog
 from function import func, ROOT_DIR
 import json
 import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
 from discord.ext import commands, tasks
 from itertools import cycle
 from cogs.music_lib.state_manager import StateManager
@@ -417,6 +419,10 @@ class PigPig(commands.Bot):
             except Exception:
                 # If system logger fails, use the module-level logger as fallback
                 log.error(f"Failed to initialize system logger: {e}")
+
+        # A frozen event loop cannot report itself: a watchdog thread records the stuck threads
+        # and restarts the bot (see addons/watchdog.py).
+        self.loop_watchdog = start_loop_watchdog(asyncio.get_running_loop(), Path(ROOT_DIR))
 
         # Loading all the modules in `cogs` folder
         for module in os.listdir(ROOT_DIR + '/cogs'):
