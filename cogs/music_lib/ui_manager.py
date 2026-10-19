@@ -1,12 +1,18 @@
 import asyncio
 import discord
 from typing import Optional, Dict, Any
-from .ui.controls import MusicControlView
+from .context import PlaybackContext
+from .ui.controls import MusicControlView, set_queue_field
 from .ui.progress import ProgressDisplay
 from cogs.language_manager import LanguageManager
 from addons.logging import get_logger
 
 log = get_logger(server_id="system", source=__name__)
+
+def _member_name(member: Any) -> str:
+    """Returns a member's server nickname, falling back to the global or account name."""
+    return str(getattr(member, "display_name", None) or getattr(member, "name", ""))
+
 
 class UIManager:
     def __init__(self, bot=None):
@@ -51,12 +57,12 @@ class UIManager:
     def get_current_view(self, guild_id: int) -> Optional[MusicControlView]:
         return self.views.get(guild_id)
 
-    async def update_player_ui(self, interaction: discord.Interaction, item: Dict[str, Any],
+    async def update_player_ui(self, ctx: PlaybackContext, item: Dict[str, Any],
                              current_message: Optional[discord.Message], youtube_manager: Any, music_cog: Any) -> Optional[discord.Message]:
         """Update or create the music player UI.
 
         Args:
-            interaction: The Discord interaction object.
+            ctx: Where playback was requested and by whom.
             item: A dictionary containing song information.
             current_message: The current player message to update or delete.
             youtube_manager: The YouTube manager instance.
@@ -66,7 +72,7 @@ class UIManager:
             The sent Discord Message object, or None if the message could not be sent.
         """
         try:
-            guild_id = interaction.guild.id
+            guild_id = ctx.guild.id
             guild_id_str = str(guild_id)
             embed = self._create_player_embed(item, youtube_manager, guild_id_str)
 
@@ -83,6 +89,9 @@ class UIManager:
                 "get_state_manager": music_cog.get_state_manager,
                 "get_voice_client": lambda: music_cog.get_voice_client(guild_id),
                 "get_lang_manager": music_cog.get_lang_manager,
+                "get_queue_text": music_cog.get_queue_text,
+                "get_queue_options": music_cog.queue_menu_options,
+                "queue_select_callback": music_cog.handle_queue_select,
             }
 
             # Before creating a new view, stop the previous view's background tasks
@@ -90,10 +99,14 @@ class UIManager:
                 old_view = self.views[guild_id]
                 old_view.stop_progress_updater()
 
-            view = MusicControlView(interaction, song_info=item, **callbacks)
+            view = MusicControlView(ctx, song_info=item, **callbacks)
             self.views[guild_id] = view
 
             state = music_cog.state_manager.get_state(guild_id)
+            if state.show_queue:
+                # The queue button is a switch: keep the list on every new song's interface.
+                set_queue_field(embed, self._translate_music(guild_id_str, "player", "queue"),
+                                await music_cog.get_queue_text(guild_id))
             
             # Clean up all previous UI messages
             for old_message in state.ui_messages:
@@ -103,10 +116,11 @@ class UIManager:
                     pass
             state.ui_messages.clear()
 
-            # Always send a new message to ensure it's at the bottom
+            # Always send a new message to ensure it's at the bottom. It replaces the previous
+            # player on every song change, so it is sent silently: no sound or push notification.
             message = None
             try:
-                message = await interaction.channel.send(embed=embed, view=view)
+                message = await ctx.channel.send(embed=embed, view=view, silent=True)
             except discord.errors.Forbidden:
                 log.warning(f"Failed to send player UI in guild {guild_id}: Forbidden (Missing Access). Music will play without UI.")
 
@@ -141,9 +155,7 @@ class UIManager:
             duration_text = self._translate_music(guild_id, "player", "duration")
             views_text = self._translate_music(guild_id, "player", "views")
             progress_text = self._translate_music(guild_id, "player", "progress")
-            queue_text = self._translate_music(guild_id, "player", "queue")
-            queue_empty_text = self._translate_music(guild_id, "player", "queue_empty")
-            added_by_text = self._translate_music(guild_id, "player", "added_by", user=item['requester'].name)
+            added_by_text = self._translate_music(guild_id, "player", "added_by", user=_member_name(item['requester']))
         else:
             # Fallback mechanism
             title_text = self._get_fallback_text("now_playing")
@@ -151,9 +163,7 @@ class UIManager:
             duration_text = self._get_fallback_text("duration")
             views_text = self._get_fallback_text("views")
             progress_text = self._get_fallback_text("progress")
-            queue_text = self._get_fallback_text("queue")
-            queue_empty_text = self._get_fallback_text("queue_empty")
-            added_by_text = self._get_fallback_text("added_by", user=item['requester'].name)
+            added_by_text = self._get_fallback_text("added_by", user=_member_name(item['requester']))
         
         embed = discord.Embed(
             title=title_text,
@@ -185,10 +195,9 @@ class UIManager:
             progress_bar = ProgressDisplay.create_progress_bar(0, item['duration'])
             embed.add_field(name=progress_text, value=progress_bar, inline=False)
         
-        embed.add_field(name=queue_text, value=queue_empty_text, inline=False)
         
         # Add thumbnail
-        thumbnail = youtube_manager.get_thumbnail_url(item['video_id'])
+        thumbnail = item.get('thumbnail') or youtube_manager.get_thumbnail_url(item['video_id'])
         embed.set_thumbnail(url=thumbnail)
         
         # Add footer

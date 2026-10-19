@@ -58,6 +58,12 @@ analysis:
     - **Computation**: code execution, math
     - **Memory**: episodic search, user preference save
     - **Guild context**: emojis, stickers, user activity, channel participants
+    - **Music playback**: whenever the user asks to play, skip, pause, stop, loop, shuffle or change the volume of
+      music, or to edit the music queue, call the matching music tool. The bot joins the requester's voice channel
+      by itself, so never skip the tool because the bot is not connected or you are unsure where the user is.
+      Vague requests such as "one more", "another one" or "再一首" are play requests too: call play_music at once
+      and choose the query yourself from the conversation (for example the artist that was just played). The
+      current player state is already in your context, so never look it up first and never ask.
 
     ### Multi-User Context
     Messages carry a `name` attribute in format `username_userid`.

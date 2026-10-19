@@ -1,5 +1,7 @@
 {
     "responses": {
-        "success": "Queue shuffled."
+        "success": "Shuffle: {status}",
+        "enabled": "on",
+        "disabled": "off"
     }
 }

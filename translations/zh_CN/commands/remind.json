@@ -6,7 +6,14 @@
         "invalid_format": "无效的格式",
         "reminder_message": "提醒: {message}",
         "fallback_user": "使用者",
-        "error_setting": "设置提醒时发生错误"
+        "error_setting": "设置提醒时发生错误",
+        "limit_reached": "你已经有 {limit} 个待发提醒，请先取消一些再设置新的。",
+        "too_far": "提醒时间不能超过一年之后。",
+        "list_title": "你的待发提醒：",
+        "list_empty": "你目前没有待发的提醒。",
+        "list_item": "`#{id}` {time}：{message}",
+        "cancel_success": "已取消提醒 #{id}。",
+        "cancel_not_found": "找不到你的提醒 #{id}（可能已发送或不是你设置的）。"
     },
     "time_units": {
         "seconds": "秒",

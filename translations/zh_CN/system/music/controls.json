@@ -10,6 +10,8 @@
     "update_failed": "无法更新音乐界面",
     "now_playing_prefix": "正在播放",
     "queue_songs": "队列中的歌曲",
+    "queue_total": "共 {count} 首",
+    "recommended": "自动推荐",
     "commands": {
         "music": {
             "controls": {
@@ -17,5 +19,12 @@
                 "queue_songs": "队列中的歌曲"
             }
         }
-    }
+    },
+    "not_in_channel": "你需要和机器人在同一个语音频道才能控制音乐",
+    "no_songs": "❌ 没有可播放的歌曲！",
+    "queue_play_next_placeholder": "⏭️ 选一首插播到下一首",
+    "queue_remove_placeholder": "🗑️ 选一首从队列移除",
+    "queue_select_empty": "队列是空的",
+    "queue_played_next": "{user} 把「{title}」插播到下一首",
+    "queue_removed": "{user} 从队列移除了「{title}」"
 }

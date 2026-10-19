@@ -3,5 +3,9 @@
     "placeholder": "Select a song to play",
     "processing": "⏳ | Processing",
     "processing_desc": "Processing your selection, please wait...",
-    "added": "✅ | Added to playlist: {title}"
+    "added": "✅ | Added to playlist: {title}",
+    "timeout": "⏱️ | Selection timed out",
+    "queue_full": "❌ | The queue is full",
+    "wait_message": "Please try again after a few songs have played.",
+    "error": "❌ | Something went wrong while selecting the song"
 }

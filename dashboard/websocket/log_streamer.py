@@ -35,7 +35,7 @@ class LogStreamer:
         for record in self._buffer:
             if self._matches(record, filters or {}):
                 try:
-                    await websocket.send_text(json.dumps(record))
+                    await websocket.send_text(json.dumps(record, default=repr))
                 except Exception:
                     break
 
@@ -50,7 +50,8 @@ class LogStreamer:
         if len(self._buffer) > self.BUFFER_SIZE:
             self._buffer = self._buffer[-self.BUFFER_SIZE:]
         dead = []
-        msg = json.dumps(record)
+        # Values such as functions (OpenAI request options carry a post_parser) are sent as text.
+        msg = json.dumps(record, default=repr)
         for ws, filters in list(self._clients):
             if not self._matches(record, filters):
                 continue

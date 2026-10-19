@@ -375,6 +375,7 @@ class LanguageManager(commands.Cog):
             "supported_languages": len(self.supported_languages)
         }
 
+    @app_commands.guild_only()
     @app_commands.command(
         description="Set the language used by the server"
     )

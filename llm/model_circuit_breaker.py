@@ -100,6 +100,11 @@ class ModelCircuitBreaker:
                 return ErrorCategory.QUOTA_EXHAUSTED
             return ErrorCategory.RATE_LIMITED
         
+        # A 404 while fetching a URL (for example an image in the chat history) says nothing
+        # about the model; treating it as "model not found" would sideline every model for an hour.
+        if "for url" in error_str or "url='" in error_str or "url=\"" in error_str:
+            return ErrorCategory.UNKNOWN
+
         # Check for model not found errors
         if any(kw in error_str for kw in ["not found", "notfound", "404", "does not exist"]):
             return ErrorCategory.MODEL_NOT_FOUND

@@ -7,7 +7,6 @@
 import aiohttp
 from addons.logging import get_logger
 from typing import Dict, Optional
-import update
 from function import func
 import asyncio
 # module-level logger

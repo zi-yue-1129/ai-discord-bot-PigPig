@@ -2,13 +2,15 @@ import discord
 from typing import Optional
 from cogs.language_manager import LanguageManager
 from addons.logging import get_logger
+from ..context import PlaybackContext
 
 log = get_logger(source=__name__, server_id="system")
 
 class SongSelectView(discord.ui.View):
-    def __init__(self, player, results, interaction):
+    def __init__(self, player, results, interaction, play_next=False):
         super().__init__(timeout=60)
         self.player = player
+        self.play_next = play_next
         self.results = results
         self.original_interaction = interaction
         self.lang_manager: Optional[LanguageManager] = None
@@ -159,12 +161,12 @@ class SongSelectMenu(discord.ui.Select):
                 video_info, error = await view.player.youtube.download_audio(
                     selected_song['url'],
                     folder,
-                    interaction
+                    PlaybackContext.from_interaction(interaction)
                 )
             else:
                 video_info, error = await view.player.youtube.get_video_info_without_download(
                     selected_song['url'],
-                    interaction
+                    PlaybackContext.from_interaction(interaction)
                 )
                 
             if error:
@@ -173,7 +175,14 @@ class SongSelectMenu(discord.ui.Select):
                 return
                 
             video_info['added_by'] = interaction.user.id
-            await view.player.queue_manager.add_to_front_of_queue(guild_id, video_info)
+            if not await view.player.queue_manager.enqueue_request(guild_id, video_info, play_next=view.play_next):
+                full = discord.Embed(
+                    title=self.view_parent._translate_music("select", "queue_full"),
+                    description=self.view_parent._translate_music("select", "wait_message"),
+                    color=discord.Color.red(),
+                )
+                await view.original_interaction.edit_original_response(embed=full, view=None)
+                return
             
             success_message = self.view_parent._translate_music("select", "added", title=video_info['title'])
             embed = discord.Embed(title=success_message, color=discord.Color.blue())
@@ -181,7 +190,7 @@ class SongSelectMenu(discord.ui.Select):
             
             # Start playing if not already playing
             voice_client = interaction.guild.voice_client
-            if voice_client and not voice_client.is_playing():
+            if voice_client and view.player._is_idle(voice_client):
                 await view.player.play_next(interaction)
                 
         except Exception as e:

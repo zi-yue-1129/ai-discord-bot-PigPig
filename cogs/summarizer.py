@@ -1,3 +1,4 @@
+import asyncio
 import re
 from datetime import datetime
 from typing import Optional
@@ -16,6 +17,10 @@ from llm.utils.model_init import create_model_instance
 from .language_manager import LanguageManager
 
 log = get_logger(source=__name__, server_id="system")
+
+# Bounds on one summary: messages read and time the model gets.
+MAX_SUMMARY_MESSAGES = 500
+SUMMARY_TIMEOUT_SECONDS = 120
 
 
 class SummarizerCog(commands.Cog):
@@ -76,6 +81,7 @@ class SummarizerCog(commands.Cog):
                 self.summarize.description = localized_desc
 
         await interaction.response.defer(ephemeral=only_me, thinking=True)
+        limit = max(1, min(limit, MAX_SUMMARY_MESSAGES))
 
         try:
             log.info(f"Starting message fetch for channel {interaction.channel.name if hasattr(interaction.channel, 'name') else 'unknown'}, limit: {limit}.")
@@ -156,7 +162,9 @@ class SummarizerCog(commands.Cog):
             messages = dialogue_history + [HumanMessage(content=user_instruction)]
 
             # Invoke agent
-            response = await summarize_agent.ainvoke({"messages": messages})
+            response = await asyncio.wait_for(
+                summarize_agent.ainvoke({"messages": messages}), timeout=SUMMARY_TIMEOUT_SECONDS
+            )
 
             full_summary = response["messages"][-1].content
             log.info("Summary generated, starting post-processing.")
@@ -208,9 +216,16 @@ class SummarizerCog(commands.Cog):
                 guild_id, "commands", "summarize", "responses", "bot_forbidden"
             ) if self.lang_manager else "❌ 機器人缺少讀取此頻道或讀取訊息歷史紀錄的權限。(The bot is missing permission to read this channel or its message history.)"
             await interaction.followup.send(error_text, ephemeral=True)
+        except asyncio.TimeoutError:
+            error_text = self.lang_manager.translate(
+                guild_id, "commands", "summarize", "responses", "timeout"
+            ) if self.lang_manager else "⌛ The summary timed out. Try again with fewer messages."
+            await interaction.followup.send(error_text, ephemeral=True)
         except Exception as e:
+            # The details go to the error report; users only see the kind of failure.
             await func.report_error(e, "summarizing channel")
-            error_text = self.lang_manager.translate(guild_id, "commands", "summarize", "responses", "error", error=str(e)) if self.lang_manager else f"Error: {e}"
+            error_kind = type(e).__name__
+            error_text = self.lang_manager.translate(guild_id, "commands", "summarize", "responses", "error", error=error_kind) if self.lang_manager else f"Error: {error_kind}"
             await interaction.followup.send(error_text, ephemeral=True)
 
 

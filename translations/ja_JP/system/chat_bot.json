@@ -26,7 +26,24 @@
             "get_user_discord_info": "👤 ユーザーの Discord プロフィールを確認しています...",
             "get_user_stats": "📊 統計カードを生成しています...",
             "get_bot_changelog": "📋 ボットの更新ログを確認しています...",
-            "default": "🛠️ {tool_name} を使用中..."
-        }
+            "play_music": "🎵 リクエストを処理中...",
+            "skip_music": "⏭️ 曲をスキップ中...",
+            "pause_music": "⏸️ 音楽を一時停止中...",
+            "resume_music": "▶️ 再生を再開中...",
+            "stop_music": "⏹️ 音楽を停止中...",
+            "set_music_loop_mode": "🔁 ループモードを設定中...",
+            "set_music_shuffle": "🔀 シャッフルを設定中...",
+            "set_music_volume": "🔊 音量を調整中...",
+            "remove_song_from_queue": "🗑️ 曲を削除中...",
+            "clear_music_queue": "🧹 キューを空にしています...",
+            "default": "🛠️ {tool_name} を使用中...",
+            "list_reminders": "📋 リマインダーを確認中...",
+            "cancel_reminder": "🗑️ リマインダーを取り消し中...",
+            "change_own_nickname": "✏️ ニックネームを変更中...",
+            "clear_user_memory": "🧹 ユーザーの記憶を消去中...",
+            "delete_own_last_message": "🗑️ 直前のメッセージを削除中...",
+            "dramatic_pause": "⏳ 雰囲気を盛り上げ中..."
+        },
+        "switching_model": "⏳ モデルが応答しないため、予備のモデルに切り替えています..."
     }
 }

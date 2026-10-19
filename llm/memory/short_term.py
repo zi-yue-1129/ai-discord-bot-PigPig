@@ -121,11 +121,16 @@ class ShortTermMemoryProvider:
                 human_time = msg.created_at.strftime('%Y-%m-%d %H:%M:%S UTC')
                 content_suffix.append(f"timestamp: {ts} ({human_time})")
 
+                # The bot's own past messages keep the identity prefix (its MessageID is a
+                # valid target for reactions and replies) but get no trailing metadata:
+                # models imitate that suffix and leak it into new replies.
+                is_own_message = msg.author.id == self.bot.user.id
+                suffix = "" if is_own_message else f" [{' | '.join(content_suffix)}]"
+                cleaned_content = ""
                 if msg.content:
                     cleaned_content = re.sub(rf'<@!?{self.bot.user.id}>', '', msg.content).strip()
-                    content_parts.append({"type": "text", "text": f"[{content_prefix}] <som> {cleaned_content} <eom> [{' | '.join(content_suffix)}]"})
-                else:
-                    content_parts.append({"type": "text", "text": f"[{content_prefix}] <som> <eom>  [{ ' | '.join(content_suffix)}]"})
+                body = f"<som> {cleaned_content} <eom>" if cleaned_content else "<som> <eom>"
+                content_parts.append({"type": "text", "text": f"[{content_prefix}] {body}{suffix}"})
 
                 if _att_cfg.enabled and msg.id in attachment_results_by_msg:
                     content_parts.extend(attachment_results_by_msg[msg.id])

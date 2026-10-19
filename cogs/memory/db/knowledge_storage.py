@@ -15,6 +15,10 @@ from addons.logging import get_logger
 
 logger = get_logger(server_id="system", source=__name__)
 
+# Upper bound for one guild's or channel's knowledge: it is injected into every
+# prompt in that scope, so it must not grow without limit.
+MAX_KNOWLEDGE_CHARS = 3000
+
 
 class KnowledgeStorage:
     """Handles knowledge table storage operations."""

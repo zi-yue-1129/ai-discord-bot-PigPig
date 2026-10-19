@@ -1,6 +1,7 @@
 import discord
 import asyncio
 from typing import Optional
+from ..context import PlaybackContext
 from .progress import ProgressDisplay
 from cogs.language_manager import LanguageManager
 from ..queue_manager import PlayMode
@@ -8,14 +9,49 @@ from addons.logging import get_logger
 
 log = get_logger(source=__name__, server_id="system")
 
+
+# Value of the placeholder option shown while the queue is empty (the menu is disabled then).
+_EMPTY_QUEUE_VALUE = "__empty__"
+
+
+def set_queue_field(embed: discord.Embed, name: str, text: str) -> None:
+    """Shows the queue on a player embed, replacing the field when it is already there.
+
+    The field is found by name, not position: a live stream has no progress field.
+
+    Args:
+        embed: The player embed.
+        name: The translated field name.
+        text: The queue text.
+    """
+    position = next((index for index, field in enumerate(embed.fields) if field.name == name), None)
+    if position is None:
+        embed.add_field(name=name, value=text, inline=False)
+    else:
+        embed.set_field_at(position, name=name, value=text, inline=False)
+
+
+def remove_queue_field(embed: discord.Embed, name: str) -> None:
+    """Hides the queue on a player embed (nothing happens when it is not shown).
+
+    Args:
+        embed: The player embed.
+        name: The translated field name.
+    """
+    position = next((index for index, field in enumerate(embed.fields) if field.name == name), None)
+    if position is not None:
+        embed.remove_field(position)
+
+
 class MusicControlView(discord.ui.View):
-    def __init__(self, interaction: discord.Interaction, *,
+    def __init__(self, ctx: PlaybackContext, *,
                 song_info: dict,  # Add song_info
                 previous_callback, toggle_playback_callback, skip_callback, stop_callback,
                 toggle_mode_callback, toggle_shuffle_callback, show_queue_callback, toggle_autoplay_callback,
-                get_queue_manager, get_state_manager, get_voice_client, get_lang_manager):
+                get_queue_manager, get_state_manager, get_voice_client, get_lang_manager,
+                get_queue_text=None, get_queue_options=None, queue_select_callback=None):
         super().__init__(timeout=None)
-        self.guild = interaction.guild
+        self.guild = ctx.guild
         self.message = None
         self.current_embed = None
         self.song_info = song_info  # Store song_info
@@ -39,8 +75,60 @@ class MusicControlView(discord.ui.View):
         self.get_state_manager = get_state_manager
         self.get_voice_client = get_voice_client
         self.get_lang_manager = get_lang_manager
+        self.get_queue_text = get_queue_text
+        self.get_queue_options = get_queue_options
+        self.queue_select_callback = queue_select_callback
+        self._queue_menus: list = []
+        if get_queue_options and queue_select_callback:
+            self._queue_menus = [
+                self._add_queue_menu("queue_play_next", "play_next", row=2),
+                self._add_queue_menu("queue_remove", "remove", row=3),
+            ]
+            self.refresh_queue_menus()
 
         asyncio.create_task(self.update_button_state(update_message=False))
+
+    def _add_queue_menu(self, custom_id: str, action: str, *, row: int) -> discord.ui.Select:
+        """Adds a menu that applies ``action`` to the queued song the user picks.
+
+        Args:
+            custom_id: The menu's ID (its placeholder text is ``<custom_id>_placeholder``).
+            action: ``"play_next"`` or ``"remove"``, passed to the cog's callback.
+            row: The row under the buttons.
+
+        Returns:
+            The added menu.
+        """
+        menu = discord.ui.Select(
+            custom_id=custom_id,
+            placeholder=self._translate_music("controls", f"{custom_id}_placeholder"),
+            options=[discord.SelectOption(label="-", value=_EMPTY_QUEUE_VALUE)],
+            row=row,
+        )
+
+        async def choose(interaction: discord.Interaction) -> None:
+            await self.queue_select_callback(interaction, action, menu.values[0])
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+
+        menu.callback = choose
+        self.add_item(menu)
+        return menu
+
+    def refresh_queue_menus(self) -> None:
+        """Lists the current queue in both menus (disabled while the queue is empty)."""
+        if not self._queue_menus:
+            return
+        options = self.get_queue_options(self.guild.id)
+        for menu in self._queue_menus:
+            if options:
+                menu.options = list(options)
+                menu.disabled = False
+            else:
+                menu.options = [
+                    discord.SelectOption(label=self._translate_music("controls", "queue_select_empty"), value=_EMPTY_QUEUE_VALUE)
+                ]
+                menu.disabled = True
 
     def _get_lang_manager(self):
         """Get language manager instance"""
@@ -109,6 +197,8 @@ class MusicControlView(discord.ui.View):
         guild_id = self.guild.id
         queue_manager = self.get_queue_manager()
 
+        self.refresh_queue_menus()
+
         # Update button states
         for child in self.children:
             if isinstance(child, discord.ui.Button):
@@ -137,6 +227,11 @@ class MusicControlView(discord.ui.View):
                     child.style = discord.ButtonStyle.green if is_shuffle else discord.ButtonStyle.gray
                     child.emoji = discord.PartialEmoji.from_str('🔀')
 
+                # Queue button: lit while the queue list is shown
+                elif child.custom_id == "show_queue":
+                    show_queue = self.get_state_manager().get_state(guild_id).show_queue
+                    child.style = discord.ButtonStyle.green if show_queue else discord.ButtonStyle.gray
+
                 # Autoplay button
                 elif child.custom_id == "toggle_autoplay":
                     state = self.get_state_manager().get_state(guild_id)
@@ -151,14 +246,34 @@ class MusicControlView(discord.ui.View):
             except Exception as e:
                 log.error(f"Failed to update button state: {e}")
 
-    def start_progress_updater(self, duration: int):
+    async def refresh_queue_field(self) -> bool:
+        """Brings the shown queue list up to date (songs may have been added or removed).
+
+        Returns:
+            Whether the queue is shown, so the embed was changed.
+        """
+        state = self.get_state_manager().get_state(self.guild.id)
+        if not (state.show_queue and self.get_queue_text and self.current_embed):
+            return False
+        set_queue_field(
+            self.current_embed, self._translate_music("player", "queue"), await self.get_queue_text(self.guild.id)
+        )
+        return True
+
+    def start_progress_updater(self, duration: int, start_position: int = 0):
+        """Starts the progress bar updater.
+
+        Args:
+            duration: Song length in seconds.
+            start_position: Seconds already played (non-zero after a resume).
+        """
         # 如果是直播，則不啟動進度更新器
         if self.song_info.get('is_live', False):
             return
             
         if self.update_task:
             self.update_task.cancel()
-        self.current_position = 0
+        self.current_position = start_position
         self.update_task = asyncio.create_task(self.update_progress(duration))
 
     def stop_progress_updater(self):
@@ -223,6 +338,7 @@ class MusicControlView(discord.ui.View):
                             try:
                                 progress_bar = ProgressDisplay.create_progress_bar(self.current_position, duration)
                                 progress_field_name = self._translate_music("player", "progress")
+                                await self.refresh_queue_field()
                                 # Find the progress field by name to avoid hardcoded index
                                 for idx, field in enumerate(self.current_embed.fields):
                                     if field.name == progress_field_name or field.name == "🎵 播放進度":

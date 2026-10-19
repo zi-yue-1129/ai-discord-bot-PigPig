@@ -12,7 +12,20 @@ class PlayerState:
     current_view: Optional[Any] = None
     ui_messages: list = field(default_factory=list)
     autoplay: bool = False
+    # Whether the queue list is shown on the player interface (the queue button is a switch).
+    show_queue: bool = False
     player_loop_task: Optional[asyncio.Task] = None
+    consecutive_failures: int = 0
+    volume: float = 1.0
+    # Set when playback was stopped on purpose (skip, previous, replace), so a player
+    # loop that sees the stream end does not mistake it for a dropped connection.
+    user_stopped: bool = False
+    # Set by skip: the next play_next must leave a looped song instead of repeating it.
+    force_next: bool = False
+    # Set when the bot paused the player because the voice channel emptied (not the user).
+    auto_paused: bool = False
+    # Monotonic time the current song started (used to tell a quick skip from a late one).
+    song_started_at: float = 0.0
 
 
 class StateManager:

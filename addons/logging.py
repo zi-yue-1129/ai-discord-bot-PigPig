@@ -212,7 +212,9 @@ class LogRecord:
             "trace_id": self.trace_id,
             "extra": self.extra or {},
         }
-        return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+        # Values such as functions (OpenAI request options carry a ``post_parser``) cannot be
+        # serialized; keep their text instead of losing the whole record.
+        return json.dumps(obj, ensure_ascii=False, separators=(",", ":"), default=repr)
 
 
 class BackgroundWriter:

@@ -9,6 +9,7 @@ from typing import Optional
 from .language_manager import LanguageManager
 from addons.logging import get_logger
 from function import func
+from addons.discord_text import reply_in_chunks
 
 logger = get_logger(server_id="Bot", source="schedule")
 
@@ -73,6 +74,7 @@ class ScheduleManager(commands.Cog):
             ) if self.lang_manager else f"YAML檔案解析錯誤：{str(e)}"
             raise Exception(error_msg)
 
+    @app_commands.guild_only()
     @app_commands.command(name="query_schedule", description="查詢行程表")
     @app_commands.choices(query_type=[
         app_commands.Choice(name="完整行程表", value="full"),
@@ -95,7 +97,7 @@ class ScheduleManager(commands.Cog):
         try:
             target_user_id = target_user.id if target_user else interaction.user.id
             result = await self._core_query_schedule(interaction, query_type.value, target_user_id, time, day.value if day else None)
-            await interaction.edit_original_response(content=result)
+            await reply_in_chunks(interaction, result)
         except Exception as e:
             await func.report_error(e, "querying schedule")
             error_msg = self.lang_manager.translate(
@@ -128,7 +130,10 @@ class ScheduleManager(commands.Cog):
                 yaml.dump(schedule_data, fw, allow_unicode=True)
 
         guild = interaction_or_ctx.guild
-        queried_user = await guild.fetch_member(target_user_id)
+        try:
+            queried_user = await guild.fetch_member(target_user_id)
+        except discord.NotFound:
+            queried_user = None
         if queried_user is None:
             return self.lang_manager.translate(
                 guild_id, "commands", "query_schedule", "responses", "user_not_found"
@@ -198,7 +203,7 @@ class ScheduleManager(commands.Cog):
         for day, events in schedule.items():
             # 嘗試翻譯星期名稱
             translated_day = self.lang_manager.translate(
-                guild_id, "commands", "query_schedule", "choices", "weekdays", day
+                guild_id, "commands", "schedule", "query_schedule", "choices", "weekdays", day
             ) if self.lang_manager else day
             
             day_header = self.lang_manager.translate(
@@ -348,7 +353,7 @@ class ScheduleManager(commands.Cog):
         message_content = f"```yaml\n{template}\n```"
         if len(message_content) > 2000:
             import io
-            file = discord.File(io.StringIO(template), filename="template.yaml")
+            file = discord.File(io.BytesIO(template.encode("utf-8")), filename="template.yaml")
             success_msg = self.lang_manager.translate(
                 guild_id, "commands", "show_template", "responses", "file_sent"
             ) if self.lang_manager else "行程表範本已作為檔案發送！"

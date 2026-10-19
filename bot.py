@@ -45,10 +45,13 @@ import sys
 import os
 import traceback
 import update
+from addons.command_errors import describe_command_error
+from addons.watchdog import start_loop_watchdog
 from function import func, ROOT_DIR
 import json
 import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
 from discord.ext import commands, tasks
 from itertools import cycle
 from cogs.music_lib.state_manager import StateManager
@@ -256,16 +259,7 @@ class PigPig(commands.Bot):
                     message.author.display_name
                 ))
 
-            # Record message event for dashboard statistics
-            try:
-                if hasattr(self, 'stats_collector') and self.stats_collector:
-                    await self.stats_collector.record_message(
-                        guild_id=str(message.guild.id),
-                        user_id=str(message.author.id),
-                        channel_id=str(message.channel.id),
-                    )
-            except Exception:
-                pass  # Stats recording must never block message handling
+            # Dashboard message events are recorded by StatsCog.on_message.
 
             guild_id = str(message.guild.id)
             self.setup_logger_for_guild(guild_id)
@@ -426,6 +420,10 @@ class PigPig(commands.Bot):
                 # If system logger fails, use the module-level logger as fallback
                 log.error(f"Failed to initialize system logger: {e}")
 
+        # A frozen event loop cannot report itself: a watchdog thread records the stuck threads
+        # and restarts the bot (see addons/watchdog.py).
+        self.loop_watchdog = start_loop_watchdog(asyncio.get_running_loop(), Path(ROOT_DIR))
+
         # Loading all the modules in `cogs` folder
         for module in os.listdir(ROOT_DIR + '/cogs'):
             # Filter conditions:
@@ -492,45 +490,7 @@ class PigPig(commands.Bot):
 
             lang_manager = self.get_cog("LanguageManager")
 
-            # Handle specific expected errors first
-            if isinstance(error, discord.app_commands.CommandOnCooldown):
-                if lang_manager:
-                    try:
-                        error_msg = lang_manager.translate(guild_id_str, "errors", "cooldown")
-                        if error_msg:
-                            error_msg = error_msg.format(retry_after=round(error.retry_after, 1))
-                        else:
-                            error_msg = f"⏳ 請稍後再試。此指令還在冷卻中，需等待 {error.retry_after:.1f} 秒。(Command on cooldown)"
-                    except Exception:
-                        error_msg = f"⏳ 請稍後再試。此指令還在冷卻中，需等待 {error.retry_after:.1f} 秒。(Command on cooldown)"
-                else:
-                    error_msg = f"⏳ 此指令冷卻中，請再等候 {error.retry_after:.1f} 秒。(Command on cooldown. Please wait {error.retry_after:.1f}s.)"
-
-            elif isinstance(error, discord.app_commands.MissingPermissions):
-                if lang_manager:
-                    try:
-                        error_msg = lang_manager.translate(guild_id_str, "errors", "permission_denied")
-                        if not error_msg:
-                            error_msg = "❌ 你沒有權限使用此指令。(Permission denied)"
-                    except Exception:
-                        error_msg = "❌ 你沒有權限使用此指令。(Permission denied)"
-                else:
-                    error_msg = "🚫 您沒有足夠的權限執行此指令。(You do not have permission to execute this command.)"
-
-            elif isinstance(error, discord.app_commands.BotMissingPermissions):
-                error_msg = "🤖 機器人缺少必要的權限來執行此指令。(The bot is missing necessary permissions to execute this command.)"
-
-            else:
-                # Send a general user-friendly error message
-                if lang_manager:
-                    try:
-                        error_msg = lang_manager.translate(guild_id_str, "system", "errors", "unexpected")
-                        if not error_msg or error_msg.startswith("[Translation not found"):
-                            error_msg = "❌ 抱歉，執行此指令時發生未預期的錯誤。(An unexpected error occurred.)"
-                    except Exception:
-                        error_msg = "❌ 抱歉，執行此指令時發生未預期的錯誤。(An unexpected error occurred.)"
-                else:
-                    error_msg = "❌ 抱歉，執行此指令時發生未預期的錯誤。(An unexpected error occurred.)"
+            error_msg = describe_command_error(error, lang_manager, guild_id_str)
 
             try:
                 if not interaction.response.is_done():

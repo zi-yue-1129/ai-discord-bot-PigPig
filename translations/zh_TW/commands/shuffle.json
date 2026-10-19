@@ -1,5 +1,7 @@
 {
     "responses": {
-        "success": "隊列已隨機播放。"
+        "success": "隨機播放：{status}",
+        "enabled": "開啟",
+        "disabled": "關閉"
     }
 }

@@ -55,7 +55,7 @@ class EpisodicMemoryTools:
                 vector_query (Optional[str]): Natural-language semantic query for vector search.
                 keyword_query (Optional[str]): Exact-term query for keyword-based matching.
                 user_id (Optional[str]): If provided, filter memories to the specified user.
-                global_search (bool): If True, search across all channels. If False, search only in current channel. Default is False.
+                global_search (bool): If True, search across all channels of this server. If False, search only in current channel. Default is False.
     
             Returns:
                 str: A human-readable, plain-text summary of matched MemoryFragment entries,
@@ -82,8 +82,10 @@ class EpisodicMemoryTools:
                 
                 current_channel_id = str(message.channel.id) if hasattr(message, 'channel') and hasattr(message.channel, 'id') else None
                 
-                # Determine search scope based on global_search parameter
-                search_channel_id = None if global_search else current_channel_id
+                # A search never leaves the current server; in a DM it never leaves the conversation.
+                guild = getattr(message, "guild", None)
+                search_guild_id = str(guild.id) if guild is not None else None
+                search_channel_id = None if (global_search and search_guild_id) else current_channel_id
                 
                 # Delegate to the vector store's search implementation, forwarding both
                 # semantic and keyword parameters for a hybrid search when available.
@@ -91,7 +93,8 @@ class EpisodicMemoryTools:
                     vector_query=vector_query,
                     keyword_query=keyword_query,
                     user_id=user_id,
-                    channel_id=search_channel_id
+                    channel_id=search_channel_id,
+                    guild_id=search_guild_id,
                 )
     
                 if not fragments:

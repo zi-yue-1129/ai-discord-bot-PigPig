@@ -11,7 +11,8 @@
         "playlist_download_failed": "下载播放列表信息失败。",
         "queue_full_desc": "播放队列已满。",
         "queue_full_title": "队列已满",
-        "video_info_failed": "获取视频信息失败。"
+        "video_info_failed": "获取视频信息失败。",
+        "spotify_failed": "无法读取这个 Spotify 链接（目前只支持单曲链接）。"
     },
     "responses": {
         "playlist_added": "播放列表已加入队列。",

@@ -26,7 +26,24 @@
             "get_user_discord_info": "👤 正在查詢使用者 Discord 資料...",
             "get_user_stats": "📊 正在生成統計名片...",
             "get_bot_changelog": "📋 正在查詢機器人更新日誌...",
-            "default": "🛠️ 正在使用 {tool_name}..."
-        }
+            "play_music": "🎵 正在處理點歌...",
+            "skip_music": "⏭️ 正在跳過歌曲...",
+            "pause_music": "⏸️ 正在暫停音樂...",
+            "resume_music": "▶️ 正在繼續播放...",
+            "stop_music": "⏹️ 正在停止音樂...",
+            "set_music_loop_mode": "🔁 正在設定循環模式...",
+            "set_music_shuffle": "🔀 正在設定隨機播放...",
+            "set_music_volume": "🔊 正在調整音量...",
+            "remove_song_from_queue": "🗑️ 正在移除歌曲...",
+            "clear_music_queue": "🧹 正在清空待播清單...",
+            "default": "🛠️ 正在使用 {tool_name}...",
+            "list_reminders": "📋 正在查看你的提醒...",
+            "cancel_reminder": "🗑️ 正在取消提醒...",
+            "change_own_nickname": "✏️ 正在更改暱稱...",
+            "clear_user_memory": "🧹 正在清除使用者記憶...",
+            "delete_own_last_message": "🗑️ 正在刪除上一則訊息...",
+            "dramatic_pause": "⏳ 正在醞釀氣氛..."
+        },
+        "switching_model": "⏳ 這個模型沒有回應，正在改用備用模型..."
     }
 }

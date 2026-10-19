@@ -1,0 +1,5 @@
+{
+    "responses": {
+        "success": "Volume set to {percent}%."
+    }
+}

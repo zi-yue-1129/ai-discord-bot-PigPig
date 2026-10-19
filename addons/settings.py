@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import yaml
 import asyncio
 from addons.logging import get_logger
@@ -185,6 +186,97 @@ class UpdateConfig:
         self.restart: dict = data.get("restart", {})
         self.github: dict = data.get("github", {})
 
+@dataclass(frozen=True)
+class MusicAISettings:
+    """How the AI interacts with the music player (``ai:`` block of music.yaml).
+
+    Attributes:
+        status_in_context: Add the player status to every conversation's context.
+        list_queue_titles: Include the titles of upcoming songs in that status.
+        max_queue_titles: How many upcoming titles to list at most.
+        announce_failures: Also post a channel message when an AI music action fails.
+            Off by default: music tools run in the info agent, so the reply agent sees
+            the failure and reports it itself.
+        start_confirm_timeout_seconds: How long ``play_music`` waits for playback
+            to actually start before reporting failure; 0 disables the check.
+    """
+
+    status_in_context: bool = True
+    list_queue_titles: bool = True
+    max_queue_titles: int = 10
+    announce_failures: bool = False
+    start_confirm_timeout_seconds: float = 5.0
+
+
+@dataclass(frozen=True)
+class StreamingSettings:
+    """First-song streaming (``streaming:`` block of music.yaml).
+
+    When nothing is playing, the first song starts from its stream URL while the file
+    downloads in the background, instead of waiting for the whole download.
+
+    Attributes:
+        enabled: Whether to stream the first song. Off restores download-then-play.
+        drop_tolerance_seconds: A streamed song that ends this many seconds (or more)
+            before its duration is treated as a dropped connection and resumed from
+            the downloaded file.
+        max_resumes: How many times one song may be resumed before giving up.
+    """
+
+    enabled: bool = True
+    drop_tolerance_seconds: int = 10
+    max_resumes: int = 2
+
+
+@dataclass(frozen=True)
+class AutoplaySettings:
+    """Autoplay recommendations (``autoplay:`` block of music.yaml).
+
+    Attributes:
+        use_mix: Whether to take candidates from the YouTube Mix of the current song.
+        candidate_pool: How many Mix entries to read.
+        min_duration_seconds: Shorter songs are not recommended.
+        max_per_author: Cap on songs by one author in one recommendation batch.
+        history_size: How many recently played songs per guild are never recommended again.
+        skip_penalty_window_seconds: Skipping a recommendation within this time counts against its author.
+        database_path: SQLite file where each guild's taste (played, requested, skipped) is kept.
+        banned_keywords: Titles containing any of these (case-insensitive) are not recommended.
+    """
+
+    use_mix: bool = True
+    candidate_pool: int = 25
+    min_duration_seconds: int = 60
+    max_per_author: int = 2
+    history_size: int = 50
+    skip_penalty_window_seconds: int = 15
+    database_path: str = "data/music/taste.db"
+    banned_keywords: tuple = ("1 hour", "10 hours", "slowed", "nightcore", "reaction", "8d audio")
+
+    def __post_init__(self) -> None:
+        # YAML gives a list; keep the field immutable like the rest of the dataclass.
+        object.__setattr__(self, "banned_keywords", tuple(self.banned_keywords))
+
+
+@dataclass(frozen=True)
+class SourcesSettings:
+    """Where songs may come from (``sources:`` block of music.yaml).
+
+    Attributes:
+        allowed_hosts: Hosts whose links are opened by yt-dlp (subdomains included). Links to
+            any other host are treated as search text.
+        spotify: Whether Spotify track links are turned into a YouTube search.
+        spotify_timeout_seconds: How long to wait for a Spotify page.
+    """
+
+    allowed_hosts: tuple = ("youtube.com", "youtu.be", "soundcloud.com")
+    spotify: bool = True
+    spotify_timeout_seconds: int = 10
+
+    def __post_init__(self) -> None:
+        # YAML gives a list; keep the field immutable like the rest of the dataclass.
+        object.__setattr__(self, "allowed_hosts", tuple(str(host).lower() for host in self.allowed_hosts))
+
+
 class MusicConfig:
     """Configuration object mapped from config/music.yaml"""
 
@@ -194,6 +286,11 @@ class MusicConfig:
         self.music_temp_base: dict = data.get("music_temp_base", "temp/music")
         self.ffmpeg : dict = data.get("ffmpeg", {})
         self.youtube_cookies_path: str = data.get("youtube_cookies_path", "./data/youtube_cookies.txt")
+        # Unknown keys raise TypeError so a typo in music.yaml is not silently ignored.
+        self.ai: MusicAISettings = MusicAISettings(**(data.get("ai") or {}))
+        self.streaming: StreamingSettings = StreamingSettings(**(data.get("streaming") or {}))
+        self.autoplay: AutoplaySettings = AutoplaySettings(**(data.get("autoplay") or {}))
+        self.sources: SourcesSettings = SourcesSettings(**(data.get("sources") or {}))
 
 class PromptConfig:
     """Configuration object mapped from config/prompt/*.yaml"""

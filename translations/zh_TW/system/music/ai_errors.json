@@ -1,0 +1,17 @@
+{
+    "user_not_in_voice": "請先加入一個語音頻道，我才能播放音樂。",
+    "not_in_bot_channel": "你需要和機器人在同一個語音頻道才能控制音樂。",
+    "voice_connect_failed": "無法加入語音頻道。",
+    "lookup_failed": "無法取得這首歌：{detail}",
+    "queue_full": "待播清單已滿。",
+    "no_results": "找不到符合的歌曲。",
+    "nothing_playing": "目前沒有播放音樂。",
+    "already_paused": "音樂已經是暫停狀態。",
+    "not_paused": "音樂沒有被暫停。",
+    "invalid_mode": "不支援這個循環模式。",
+    "invalid_volume": "音量必須介於 0 到 100。",
+    "invalid_position": "待播清單中沒有這個位置的歌曲。",
+    "playback_not_started": "歌曲已加入，但沒有成功開始播放。",
+    "already_playing": "這首歌正在播放，所以沒有重複加入。",
+    "not_in_queue": "這首歌已經不在佇列中了。"
+}

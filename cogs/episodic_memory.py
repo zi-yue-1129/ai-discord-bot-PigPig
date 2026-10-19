@@ -72,11 +72,48 @@ class EpisodicMemoryService(commands.Cog):
             ("commands", "memory", "search", "no_parameters"): "Please provide at least one search parameter (vector_query, keyword_query, user_id, or channel_id).",
             ("commands", "memory", "search", "results_found"): "Found {len} related memories:\n\n",
             ("commands", "memory", "search", "no_results"): "No matching memories found.",
+            ("commands", "memory", "search", "result_header"): "**Result {index}:**",
+            ("commands", "memory", "search", "result_content"): "Content: {content}",
+            ("commands", "memory", "search", "result_score"): "Similarity: {score}",
+            ("commands", "memory", "search", "result_time"): "Time: {time}",
+            ("commands", "memory", "search", "more_results"): "... and {count} more results",
             ("commands", "memory", "search", "not_implemented"): "Search functionality is not yet implemented in the storage backend. Please contact the developer.",
             ("commands", "memory", "search", "error"): "An error occurred while searching memory, error has been logged."
         }
         
         return fallbacks.get(arg_tuple, args[-1] if args else "Translation not found")
+
+    def _format_search_results(self, lang_manager: Any, guild_id: str, search_results: List[Any]) -> str:
+        """Formats up to ten search results with labels in the server's language.
+
+        Args:
+            lang_manager: The language manager, or None for the English defaults.
+            guild_id: The guild whose language is used.
+            search_results: Memory fragments with ``content``, ``score`` and ``metadata``.
+
+        Returns:
+            The results as text, followed by a count of the results that were left out.
+        """
+        from datetime import datetime
+
+        def label(key: str, **kwargs: Any) -> str:
+            return self._translate_text(lang_manager, guild_id, "commands", "memory", "search", key, **kwargs)
+
+        formatted_results = []
+        for index, result in enumerate(search_results[:10], 1):
+            formatted = label("result_header", index=index) + "\n"
+            formatted += label("result_content", content=result.content) + "\n"
+            if result.score is not None:
+                formatted += label("result_score", score=f"{result.score:.3f}") + "\n"
+            if result.metadata.get('timestamp'):
+                timestamp = datetime.fromtimestamp(result.metadata['timestamp'])
+                formatted += label("result_time", time=timestamp.strftime('%Y-%m-%d %H:%M:%S')) + "\n"
+            formatted_results.append(formatted)
+
+        text = "\n\n".join(formatted_results)
+        if len(search_results) > 10:
+            text += "\n\n" + label("more_results", count=len(search_results) - 10)
+        return text
 
     @app_commands.check(lambda interaction: interaction.user.id == tokens.bot_owner_id)
     @app_commands.command(name="force_update_memory", description="Force update this channel's episodic memory.")
@@ -246,25 +283,9 @@ class EpisodicMemoryService(commands.Cog):
                         results_text = base_text.format(len=len(search_results))
                     except (KeyError, ValueError):
                         # Fallback to manual formatting if translation template doesn't support formatting
-                        results_text = f"找到 {len(search_results)} 筆相關記憶：\n\n"
+                        results_text = f"Found {len(search_results)} related memories:\n\n"
                     
-                    # Format each result
-                    formatted_results = []
-                    for i, result in enumerate(search_results[:10], 1):
-                        formatted_result = f"**結果 {i}:**\n"
-                        formatted_result += f"內容：{result.content}\n"
-                        if result.score is not None:
-                            formatted_result += f"相似度：{result.score:.3f}\n"
-                        if result.metadata.get('timestamp'):
-                            from datetime import datetime
-                            timestamp = datetime.fromtimestamp(result.metadata['timestamp'])
-                            formatted_result += f"時間：{timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                        formatted_results.append(formatted_result)
-                    
-                    results_text += "\n\n".join(formatted_results)
-                    
-                    if len(search_results) > 10:
-                        results_text += f"\n\n... 及其他 {len(search_results) - 10} 筆結果"
+                    results_text += self._format_search_results(lang_manager, guild_id, search_results)
                 else:
                     results_text = self._translate_text(lang_manager, guild_id, "commands", "memory", "search", "no_results")
                 

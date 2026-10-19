@@ -4,7 +4,7 @@
     "views": "視聴回数",
     "progress": "進行状況",
     "queue": "次に再生",
-    "added_by": "追加者",
+    "added_by": "追加者：{user}",
     "commands": {
         "music": {
             "player": {
@@ -19,5 +19,6 @@
     },
     "now_playing": "🎵 再生中",
     "uploader": "👤 アップローダー",
-    "more_songs": "... 他に {count} 曲"
+    "more_songs": "... 他に {count} 曲",
+    "live": "ライブ"
 }

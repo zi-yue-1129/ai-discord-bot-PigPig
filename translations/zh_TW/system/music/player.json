@@ -4,7 +4,7 @@
     "views": "觀看次數",
     "progress": "進度",
     "queue": "即將播放",
-    "added_by": "點播者",
+    "added_by": "點播者：{user}",
     "commands": {
         "music": {
             "player": {
@@ -19,5 +19,6 @@
     },
     "now_playing": "🎵 正在播放",
     "uploader": "👤 上傳頻道",
-    "more_songs": "... 還有 {count} 首歌曲"
+    "more_songs": "... 還有 {count} 首歌曲",
+    "live": "直播"
 }

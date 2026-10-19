@@ -4,7 +4,7 @@
     "time_column": "時間",
     "description_column": "說明",
     "no_events": "沒有活動",
-    "day_header": "日期",
+    "day_header": "**{day}**",
     "specific_time_title": "指定時間的行程",
     "no_events_found": "找不到任何活動",
     "next_event": "下一個活動",

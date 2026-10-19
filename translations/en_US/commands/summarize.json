@@ -9,7 +9,8 @@
         "no_messages": "No human conversation messages found within the specified range to summarize.",
         "preparing": "📝 Preparing summary...",
         "error": "❌ Oops, an unexpected error occurred. Please contact the administrator.\n`{error}`",
-        "bot_forbidden": "❌ The bot lacks permission to read this channel or its message history."
+        "bot_forbidden": "❌ The bot lacks permission to read this channel or its message history.",
+        "timeout": "⌛ The summary timed out. Try again with fewer messages."
     },
     "embed": {
         "title": "📄 Conversation Summary",

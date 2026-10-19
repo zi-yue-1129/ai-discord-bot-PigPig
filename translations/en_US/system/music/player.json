@@ -4,7 +4,7 @@
     "views": "Views",
     "progress": "Progress",
     "queue": "Up Next",
-    "added_by": "Added by",
+    "added_by": "Added by {user}",
     "commands": {
         "music": {
             "player": {
@@ -19,5 +19,6 @@
     },
     "now_playing": "🎵 Now Playing",
     "uploader": "👤 Uploader",
-    "more_songs": "... and {count} more songs"
+    "more_songs": "... and {count} more songs",
+    "live": "LIVE"
 }

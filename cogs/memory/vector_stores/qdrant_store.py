@@ -169,6 +169,31 @@ class QdrantStore(VectorStoreInterface):
             asyncio.create_task(self._report_error(e))
             raise VectorOperationError("Failed to add memories") from e
 
+    @staticmethod
+    def _metadata_conditions(
+        *, user_id: Optional[str], channel_id: Optional[str], guild_id: Optional[str]
+    ) -> list:
+        """Builds the payload filter conditions shared by vector and keyword search.
+
+        Args:
+            user_id: Only fragments this user took part in.
+            channel_id: Only fragments from this channel.
+            guild_id: Only fragments from this guild (keeps searches inside one server).
+
+        Returns:
+            Qdrant ``FieldCondition`` objects for the given limits.
+        """
+        from qdrant_client.models import FieldCondition, MatchAny, MatchValue
+
+        conditions = []
+        if user_id:
+            conditions.append(FieldCondition(key="metadata.author_ids", match=MatchAny(any=[str(user_id)])))
+        if channel_id:
+            conditions.append(FieldCondition(key="metadata.channel_id", match=MatchValue(value=str(channel_id))))
+        if guild_id:
+            conditions.append(FieldCondition(key="metadata.guild_id", match=MatchValue(value=str(guild_id))))
+        return conditions
+
     async def search_memories_by_vector(
         self,
         query_text: str,
@@ -176,30 +201,15 @@ class QdrantStore(VectorStoreInterface):
         user_id: Optional[str] = None,
         channel_id: Optional[str] = None,
         min_score: Optional[float] = None,
+        guild_id: Optional[str] = None,
     ) -> List[MemoryFragment]:
         """Vector similarity search with metadata filtering."""
         try:
             from qdrant_client.models import FieldCondition, MatchAny, MatchValue, Filter
             
-            filter_conditions = []
+            filter_conditions = self._metadata_conditions(user_id=user_id, channel_id=channel_id, guild_id=guild_id)
+            logger.info(f"🔍 Filter: user={user_id} channel={channel_id} guild={guild_id}")
             
-            if user_id:
-                user_condition = FieldCondition(
-                    key="metadata.author_ids",
-                    match=MatchAny(any=[str(user_id)])
-                )
-                filter_conditions.append(user_condition)
-                logger.info(f"🔍 Filter: metadata.author_ids contains '{user_id}'")
-            
-            if channel_id:
-                channel_condition = FieldCondition(
-                    key="metadata.channel_id",
-                    match=MatchValue(value=str(channel_id))
-                )
-                filter_conditions.append(channel_condition)
-                logger.info(f"🔍 Filter: metadata.channel_id equals '{channel_id}'")
-            
-
             search_filter = Filter(must=filter_conditions) if filter_conditions else None
             loop = asyncio.get_event_loop()
             if search_filter:
@@ -275,7 +285,8 @@ class QdrantStore(VectorStoreInterface):
         query_text: str,
         user_id: Optional[str] = None,
         channel_id: Optional[str] = None,
-        k: int = 5
+        k: int = 5,
+        guild_id: Optional[str] = None,
     ) -> List[MemoryFragment]:
         """Keyword search using Qdrant query API with payload filtering."""
         try:
@@ -293,19 +304,9 @@ class QdrantStore(VectorStoreInterface):
                 )
                 filter_conditions.append(keyword_condition)
             
-            if user_id:
-                user_condition = FieldCondition(
-                    key="metadata.author_ids",
-                    match=MatchAny(any=[str(user_id)])
-                )
-                filter_conditions.append(user_condition)
-            
-            if channel_id:
-                channel_condition = FieldCondition(
-                    key="metadata.channel_id",
-                    match=MatchValue(value=str(channel_id))
-                )
-                filter_conditions.append(channel_condition)
+            filter_conditions.extend(
+                self._metadata_conditions(user_id=user_id, channel_id=channel_id, guild_id=guild_id)
+            )
             
             # Create filter with all conditions
             search_filter = Filter(must=filter_conditions) if filter_conditions else None
@@ -354,6 +355,7 @@ class QdrantStore(VectorStoreInterface):
         keyword_query: Optional[str] = None,
         user_id: Optional[str] = None,
         channel_id: Optional[str] = None,
+        guild_id: Optional[str] = None,
     ) -> List[MemoryFragment]:
         """Hybrid search combining vector and keyword results."""
         if not vector_query and not keyword_query:
@@ -364,23 +366,23 @@ class QdrantStore(VectorStoreInterface):
 
         if vector_query and not keyword_query:
             return await self.search_memories_by_vector(
-                vector_query, limit=vector_k, user_id=user_id, channel_id=channel_id
+                vector_query, limit=vector_k, user_id=user_id, channel_id=channel_id, guild_id=guild_id
             )
 
         if keyword_query and not vector_query:
             return await self.search_memories_by_keyword(
-                keyword_query, user_id=user_id, channel_id=channel_id, k=keyword_k
+                keyword_query, user_id=user_id, channel_id=channel_id, k=keyword_k, guild_id=guild_id
             )
 
         # Both queries: run in parallel and merge
         tasks = []
         if vector_query:
             tasks.append(self.search_memories_by_vector(
-                vector_query, limit=vector_k, user_id=user_id, channel_id=channel_id
+                vector_query, limit=vector_k, user_id=user_id, channel_id=channel_id, guild_id=guild_id
             ))
         if keyword_query:
             tasks.append(self.search_memories_by_keyword(
-                keyword_query, user_id=user_id, channel_id=channel_id, k=keyword_k
+                keyword_query, user_id=user_id, channel_id=channel_id, k=keyword_k, guild_id=guild_id
             ))
 
         results = await asyncio.gather(*tasks)

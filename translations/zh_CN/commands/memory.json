@@ -11,6 +11,11 @@
         "results_found": "找到{len}条相关记忆：\n\n",
         "no_results": "找不到符合条件的记忆。",
         "not_implemented": "搜索功能尚未在存储后端实现。请联系开发者。",
-        "error": "搜索记忆时发生错误，已记录错误日志。"
+        "error": "搜索记忆时发生错误，已记录错误日志。",
+        "result_header": "**结果 {index}:**",
+        "result_content": "内容：{content}",
+        "result_score": "相似度：{score}",
+        "result_time": "时间：{time}",
+        "more_results": "... 及其他 {count} 条结果"
     }
 }

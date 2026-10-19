@@ -1,6 +1,7 @@
 import os
 import subprocess
 import asyncio
+import glob
 import yt_dlp
 import discord
 import random
@@ -9,6 +10,9 @@ from typing import Optional, Any, Dict, List, Set
 from youtube_search import YoutubeSearch
 from addons.settings import music_config
 from addons.logging import get_logger
+from .context import PlaybackContext
+from .sources import is_preview_only, thumbnail_of
+from .recommender import TasteMemory, filter_candidates, rank_candidates
 
 log = get_logger(source=__name__, server_id="system")
 
@@ -22,9 +26,33 @@ async def check_ffmpeg(ffmpeg_path='/usr/bin/ffmpeg'):
         log.error(f"FFmpeg 無法使用或運作異常: {ffmpeg_path}")
         return False
 
+# YoutubeSearch has no timeout of its own and can retry forever on a consent or captcha page.
+SEARCH_TIMEOUT_SECONDS = 15
+PREVIEW_ONLY_ERROR = "此曲目只提供 30 秒試聽，無法完整播放"
+# Reading a YouTube Mix takes about a second; give up well before autoplay feels stuck.
+MIX_TIMEOUT_SECONDS = 20
+
+
+def parse_view_count(value: Any) -> int:
+    """Turns a view count such as ``"1,234,567 views"`` (or an int) into a number.
+
+    Args:
+        value: The ``views`` field of a search result.
+
+    Returns:
+        The count, or 0 when there is none ("No views", ``None``).
+    """
+    if isinstance(value, int):
+        return value
+    digits = re.sub(r"[^\d]", "", str(value or ""))
+    return int(digits) if digits else 0
+
+
 class YouTubeManager:
     def __init__(self, time_limit=1800):
         self.time_limit = time_limit
+        # Seeded so recommendation jitter is reproducible.
+        self._rng = random.Random(20240601)
         try:
             self.settings = music_config
             self.ffmpeg_config = self.settings.ffmpeg
@@ -108,8 +136,9 @@ class YouTubeManager:
 
     async def search_videos(self, query, max_results=10):
         try:
-            results = await asyncio.to_thread(
-                lambda: YoutubeSearch(query, max_results=max_results).to_dict()
+            results = await asyncio.wait_for(
+                asyncio.to_thread(lambda: YoutubeSearch(query, max_results=max_results).to_dict()),
+                timeout=SEARCH_TIMEOUT_SECONDS,
             )
             
             for result in results:
@@ -142,13 +171,13 @@ class YouTubeManager:
             log.error(f"YouTube 搜尋失敗: {e}")
             return []
 
-    async def download_playlist(self, url: str, folder: str, interaction: discord.Interaction) -> tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    async def download_playlist(self, url: str, folder: str, ctx: PlaybackContext) -> tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
         """Download a YouTube playlist.
 
         Args:
             url: The YouTube playlist URL.
             folder: The destination folder path.
-            interaction: The Discord interaction object.
+            ctx: Where playback was requested and by whom.
 
         Returns:
             A tuple of (video_infos, error_message).
@@ -202,15 +231,15 @@ class YouTubeManager:
                         "video_id": entry.get('id', '未知ID'),
                         "author": entry.get('uploader', '未知上傳者'),
                         "views": entry.get('view_count', 0),
-                        "requester": interaction.user,
-                        "user_avatar": interaction.user.display_avatar.url,
+                        "requester": ctx.user,
+                        "user_avatar": ctx.user.display_avatar.url,
                         "file_path": None,
                         "is_live": entry.get('is_live', False)
                     }
                     for entry in info_dict['entries'][1:]
                 ]
                 
-                first_song_download = self.download_audio(video_url, folder, interaction)
+                first_song_download = self.download_audio(video_url, folder, ctx)
                 first_song_info, error = await first_song_download
                 
                 if first_song_info:
@@ -224,12 +253,12 @@ class YouTubeManager:
             log.error(f"[音樂] 播放清單下載失敗: {e}")
             return None, "播放清單下載失敗"
 
-    async def get_video_info_without_download(self, url: str, interaction: discord.Interaction) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    async def get_video_info_without_download(self, url: str, ctx: PlaybackContext) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
         """Get video information without downloading.
 
         Args:
             url: The YouTube video URL.
-            interaction: The Discord interaction object.
+            ctx: Where playback was requested and by whom.
 
         Returns:
             A tuple of (video_info, error_message).
@@ -263,8 +292,11 @@ class YouTubeManager:
             info_dict = await extract_info()
             is_live = info_dict.get('is_live', False)
 
+            if is_preview_only(info_dict):
+                return None, PREVIEW_ONLY_ERROR
+
             if not is_live and info_dict.get('duration', 0) > self.time_limit:
-                log.info(f"[音樂] 伺服器 ID: {interaction.guild.id}, 影片時長過長！")
+                log.info(f"[音樂] 伺服器 ID: {ctx.guild.id}, 影片時長過長！")
                 return None, "影片時長過長！超過 30 分鐘"
 
             video_info = {
@@ -272,12 +304,13 @@ class YouTubeManager:
                 "title": info_dict.get('title', '未知標題'),
                 "url": info_dict.get('webpage_url', url),
                 "stream_url": info_dict.get('url') if is_live else None,
+                "thumbnail": thumbnail_of(info_dict),
                 "duration": info_dict.get('duration', 0),
                 "video_id": info_dict.get('id', '未知ID'),
                 "author": info_dict.get('uploader', '未知上傳者'),
                 "views": info_dict.get('view_count', 0),
-                "requester": interaction.user,
-                "user_avatar": interaction.user.display_avatar.url,
+                "requester": ctx.user,
+                "user_avatar": ctx.user.display_avatar.url,
                 "is_live": is_live
             }
 
@@ -287,13 +320,98 @@ class YouTubeManager:
             log.error(f"[音樂] 取得影片資訊失敗: {e}")
             return None, "取得影片資訊失敗"
 
-    async def download_audio(self, url: str, folder: str, interaction: discord.Interaction) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    async def resolve_stream(self, url: str, ctx: PlaybackContext) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Looks a video up and returns a song entry that can be played from its stream URL.
+
+        Nothing is downloaded, so this takes about a second instead of the whole
+        download and conversion.
+
+        Args:
+            url: The YouTube video URL.
+            ctx: Where playback was requested and by whom.
+
+        Returns:
+            ``(song, None)`` when the video can be streamed. ``(None, error)`` when it must
+            not be played at all (for example too long). ``(None, None)`` when streaming is
+            not possible (live stream, no usable URL, lookup failure) and the caller should
+            use :meth:`download_audio` instead.
+        """
+        ydl_opts: Dict[str, Any] = {
+            'format': 'bestaudio/best',
+            'noplaylist': True,
+            'quiet': True,
+            'no_warnings': True,
+            'extractor_args': {'youtube': {
+                'player_client': ['android_music', 'android', 'ios', 'web'],
+                'player_skip': ['webpage'],
+            }},
+        }
+        cookies_path = self.settings.youtube_cookies_path
+        if os.path.exists(cookies_path):
+            ydl_opts['cookiefile'] = cookies_path
+
+        def extract() -> Dict[str, Any]:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                return ydl.extract_info(url, download=False)
+
+        try:
+            info = await asyncio.to_thread(extract)
+        except Exception as e:
+            # Streaming is only an optimisation: the download path reports real failures.
+            log.warning(f"[音樂] 取得串流網址失敗，改用下載: {e}")
+            return None, None
+
+        if is_preview_only(info):
+            return None, PREVIEW_ONLY_ERROR
+        if info.get('is_live') or not info.get('url'):
+            return None, None
+        if info.get('duration', 0) > self.time_limit:
+            log.info(f"[音樂] 伺服器 ID: {ctx.guild.id}, 影片時長過長！")
+            return None, "影片時長過長！超過 30 分鐘"
+
+        return {
+            "file_path": None,
+            "stream_url": info['url'],
+            "stream_headers": dict(info.get('http_headers') or {}),
+            "thumbnail": thumbnail_of(info),
+            "title": info.get('title', '未知標題'),
+            "url": info.get('webpage_url', url),
+            "duration": info.get('duration', 0),
+            "video_id": info.get('id', '未知ID'),
+            "author": info.get('uploader', '未知上傳者'),
+            "views": info.get('view_count', 0),
+            "requester": ctx.user,
+            "user_avatar": ctx.user.display_avatar.url,
+            "is_live": False,
+        }, None
+
+    @staticmethod
+    def _remove_files_when_done(download: "asyncio.Future", folder: str, video_id: str) -> None:
+        """Deletes a video's files once its (uncancellable) download thread has ended.
+
+        Args:
+            download: The future wrapping the download thread.
+            folder: The guild's download folder.
+            video_id: The video whose files must not stay behind.
+        """
+        def remove(finished: "asyncio.Future") -> None:
+            if not finished.cancelled():
+                finished.exception()  # mark the outcome as retrieved
+            for path in glob.glob(os.path.join(glob.escape(folder), f"{glob.escape(video_id)}*")):
+                try:
+                    os.remove(path)
+                except FileNotFoundError:
+                    continue  # already gone
+
+        download.add_done_callback(remove)
+
+    async def download_audio(self, url: str, folder: str, ctx: PlaybackContext) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
         """Download audio from YouTube.
 
         Args:
             url: The YouTube video URL.
             folder: The destination folder path.
-            interaction: The Discord interaction object.
+            ctx: Where playback was requested and by whom.
 
         Returns:
             A tuple of (video_info, error_message).
@@ -367,7 +485,7 @@ class YouTubeManager:
                 ['ios'],
             ]
 
-            log.info(f"[音樂] 開始下載 (伺服器 ID: {interaction.guild.id}): {url} 到 {folder}")
+            log.info(f"[音樂] 開始下載 (伺服器 ID: {ctx.guild.id}): {url} 到 {folder}")
 
             last_error = None
             info_dict = None
@@ -390,7 +508,7 @@ class YouTubeManager:
                         is_live = info_dict.get('is_live', False)
 
                         if is_live:
-                            log.info(f"[音樂] 偵測到直播影片 (伺服器 ID: {interaction.guild.id}): {url}")
+                            log.info(f"[音樂] 偵測到直播影片 (伺服器 ID: {ctx.guild.id}): {url}")
                             best_audio_url = None
                             if 'formats' in info_dict:
                                 audio_formats = [f for f in info_dict['formats']
@@ -414,18 +532,27 @@ class YouTubeManager:
                                 "video_id": info_dict.get('id', '未知ID'),
                                 "author": info_dict.get('uploader', '未知上傳者'),
                                 "views": info_dict.get('view_count', 0),
-                                "requester": interaction.user,
-                                "user_avatar": interaction.user.display_avatar.url,
+                                "requester": ctx.user,
+                                "user_avatar": ctx.user.display_avatar.url,
                                 "is_live": True,
                             }, None
 
+                        if is_preview_only(info_dict):
+                            return None, PREVIEW_ONLY_ERROR
+
                         if info_dict.get('duration', 0) > self.time_limit:
-                            log.info(f"[音樂] 伺服器 ID: {interaction.guild.id}, 影片時長過長！")
+                            log.info(f"[音樂] 伺服器 ID: {ctx.guild.id}, 影片時長過長！")
                             return None, "影片時長過長！超過 30 分鐘"
 
-                        log.info(f"[音樂] 正在下載 (策略 {strategy_idx + 1}/{len(player_client_strategies)}, 伺服器 ID: {interaction.guild.id}): {url}")
-                        await asyncio.to_thread(ydl.download, [url])
-                        log.info(f"[音樂] 下載完成 (伺服器 ID: {interaction.guild.id}): {url}")
+                        log.info(f"[音樂] 正在下載 (策略 {strategy_idx + 1}/{len(player_client_strategies)}, 伺服器 ID: {ctx.guild.id}): {url}")
+                        download = asyncio.ensure_future(asyncio.to_thread(ydl.download, [url]))
+                        try:
+                            await asyncio.shield(download)
+                        except asyncio.CancelledError:
+                            # The download thread cannot be stopped; delete what it leaves behind.
+                            self._remove_files_when_done(download, folder, info_dict['id'])
+                            raise
+                        log.info(f"[音樂] 下載完成 (伺服器 ID: {ctx.guild.id}): {url}")
                         break  # Success — exit strategy loop
 
                 except yt_dlp.utils.DownloadError as e:
@@ -479,12 +606,13 @@ class YouTubeManager:
                 "title": info_dict.get('title', '未知標題'),
                 "url": info_dict.get('webpage_url', url),
                 "stream_url": None,
+                "thumbnail": thumbnail_of(info_dict),
                 "duration": info_dict.get('duration', 0),
                 "video_id": info_dict.get('id', '未知ID'),
                 "author": info_dict.get('uploader', '未知上傳者'),
                 "views": info_dict.get('view_count', 0),
-                "requester": interaction.user,
-                "user_avatar": interaction.user.display_avatar.url,
+                "requester": ctx.user,
+                "user_avatar": ctx.user.display_avatar.url,
                 "is_live": False,
             }, None
 
@@ -512,19 +640,71 @@ class YouTubeManager:
                     log.error(f"[音樂] 清理部分下載檔案失敗: {cleanup_err}")
             return None, "下載失敗，請稍後再試"
 
-    def get_thumbnail_url(self, video_id):
-        return f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
+    def get_thumbnail_url(self, video_id: str) -> str:
+        """Returns a thumbnail URL that exists for every video.
 
-    async def get_related_videos(self, video_id: str, title: str, author: str, interaction: discord.Interaction, limit: int = 5, exclude_ids: Optional[Set[str]] = None) -> tuple[List[Dict[str, Any]], Optional[str]]:
+        ``maxresdefault.jpg`` is missing for videos uploaded in low resolution, and the
+        URL ends up in the channel history, where a 404 breaks later model calls.
+        """
+        return f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+
+    async def get_mix_candidates(self, video_id: str, limit: int = 25) -> List[Dict[str, Any]]:
+        """Reads the YouTube Mix (auto-generated radio playlist) that starts from a video.
+
+        Args:
+            video_id: The seed video.
+            limit: How many Mix entries to read.
+
+        Returns:
+            Song-like dicts in Mix order (``video_id``, ``title``, ``url``, ``duration``,
+            ``author``, ``views``, ``is_live``); empty when the Mix cannot be read in time.
+        """
+        options: Dict[str, Any] = {"quiet": True, "no_warnings": True, "extract_flat": True, "playlistend": limit}
+        cookies_path = self.settings.youtube_cookies_path
+        if os.path.exists(cookies_path):
+            options["cookiefile"] = cookies_path
+        url = f"https://www.youtube.com/watch?v={video_id}&list=RD{video_id}"
+
+        def read_mix() -> Dict[str, Any]:
+            with yt_dlp.YoutubeDL(options) as ydl:
+                return ydl.extract_info(url, download=False)
+
+        try:
+            info = await asyncio.wait_for(asyncio.to_thread(read_mix), timeout=MIX_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            log.warning(f"讀取 YouTube Mix 逾時 (video_id: {video_id})")
+            return []
+        except (yt_dlp.utils.YoutubeDLError, OSError) as e:
+            log.warning(f"讀取 YouTube Mix 失敗 (video_id: {video_id}): {e}")
+            return []
+
+        candidates = []
+        for entry in (info or {}).get("entries") or []:
+            entry_id = entry.get("id")
+            if not entry_id:
+                continue
+            candidates.append({
+                "video_id": entry_id,
+                "title": entry.get("title") or "未知標題",
+                "url": f"https://youtube.com/watch?v={entry_id}",
+                "duration": int(entry.get("duration") or 0),
+                "author": entry.get("channel") or entry.get("uploader") or "未知上傳者",
+                "views": entry.get("view_count") or 0,
+                "is_live": entry.get("live_status") == "is_live" or bool(entry.get("is_live")),
+            })
+        return candidates
+
+    async def get_related_videos(self, video_id: str, title: str, author: str, ctx: PlaybackContext, limit: int = 5, exclude_ids: Optional[Set[str]] = None, taste: Optional[TasteMemory] = None) -> tuple[List[Dict[str, Any]], Optional[str]]:
         """Get related videos for a YouTube video.
 
         Args:
             video_id: The YouTube video ID.
             title: The title of the video.
             author: The author/channel of the video.
-            interaction: The Discord interaction object.
+            ctx: Where playback was requested and by whom.
             limit: The maximum number of recommendations.
             exclude_ids: A set of video IDs to exclude.
+            taste: The guild's taste memory (requests and skips) used to rank candidates.
 
         Returns:
             A tuple of (related_videos, error_message).
@@ -534,6 +714,45 @@ class YouTubeManager:
         
         final_results = []
         exclude_ids.add(video_id)
+
+        def build_song(video: Dict[str, Any]) -> Dict[str, Any]:
+            return {
+                "file_path": None,
+                "title": video.get('title', '未知標題'),
+                "url": video.get('url'),
+                "stream_url": None,
+                "duration": video.get('duration', 0),
+                "video_id": video.get('video_id'),
+                "author": video.get('author', '未知上傳者'),
+                "views": video.get('views', 0),
+                "requester": ctx.user,
+                "user_avatar": ctx.user.display_avatar.url,
+                "is_live": False,
+            }
+
+        autoplay = self.settings.autoplay
+        if autoplay.use_mix:
+            log.info("策略零: 使用 YouTube Mix...")
+            mix = await self.get_mix_candidates(video_id, limit=autoplay.candidate_pool)
+            acceptable = filter_candidates(
+                mix,
+                exclude_ids=exclude_ids,
+                min_duration=autoplay.min_duration_seconds,
+                max_duration=self.time_limit,
+                banned_keywords=autoplay.banned_keywords,
+            )
+            picked = rank_candidates(
+                acceptable,
+                seed_author=author or "",
+                taste=taste if taste is not None else TasteMemory(history_size=autoplay.history_size),
+                max_per_author=autoplay.max_per_author,
+                limit=limit,
+                rng=self._rng,
+            ) if acceptable else []
+            for candidate in picked:
+                final_results.append(build_song(candidate))
+                exclude_ids.add(candidate["video_id"])
+            log.info(f"策略零找到 {len(final_results)} 首歌曲")
 
         def process_search_results(results):
             processed = []
@@ -554,14 +773,14 @@ class YouTubeManager:
                         "video_id": video_id_res,
                         "author": video.get('author', '未知上傳者'),
                         "views": video.get('views', 0),
-                        "requester": interaction.user,
-                        "user_avatar": interaction.user.display_avatar.url,
+                        "requester": ctx.user,
+                        "user_avatar": ctx.user.display_avatar.url,
                         "is_live": False
                     })
                     exclude_ids.add(video_id_res)
             return processed
 
-        if author and author != '未知上傳者':
+        if len(final_results) < limit and author and author != '未知上傳者':
             log.info(f"策略一: 搜尋藝人 '{author}' 的歌曲...")
             try:
                 clean_author = re.sub(r'\s*-\s*(topic|vevo|official).*$', '', author, flags=re.IGNORECASE).strip()
@@ -580,7 +799,7 @@ class YouTubeManager:
                     author_results.extend(process_search_results(results))
                 
                 if author_results:
-                    author_results.sort(key=lambda x: x.get('views', 0), reverse=True)
+                    author_results.sort(key=lambda x: parse_view_count(x.get('views', 0)), reverse=True)
                     num_to_add = min(limit - len(final_results), len(author_results))
                     
                     top_half = author_results[:num_to_add // 2]
@@ -660,8 +879,8 @@ class YouTubeManager:
                                     "video_id": entry_id,
                                     "author": entry.get('uploader', '未知上傳者'),
                                     "views": entry.get('view_count', 0),
-                                    "requester": interaction.user,
-                                    "user_avatar": interaction.user.display_avatar.url,
+                                    "requester": ctx.user,
+                                    "user_avatar": ctx.user.display_avatar.url,
                                     "is_live": False
                                 })
                                 exclude_ids.add(entry_id)

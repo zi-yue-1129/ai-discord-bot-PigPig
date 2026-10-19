@@ -22,7 +22,12 @@
             "clear_success": "已清除用戶 <@{user_id}> 的個人資料。",
             "clear_failed": "清除用戶 <@{user_id}> 的資料失敗，或沒有資料可以清除。",
             "invalid_action": "無效的操作。請使用「讀取」、「保存」或「清除」。",
-            "no_data_provided": "你沒有告訴我需要記住什麼。"
+            "no_data_provided": "你沒有告訴我需要記住什麼。",
+            "clear_confirm": "這會永久刪除我記得的關於你的一切，確定要繼續嗎？",
+            "clear_confirm_button": "刪除",
+            "clear_cancel_button": "取消",
+            "clear_cancelled": "已取消，你的記憶沒有變動。",
+            "clear_not_yours": "這個確認不是給你的。"
         },
         "errors": {
             "sqlite_not_available": "個人記憶系統尚未初始化",

@@ -28,3 +28,34 @@ ffmpeg:
     accept_language: "en-us,en;q=0.5"
     sec_fetch_mode: navigate
 youtube_cookies_path: "./data/youtube_cookies.txt"
+
+# How the AI interacts with the player. Every key is optional; these are the defaults.
+ai:
+  status_in_context: true            # tell the AI what is playing in every conversation
+  list_queue_titles: true            # include upcoming song titles in that status
+  max_queue_titles: 10               # how many upcoming titles to list
+  announce_failures: false           # also post a channel message when an AI music action fails (the AI already reports it)
+  start_confirm_timeout_seconds: 5   # how long play_music waits for playback to start (0 = don't check)
+
+# Start the first song from its stream URL while the file downloads in the background.
+streaming:
+  enabled: true                      # false = download the whole song before playing it
+  drop_tolerance_seconds: 10         # ending this early counts as a dropped stream and is resumed
+  max_resumes: 2                     # resume attempts per song before giving up
+
+# Autoplay recommendations. Every key is optional; these are the defaults.
+autoplay:
+  use_mix: true                      # take candidates from the YouTube Mix of the current song (false = keyword search only)
+  candidate_pool: 25                 # Mix entries to read
+  min_duration_seconds: 60           # shorter songs are not recommended
+  max_per_author: 2                  # at most this many songs by one author per batch
+  history_size: 50                   # recently played songs per guild that are never recommended again
+  skip_penalty_window_seconds: 15    # skipping a recommendation this quickly counts against its author
+  database_path: "data/music/taste.db"  # SQLite file keeping each guild's taste across restarts
+  banned_keywords: ["1 hour", "10 hours", "slowed", "nightcore", "reaction", "8d audio"]
+
+# Where songs may come from. Every key is optional; these are the defaults.
+sources:
+  allowed_hosts: ["youtube.com", "youtu.be", "soundcloud.com"]   # links to other hosts are only used as search text
+  spotify: true                      # turn Spotify track links into a YouTube search for "artist title"
+  spotify_timeout_seconds: 10        # how long to wait for the Spotify page

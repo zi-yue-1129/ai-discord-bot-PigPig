@@ -10,6 +10,8 @@
     "update_failed": "Failed to update music interface",
     "now_playing_prefix": "Now Playing",
     "queue_songs": "Songs in Queue",
+    "queue_total": "{count} in total",
+    "recommended": "Recommended",
     "commands": {
         "music": {
             "controls": {
@@ -17,5 +19,12 @@
                 "queue_songs": "Songs in Queue"
             }
         }
-    }
+    },
+    "not_in_channel": "You need to be in the same voice channel as the bot to control the music",
+    "no_songs": "❌ There is nothing to play!",
+    "queue_play_next_placeholder": "⏭️ Pick a song to play next",
+    "queue_remove_placeholder": "🗑️ Pick a song to remove",
+    "queue_select_empty": "The queue is empty",
+    "queue_played_next": "{user} moved “{title}” up to play next",
+    "queue_removed": "{user} removed “{title}” from the queue"
 }

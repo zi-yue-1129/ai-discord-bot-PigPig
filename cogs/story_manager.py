@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from addons.logging import get_logger
-from typing import Optional
+from typing import Any, Optional
 
 from .story.manager import StoryManager
 from .story.ui import UIManager
@@ -27,6 +27,25 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
         self.ui_manager: Optional[UIManager] = None
         self.logger.info("StoryManagerCog (UI版本) 已初始化")
 
+    def _t(self, guild_id: Optional[int], *path: str, **kwargs: Any) -> str:
+        """Translates a story UI string for the given guild.
+
+        Args:
+            guild_id: Guild whose language is used. May be None in DMs.
+            *path: Translation key path, e.g. ``"story", "menu", "starting_up"``.
+            **kwargs: Format arguments for the translated text.
+
+        Returns:
+            The translated text.
+
+        Raises:
+            RuntimeError: If the LanguageManager cog is not loaded.
+        """
+        language_manager = self.bot.get_cog("LanguageManager")
+        if language_manager is None:
+            raise RuntimeError("LanguageManager cog is not loaded; cannot translate story text")
+        return language_manager.translate(str(guild_id), *path, **kwargs)
+
     story = app_commands.Group(name="story", description="與故事模式相關的指令")
 
     @story.command(name="menu", description="🎭 開啟故事管理選單")
@@ -41,14 +60,16 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
         try:
             if not self.ui_manager:
                 self.logger.warning("UIManager 未初始化，無法顯示選單。")
-                await interaction.response.send_message("🎭 故事模組正在啟動中，請稍後再試。", ephemeral=True)
+                await interaction.response.send_message(
+                    self._t(interaction.guild_id, "story", "menu", "starting_up"), ephemeral=True
+                )
                 return
             await self.ui_manager.show_main_menu(interaction)
             
         except Exception as e:
             self.logger.error(f"故事選單錯誤: {e}", exc_info=True)
-            await func.report_error(self.bot, e)
-            error_message = "❌ 載入故事選單時發生錯誤，請稍後再試。"
+            await func.report_error(e)
+            error_message = self._t(interaction.guild_id, "story", "menu", "menu_load_error")
             
             if interaction.response.is_done():
                 await interaction.followup.send(error_message, ephemeral=True)
@@ -63,7 +84,9 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
         try:
             if not self.story_manager:
                 self.logger.warning("StoryManager 未初始化，無法執行干預。")
-                await interaction.response.send_message("🎭 故事模組正在啟動中，請稍後再試。", ephemeral=True)
+                await interaction.response.send_message(
+                    self._t(interaction.guild_id, "story", "menu", "starting_up"), ephemeral=True
+                )
                 return
 
             # Check if a story is active in this channel
@@ -72,21 +95,21 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
 
             if not story_instance or not story_instance.is_active:
                 await interaction.response.send_message(
-                    "❌ 此頻道目前沒有正在進行的故事。無法進行干預。",
+                    self._t(interaction.guild_id, "story", "menu", "intervene_no_active_story"),
                     ephemeral=True
                 )
                 return
 
             # Show the intervention modal
             from .story.ui.modals import InterventionModal
-            modal = InterventionModal(self.story_manager)
+            modal = InterventionModal(self.story_manager, interaction.guild_id)
             await interaction.response.send_modal(modal)
 
         except Exception as e:
             self.logger.error(f"Error in /story intervene command: {e}", exc_info=True)
-            await func.report_error(self.bot, e)
+            await func.report_error(e)
             await interaction.response.send_message(
-                "❌ 執行干預指令時發生錯誤。",
+                self._t(interaction.guild_id, "story", "menu", "intervene_error"),
                 ephemeral=True
             )
 
@@ -131,15 +154,18 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
                 f"處理故事訊息時發生錯誤 (頻道 {message.channel.id}): {e}", 
                 exc_info=True
             )
-            await func.report_error(self.bot, e)
+            await func.report_error(e)
             
             # 發送友善的錯誤訊息
+            guild_id = message.guild.id if message.guild else None
             error_embed = discord.Embed(
-                title="🎭 故事暫時中斷",
-                description="故事之神似乎打了個盹，請稍後再試...",
+                title=self._t(guild_id, "story", "menu", "story_interrupted_title"),
+                description=self._t(guild_id, "story", "menu", "story_interrupted_description"),
                 color=discord.Color.orange()
             )
-            error_embed.set_footer(text=f"錯誤詳情: {str(e)[:100]}")
+            error_embed.set_footer(
+                text=self._t(guild_id, "story", "menu", "error_details_footer", error=str(e)[:100])
+            )
             
             try:
                 await message.reply(embed=error_embed)
@@ -149,7 +175,7 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
                     await message.channel.send(embed=error_embed)
                 except:
                     # 最後的備用方案
-                    await message.channel.send("❌ 故事處理時發生錯誤，請稍後再試。")
+                    await message.channel.send(self._t(guild_id, "story", "menu", "story_process_error"))
 
 
 async def setup(bot: commands.Bot):

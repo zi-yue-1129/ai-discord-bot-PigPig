@@ -11,7 +11,8 @@
         "playlist_download_failed": "Failed to download playlist info.",
         "queue_full_desc": "The music queue is full.",
         "queue_full_title": "Queue Full",
-        "video_info_failed": "Failed to retrieve video information."
+        "video_info_failed": "Failed to retrieve video information.",
+        "spotify_failed": "Could not read that Spotify link (only track links are supported)."
     },
     "responses": {
         "playlist_added": "Playlist added to queue.",

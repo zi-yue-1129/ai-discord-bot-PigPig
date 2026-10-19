@@ -19,7 +19,7 @@ from llm.schema import OrchestratorResponse, OrchestratorRequest
 from llm.utils.send_message import send_message, safe_edit_message
 from llm.utils.model_init import create_model_instance
 from function import func
-from addons.settings import llm_config, prompt_config
+from addons.settings import llm_config, music_config, prompt_config
 
 _LLM_CALL_TIMEOUT_SECONDS: float = llm_config.llm_call_timeout
 _IMAGE_FETCH_TIMEOUT_SECONDS: float = 15.0
@@ -28,12 +28,15 @@ from .prompting.system_prompt import get_system_prompt
 from .prompting.protected_prompt_manager import get_protected_prompt_manager
 
 from llm.context_manager import ContextManager
+from llm.utils.tool_context import build_message_agent_history
+from llm.music_context import build_music_context
 from llm.memory.short_term import ShortTermMemoryProvider
 from llm.memory.procedural import ProceduralMemoryProvider
 from llm.memory.episodic import EpisodicMemoryProvider
 from llm.memory.knowledge import KnowledgeMemoryProvider
 from cogs.memory.db.knowledge_storage import KnowledgeStorage
 from llm.callbacks import ToolFeedbackCallbackHandler
+from llm.utils.progress import announce_model_switch
 from llm.model_circuit_breaker import get_model_circuit_breaker
 
 
@@ -158,6 +161,22 @@ Output Format:
 - Keep analysis focused and actionable
 
 Focus on understanding what the user actually needs and prepare a clear analysis for the response generation phase."""
+
+    def build_persona_prompt(self, bot_id: int, message: Optional[Message]) -> str:
+        """Returns the reply agent's system prompt (persona and output rules) for ``message``.
+
+        Used by features that make the bot speak without a user message to answer, such as
+        reminders. ``message`` supplies the guild, language and channel customizations; None
+        gives the default prompt.
+
+        Args:
+            bot_id: Discord bot ID.
+            message: A recent message of the channel to speak in, or None.
+
+        Returns:
+            The system prompt.
+        """
+        return self._build_message_agent_prompt(bot_id, message)
 
     def _build_message_agent_prompt(self, bot_id: int, message: Message) -> str:
         """
@@ -467,6 +486,16 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                 procedural_context_str = ""
                 short_term_msgs = []
 
+            # 1b) Player status goes into the context because neither agent can look it
+            # up after its single tool round.
+            try:
+                music_context = await build_music_context(bot, message.guild, music_config.ai)
+                if music_context:
+                    procedural_context_str = f"{procedural_context_str}\n\n{music_context}"
+            except Exception as e:
+                # Per design: report and continue without the music section
+                asyncio.create_task(func.report_error(e, "build_music_context failed in Orchestrator"))
+
             try:
                 user = getattr(message, "author", None)
                 if user is None:
@@ -579,6 +608,9 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                         # Briefly wait if transient to allow network/model state to stabilize
                         if category.name == "TRANSIENT":
                             await asyncio.sleep(0.5)
+                        await announce_model_switch(
+                            message_edit, lang_manager, guild_id, has_next_model=model_index < len(info_model_list) - 1
+                        )
                         # Continue to next model immediately
                 
                 if info_result is None:
@@ -658,26 +690,10 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                 # IMPORTANT: Place static message_system_prompt before dynamic procedural_context_str to maximize KV cache reuse!
                 full_message_prompt = f"{message_system_prompt}\n\n{procedural_context_str}"
 
-                # Use the analysis from info_agent for message generation
-                # Compose messages for message_agent with analysis output and context
-                # Filter and transform ToolMessage and AIMessage with tool_calls.
-                # Local models (e.g. Ollama) often don't support these specific message types/attributes,
-                # so we convert them to plain text messages to preserve context without crashing.
-                clean_info_messages: List[BaseMessage] = []
-                for _msg in info_message:
-                    if isinstance(_msg, ToolMessage):
-                        # Convert ToolMessage to HumanMessage with English prefix and structured formatting
-                        tool_name = getattr(_msg, "name", "unknown")
-                        clean_info_messages.append(HumanMessage(content=f"[System: Tool Result ({tool_name})]\n{_msg.content}"))
-                    elif isinstance(_msg, AIMessage) and _msg.tool_calls:
-                        # Preserve text content; provide English placeholder if empty
-                        _text = _msg.content if isinstance(_msg.content, str) else ""
-                        if not _text.strip():
-                            tool_names = ", ".join([tc.get("name", "unknown") for tc in _msg.tool_calls])
-                            _text = f"[Assistant: Calling tool(s): {tool_names}]"
-                        clean_info_messages.append(AIMessage(content=_text))
-                    else:
-                        clean_info_messages.append(_msg)
+                # Use the analysis from info_agent for message generation.
+                # Tool calls and results become one internal block instead of fake
+                # assistant/system turns, which the reply agent would imitate in its output.
+                clean_info_messages: List[BaseMessage] = build_message_agent_history(info_message, history_length=len(messages_for_info_agent))
                 messages_for_message_agent = list(clean_info_messages)
                 if _announcement_msg is not None:
                     messages_for_message_agent.append(_announcement_msg)
@@ -757,6 +773,9 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                         # Briefly wait if transient to allow network/model state to stabilize
                         if category.name == "TRANSIENT":
                             await asyncio.sleep(0.5)
+                        await announce_model_switch(
+                            message_edit, lang_manager, guild_id, has_next_model=model_index < len(model_priority_list) - 1
+                        )
                         # Continue to next model immediately
                     
                     # If we got a result, break out of the model loop

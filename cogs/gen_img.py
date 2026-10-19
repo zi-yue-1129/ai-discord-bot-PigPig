@@ -37,6 +37,9 @@ from llm.utils.send_message import safe_edit_message
 from function import func
 from addons.logging import get_logger
 
+# The Gemini SDK call has no timeout of its own.
+GEMINI_TIMEOUT_SECONDS = 90
+
 # Module-level logger. Use "Bot" as default server_id for module-level events.
 log = get_logger(server_id="Bot", source=__name__)
 
@@ -266,14 +269,17 @@ class ImageGenerationCog(commands.Cog, name="ImageGenerationCog"):
                             "data": image_to_base64(img)
                         }
                     })
-            response = await asyncio.to_thread(
-                lambda: self.client.models.generate_content(
-                    model="gemini-2.5-flash-image-preview",
-                    contents=content_parts,
-                    config=types.GenerateContentConfig(
-                    response_modalities=['Text', 'Image']
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    lambda: self.client.models.generate_content(
+                        model="gemini-2.5-flash-image-preview",
+                        contents=content_parts,
+                        config=types.GenerateContentConfig(
+                        response_modalities=['Text', 'Image']
+                        )
                     )
-                )
+                ),
+                timeout=GEMINI_TIMEOUT_SECONDS,
             )
             image_buffer = None
             response_text = []

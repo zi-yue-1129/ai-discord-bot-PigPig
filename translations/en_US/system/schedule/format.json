@@ -4,7 +4,7 @@
     "time_column": "Time",
     "description_column": "Description",
     "no_events": "No events",
-    "day_header": "Date",
+    "day_header": "**{day}**",
     "specific_time_title": "Schedule at Specific Time",
     "no_events_found": "No events found",
     "next_event": "Next Event",

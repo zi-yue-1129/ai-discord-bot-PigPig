@@ -4,7 +4,7 @@ from addons.logging import get_logger
 log = get_logger(source=__name__, server_id="system")
 logger = log
 import typing
-from typing import Optional
+from typing import Any, Optional
 
 if typing.TYPE_CHECKING:
     from ..manager import StoryManager
@@ -28,7 +28,20 @@ class UIManager:
         self.character_db = story_manager.character_db
         self.system_prompt_manager = system_prompt_manager
         self.logger = log
-        
+
+    def _t(self, guild_id: Optional[int], *path: str, **kwargs: Any) -> str:
+        """Translates a story UI string for the given guild.
+
+        Args:
+            guild_id: Guild whose language is used. May be None in DMs.
+            *path: Translation key path, e.g. ``"story", "menu", "initial_title"``.
+            **kwargs: Format arguments for the translated text.
+
+        Returns:
+            The translated text.
+        """
+        return self.story_manager.language_manager.translate(str(guild_id), *path, **kwargs)
+
     async def show_main_menu(self, interaction: discord.Interaction):
         """
         顯示主要的故事管理選單
@@ -45,7 +58,7 @@ class UIManager:
             channel_manager = self.bot.get_cog('ChannelManager')
             if not channel_manager:
                 await interaction.response.send_message(
-                    "❌ 系統錯誤：無法找到頻道管理器", 
+                    self._t(interaction.guild_id, "story", "menu", "channel_manager_missing"),
                     ephemeral=True
                 )
                 return
@@ -61,7 +74,7 @@ class UIManager:
             if has_active_story:
                 # 顯示正在進行故事的管理介面
                 view = ActiveStoryView(manager=self.story_manager, story_instance=story_instance)
-                embed = self._create_active_story_embed(story_instance)
+                embed = self._create_active_story_embed(story_instance, interaction.guild_id)
                 await interaction.response.send_message(
                     embed=embed, 
                     view=view, 
@@ -83,7 +96,7 @@ class UIManager:
                 
         except Exception as e:
             self.logger.error(f"顯示主選單時發生錯誤: {e}", exc_info=True)
-            error_message = "❌ 載入故事選單時發生錯誤，請稍後再試。"
+            error_message = self._t(interaction.guild_id, "story", "menu", "menu_load_error")
             
             if interaction.response.is_done():
                 await interaction.followup.send(error_message, ephemeral=True)
@@ -93,8 +106,8 @@ class UIManager:
     async def _create_initial_story_embed(self, guild_id: int, channel_id: int) -> discord.Embed:
         """創建初始故事選單的 Embed"""
         embed = discord.Embed(
-            title="🎭 故事管理選單",
-            description="歡迎來到故事世界！選擇以下操作來開始你的冒險：",
+            title=self._t(guild_id, "story", "menu", "initial_title"),
+            description=self._t(guild_id, "story", "menu", "initial_description"),
             color=discord.Color.blue()
         )
         
@@ -105,46 +118,53 @@ class UIManager:
         if worlds:
             world_list = "\n".join([f"• **{world.world_name}**" for world in worlds[:5]])
             if len(worlds) > 5:
-                world_list += f"\n... 以及其他 {len(worlds) - 5} 個世界"
+                world_list += self._t(guild_id, "story", "menu", "more_worlds", count=len(worlds) - 5)
             embed.add_field(
-                name="🌍 可用世界",
+                name=self._t(guild_id, "story", "menu", "available_worlds"),
                 value=world_list,
                 inline=False
             )
         else:
             embed.add_field(
-                name="🌍 可用世界",
-                value="目前沒有可用的世界，請先創建一個！",
+                name=self._t(guild_id, "story", "menu", "available_worlds"),
+                value=self._t(guild_id, "story", "menu", "no_worlds"),
                 inline=False
             )
         
-        embed.set_footer(text="💡 使用下方按鈕來管理世界、角色或開始故事")
+        embed.set_footer(text=self._t(guild_id, "story", "menu", "initial_footer"))
         return embed
     
-    def _create_active_story_embed(self, story_instance) -> discord.Embed:
+    def _create_active_story_embed(self, story_instance, guild_id: Optional[int]) -> discord.Embed:
         """創建進行中故事的 Embed"""
         embed = discord.Embed(
-            title="🎮 故事控制面板",
-            description=f"正在進行的故事：**{story_instance.world_name}**",
+            title=self._t(guild_id, "story", "menu", "active_title"),
+            description=self._t(guild_id, "story", "menu", "active_description", world_name=story_instance.world_name),
             color=discord.Color.green()
         )
         
         # 顯示故事狀態
-        status_text = "✅ 進行中" if story_instance.is_active else "⏸️ 已暫停"
-        embed.add_field(name="📊 狀態", value=status_text, inline=True)
+        if story_instance.is_active:
+            status_text = self._t(guild_id, "story", "menu", "status_active")
+        else:
+            status_text = self._t(guild_id, "story", "menu", "status_paused")
+        embed.add_field(name=self._t(guild_id, "story", "menu", "status_field"), value=status_text, inline=True)
         
         # 顯示參與角色數量
         char_count = len(story_instance.active_character_ids)
-        embed.add_field(name="👥 參與角色", value=f"{char_count} 位", inline=True)
+        embed.add_field(
+            name=self._t(guild_id, "story", "menu", "participants_field"),
+            value=self._t(guild_id, "story", "menu", "participants_count", count=char_count),
+            inline=True
+        )
         
         # 顯示最近事件
         if story_instance.event_log:
             recent_event = story_instance.event_log[-1]
             if len(recent_event) > 100:
                 recent_event = recent_event[:100] + "..."
-            embed.add_field(name="📜 最近事件", value=recent_event, inline=False)
+            embed.add_field(name=self._t(guild_id, "story", "menu", "recent_event_field"), value=recent_event, inline=False)
         
-        embed.set_footer(text="💡 使用下方按鈕來管理正在進行的故事")
+        embed.set_footer(text=self._t(guild_id, "story", "menu", "active_footer"))
         return embed
     
     async def _update_world_select_options(self, view, guild_id: int):
@@ -164,13 +184,15 @@ class UIManager:
                             options.append(discord.SelectOption(
                                 label=world.world_name,
                                 value=world.world_name,
-                                description=world.attributes.get('description', '無描述')[:100]
+                                description=world.attributes.get(
+                                    'description', self._t(guild_id, "story", "menu", "no_description")
+                                )[:100]
                             ))
                     else:
                         options.append(discord.SelectOption(
-                            label="無可用世界",
+                            label=self._t(guild_id, "story", "menu", "no_worlds_option"),
                             value="none",
-                            description="請先創建一個世界"
+                            description=self._t(guild_id, "story", "menu", "no_worlds_option_description")
                         ))
                     
                     item.options = options
@@ -184,7 +206,9 @@ class UIManager:
         try:
             if not interaction.guild_id or not interaction.channel_id:
                 # 在私訊等情境下可能沒有 guild_id，直接返回
-                await interaction.response.send_message("❌ 此指令無法在目前位置使用。", ephemeral=True)
+                await interaction.response.send_message(
+                    self._t(interaction.guild_id, "story", "menu", "not_available_here"), ephemeral=True
+                )
                 return
             
             config = self.system_prompt_manager.get_channel_prompt_config(
@@ -193,7 +217,7 @@ class UIManager:
 
             if not config or "base_prompt" not in config:
                 await interaction.response.send_message(
-                    "ℹ️ 這個頻道沒有設定預設角色。請管理員使用 `/system_prompt` 進行設定。",
+                    self._t(interaction.guild_id, "story", "menu", "no_default_character"),
                     ephemeral=True
                 )
                 return
@@ -210,7 +234,7 @@ class UIManager:
 
         except Exception as e:
             self.logger.error(f"載入預設角色時發生錯誤: {e}", exc_info=True)
-            error_message = "❌ 處理請求時發生嚴重錯誤。"
+            error_message = self._t(interaction.guild_id, "story", "menu", "default_load_error")
             if interaction.response.is_done():
                 await interaction.followup.send(error_message, ephemeral=True)
             else:

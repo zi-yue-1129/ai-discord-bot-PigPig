@@ -20,6 +20,11 @@ class QueueManager:
         self.guild_queues: Dict[int, asyncio.Queue] = {}
         self.guild_settings: Dict[int, Dict[str, Any]] = {}
         self.guild_playlists: Dict[int, List[Dict[str, Any]]] = {}
+        # Songs already played in the current round of loop-queue mode, waiting for the next round.
+        self.guild_finished: Dict[int, List[Dict[str, Any]]] = {}
+        # Deliberately unseeded: a seeded shuffle would play the same order every time.
+        # Tests replace it with a seeded generator.
+        self._rng = random.Random()
 
     def get_guild_settings(self, guild_id: int) -> Dict[str, Any]:
         """Get server playback settings."""
@@ -54,10 +59,15 @@ class QueueManager:
             self.guild_settings[guild_id]["shuffle"] = False
         if guild_id in self.guild_playlists:
             self.guild_playlists[guild_id] = []
+        self.guild_finished.pop(guild_id, None)
 
     def set_playlist(self, guild_id: int, video_infos: List[Dict[str, Any]]):
         """Set the server's playlist."""
         self.guild_playlists[guild_id] = video_infos
+
+    def extend_playlist(self, guild_id: int, video_infos: List[Dict[str, Any]]) -> None:
+        """Appends songs to the buffered playlist instead of replacing what is still buffered."""
+        self.guild_playlists.setdefault(guild_id, []).extend(video_infos)
 
     async def get_next_playlist_songs(self, guild_id: int, count: int = 1, youtube_manager=None, folder: Optional[str] = None, interaction=None) -> List[Dict[str, Any]]:
         """Get the next song from the playlist."""
@@ -84,11 +94,45 @@ class QueueManager:
         """Check if there are more songs in the playlist."""
         return guild_id in self.guild_playlists and len(self.guild_playlists[guild_id]) > 0
 
+    def shuffled(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Returns a shuffled copy of ``items``."""
+        copy = list(items)
+        self._rng.shuffle(copy)
+        return copy
+
+    def shuffle_queue(self, guild_id: int) -> None:
+        """Shuffles the whole list: the queue and the playlist songs still buffered."""
+        queue = self.guild_queues.get(guild_id)
+        if queue is not None and len(queue._queue) > 1:
+            items = self.shuffled(list(queue._queue))
+            queue._queue.clear()
+            queue._queue.extend(items)
+        if self.guild_playlists.get(guild_id):
+            self.guild_playlists[guild_id] = self.shuffled(self.guild_playlists[guild_id])
+
     def toggle_shuffle(self, guild_id: int) -> bool:
-        """Toggle shuffle playback state."""
+        """Toggles shuffle; turning it on shuffles the whole list right away."""
         settings = self.get_guild_settings(guild_id)
         settings["shuffle"] = not settings["shuffle"]
+        if settings["shuffle"]:
+            self.shuffle_queue(guild_id)
         return settings["shuffle"]
+
+    def finish_for_cycle(self, guild_id: int, song: Dict[str, Any]) -> None:
+        """Parks a song that was played in loop-queue mode until the next round starts."""
+        self.guild_finished.setdefault(guild_id, []).append(song)
+
+    def restart_cycle(self, guild_id: int) -> int:
+        """Starts the next loop-queue round: puts the played songs (shuffled if enabled) back.
+
+        Returns:
+            How many songs were put back into the queue.
+        """
+        finished = self.guild_finished.pop(guild_id, [])
+        if self.is_shuffle_enabled(guild_id):
+            finished = self.shuffled(finished)
+        self.get_queue(guild_id)._queue.extend(finished)
+        return len(finished)
 
     def set_play_mode(self, guild_id: int, mode: PlayMode):
         """Set the playback mode."""
@@ -139,6 +183,41 @@ class QueueManager:
             return []
         return list(queue._queue).copy()
 
+    def remove_at(self, guild_id: int, index: int) -> Optional[Dict[str, Any]]:
+        """Remove and return the queued song at a zero-based index.
+
+        Args:
+            guild_id: The guild whose queue is edited.
+            index: Zero-based position in the queue.
+
+        Returns:
+            The removed song, or ``None`` if the index is outside the queue.
+        """
+        queue = self.guild_queues.get(guild_id)
+        if queue is None or not 0 <= index < len(queue._queue):
+            return None
+        song = queue._queue[index]
+        del queue._queue[index]
+        return song
+
+    def move_to_front(self, guild_id: int, index: int) -> Optional[Dict[str, Any]]:
+        """Moves the queued song at a zero-based index to the front, so it plays next.
+
+        Args:
+            guild_id: The guild whose queue is edited.
+            index: Zero-based position in the queue.
+
+        Returns:
+            The moved song, or ``None`` if the index is outside the queue.
+        """
+        queue = self.guild_queues.get(guild_id)
+        if queue is None or not 0 <= index < len(queue._queue):
+            return None
+        song = queue._queue[index]
+        del queue._queue[index]
+        queue._queue.appendleft(song)
+        return song
+
     def is_queue_empty(self, guild_id: int) -> bool:
         """Check if the queue is empty."""
         q = self.guild_queues.get(guild_id)
@@ -148,6 +227,7 @@ class QueueManager:
         """Clear the playback queue for the specified server."""
         if guild_id in self.guild_queues:
             self.guild_queues[guild_id] = asyncio.Queue()
+        self.guild_finished.pop(guild_id, None)
 
     def set_queue(self, guild_id: int, q: asyncio.Queue):
         """Set the queue for a specific guild."""
@@ -161,15 +241,21 @@ class QueueManager:
         q = self.get_queue(guild_id)
         # Directly manipulate q._queue (deque) to ensure atomicity
 
-        # 1. Check if the song already exists; if so and not a forced add, return True directly
+        # 1. Determine if the adder is a user or a bot
+        added_by_user = 'added_by' in item and item['added_by'] != self.bot.user.id
+
+        # 2. A song that is already queued is left alone, except that a user's request for a
+        #    song the bot recommended turns it into a request (and moves it into place).
         if not force:
             video_id = item.get('video_id')
-            if any(song.get('video_id') == video_id for song in q._queue):
-                logger.info(f"Song '{item.get('title')}' is already in the queue, treating as success.")
-                return True
-
-        # 2. Determine if the adder is a user or a bot
-        added_by_user = 'added_by' in item and item['added_by'] != self.bot.user.id
+            existing = next((song for song in q._queue if song.get('video_id') == video_id), None)
+            if existing is not None:
+                if not (added_by_user and existing.get('added_by') == self.bot.user.id):
+                    logger.info(f"Song '{item.get('title')}' is already in the queue, treating as success.")
+                    return True
+                if existing.get('file_path') and not item.get('file_path'):
+                    item['file_path'] = existing['file_path']
+                q._queue.remove(existing)
 
         # 3. Handle queue full scenarios
         if q.qsize() >= self.MAX_QUEUE_SIZE:
@@ -212,6 +298,24 @@ class QueueManager:
         # 5. Rebuilding queue is no longer necessary
         return True
 
+    async def enqueue_request(self, guild_id: int, item: Dict[str, Any], play_next: bool = False) -> bool:
+        """Queues a user's song request.
+
+        Requests play in the order they were made (after earlier requests, before the bot's
+        own recommendations). ``play_next`` cuts in: the song plays right after the current one.
+
+        Args:
+            guild_id: The guild.
+            item: The song entry; ``added_by`` is the requesting user.
+            play_next: Whether to cut in at the front of the queue.
+
+        Returns:
+            True when the song is queued, False when the queue is full.
+        """
+        if play_next:
+            return await self.add_to_front_of_queue(guild_id, item)
+        return await self.add_to_queue(guild_id, item)
+
     async def add_to_front_of_queue(self, guild_id: int, item: Dict[str, Any]) -> bool:
         """Add item to the front of the queue and handle overflow. Returns True on success, False on failure."""
         q = self.get_queue(guild_id)
@@ -219,8 +323,15 @@ class QueueManager:
 
         # 1. Check if the song already exists
         video_id = item.get('video_id')
-        if any(song.get('video_id') == video_id for song in q._queue):
-            logger.info(f"Song '{item.get('title')}' already exists in the queue, skipping add.")
+        existing = next((song for song in q._queue if song.get('video_id') == video_id), None)
+        if existing is not None:
+            # A request for a song that is already queued (for example one the bot recommended)
+            # makes it the requester's song and plays it next.
+            logger.info(f"Song '{item.get('title')}' already exists in the queue, moving it to the front.")
+            if existing.get('file_path') and not item.get('file_path'):
+                item['file_path'] = existing['file_path']
+            q._queue.remove(existing)
+            q._queue.appendleft(item)
             return True
 
         # 2. Handle queue full scenarios
