@@ -24,8 +24,8 @@ MAX_MATCHES = 6
 _TOOL_DESCRIPTION_CHARS = 400
 _TOOLS_MODULE_PREFIX = "llm.tools."
 _OTHER_GROUP = "other"
-# Tools about the toolbox itself; they are not listed among the things the bot can do.
-_TOOLBOX_TOOLS = frozenset({"get_bot_guide", "list_tools"})
+# Tools that only explain the bot; they are not listed among the things the bot can do.
+_TOOLBOX_TOOLS = frozenset({"get_bot_guide"})
 
 
 @dataclass(frozen=True)

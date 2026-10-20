@@ -44,11 +44,11 @@ This list contains all the tools available to the PigPig Bot's LLM agents. Each 
 | `generate_image` | `image.py` | Generates images based on text prompts using AI providers. |
 | `get_bot_changelog` | `bot_info.py` | Returns technical specs, version info, and bot status. |
 
-## Discovery
+## Self-knowledge
 
 | Tool Name | Module | Description |
 |-----------|--------|-------------|
-| `list_tools` | `tools_overview.py` | Dynamically lists all currently loaded tools and their signatures. |
+| `get_bot_guide` | `bot_guide.py` | Explains the bot's slash commands, abilities and which content it can see, generated from the code. |
 
 ## Tool Constraints
 

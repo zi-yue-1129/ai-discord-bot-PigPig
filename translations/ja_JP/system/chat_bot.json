@@ -15,7 +15,7 @@
             "calculate_math": "🧮 計算しています...",
             "add_reaction": "😊 リアクションを追加しています...",
             "send_sticker": "🎭 スタンプを送信しています...",
-            "list_tools": "🔧 利用可能なツールを確認しています...",
+            "get_bot_guide": "📖 自分の機能を調べています...",
             "get_channel_participants": "👥 チャンネルのメンバーを確認しています...",
             "get_guild_emojis": "😀 サーバーの絵文字を読み込んでいます...",
             "get_guild_stickers": "🖼️ サーバーのスタンプを読み込んでいます...",

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, List
 
@@ -144,18 +146,13 @@ def test_a_tool_written_as_a_class_is_grouped_by_its_module() -> None:
     assert group_abilities([_ClassTool()]) == {"knowledge": ["update_guild_knowledge"]}
 
 
-def test_tools_about_the_toolbox_itself_are_not_listed_as_abilities() -> None:
-    tools = [
-        *_tools(),
-        _tool("get_bot_guide", "llm.tools.bot_guide", "Explains the bot."),
-        _tool("list_tools", "llm.tools.tools_overview", "Lists tools."),
-    ]
+def test_the_tool_that_explains_the_bot_is_not_listed_as_an_ability() -> None:
+    tools = [*_tools(), _tool("get_bot_guide", "llm.tools.bot_guide", "Explains the bot.")]
 
     text = build_self_description(tools, history_limit=30)
 
     assert "music (play_music, skip_music)" in text
     assert "get_bot_guide" not in text
-    assert "list_tools" not in text
 
 
 def test_the_overview_lists_every_command_by_cog_and_every_ability_group() -> None:
@@ -269,6 +266,19 @@ def test_the_description_says_so_when_no_attachment_can_be_opened(monkeypatch: p
     text = build_self_description([], history_limit=30)
 
     assert "You cannot open attachments" in text
+
+
+@pytest.mark.parametrize("locale", ["zh_TW", "zh_CN", "en_US", "ja_JP"])
+def test_the_guide_tool_shows_a_status_text_in_every_language(locale: str) -> None:
+    path = Path(__file__).resolve().parents[1] / "translations" / locale / "system" / "chat_bot.json"
+    tool_texts = json.loads(path.read_text(encoding="utf-8"))["responses"]["tools"]
+
+    assert tool_texts.get("get_bot_guide", "").startswith("📖")
+    assert "list_tools" not in tool_texts
+
+
+def test_the_removed_list_tools_tool_is_gone() -> None:
+    assert not (Path(__file__).resolve().parents[1] / "llm" / "tools" / "tools_overview.py").exists()
 
 
 @pytest.mark.asyncio

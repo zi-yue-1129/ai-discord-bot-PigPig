@@ -37,7 +37,7 @@ class MyTools:
 - **Information Retrieval**: Internet search, YouTube info, Wikipedia.
 - **Internal Knowledge**: User stats, server context, memory retrieval.
 - **Utility**: Math operations, reminders, image generation.
-- **Meta-Tools**: `list_tools` for discovering other available tools.
+- **Meta-Tools**: `get_bot_guide` explains the bot's own commands, abilities and visible content (see [Self-knowledge](../self_knowledge.md)).
 
 ---
 *For a complete reference of available tools and their signatures, see the [Tool List](list.md).*
