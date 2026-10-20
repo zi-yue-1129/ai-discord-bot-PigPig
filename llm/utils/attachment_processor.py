@@ -14,7 +14,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 import aiohttp
 from PIL import Image
@@ -276,6 +277,67 @@ async def _process_video(data: bytes, filename: str) -> list[dict]:
     return [_pil_to_content_part(img) for img in pil_frames]
 
 
+@dataclass(frozen=True)
+class AttachmentKind:
+    """One kind of attachment the bot can open.
+
+    The registry of kinds drives both how an attachment is processed and how the bot
+    describes its own abilities, so a new kind added to :data:`ATTACHMENT_KINDS` shows up
+    in both without further changes.
+
+    Attributes:
+        name: Short identifier, for example ``"image"``.
+        handles: Whether a MIME content type belongs to this kind.
+        settings: Returns the live config section of this kind (it has ``enabled``).
+        process: Turns the downloaded bytes and the file name into content parts.
+        describe: One phrase for the bot's self-description, built from the settings.
+    """
+
+    name: str
+    handles: Callable[[str], bool]
+    settings: Callable[[], Any]
+    process: Callable[[bytes, str], Awaitable[list[dict]]]
+    describe: Callable[[Any], str]
+
+
+# The processors and the config are looked up when called, so replacing them in tests works.
+ATTACHMENT_KINDS: tuple[AttachmentKind, ...] = (
+    AttachmentKind(
+        name="image",
+        handles=lambda content_type: content_type.startswith("image/"),
+        settings=lambda: attachment_config.image,
+        process=lambda data, filename: _process_image(data),
+        describe=lambda settings: f"images (resized to fit {settings.max_dimension} px)",
+    ),
+    AttachmentKind(
+        name="pdf",
+        handles=lambda content_type: content_type == "application/pdf",
+        settings=lambda: attachment_config.pdf,
+        process=lambda data, filename: _process_pdf(data, filename),
+        describe=lambda settings: f"PDF files (first {settings.max_pages} pages, read as images)",
+    ),
+    AttachmentKind(
+        name="video",
+        handles=lambda content_type: content_type.startswith("video/"),
+        settings=lambda: attachment_config.video,
+        process=lambda data, filename: _process_video(data, filename),
+        describe=lambda settings: f"videos (up to {settings.max_frames} still frames, no sound)",
+    ),
+)
+
+
+def describe_supported_attachments() -> list[str]:
+    """Describe the attachment kinds the bot can open right now.
+
+    Returns:
+        One phrase per enabled kind with its live limits, in registry order; empty when
+        attachment processing is switched off.
+    """
+    if not attachment_config.enabled:
+        return []
+    return [kind.describe(kind.settings()) for kind in ATTACHMENT_KINDS if kind.settings().enabled]
+
+
 async def process_attachment(attachment: "discord.Attachment") -> list[dict]:
     """Convert a Discord Attachment to a list of LangChain content_parts.
 
@@ -310,17 +372,10 @@ async def process_attachment(attachment: "discord.Attachment") -> list[dict]:
         }]
 
     try:
-        if content_type.startswith("image/") and attachment_config.image.enabled:
-            data = await _download(attachment.url)
-            return await _process_image(data)
-
-        if content_type == "application/pdf" and attachment_config.pdf.enabled:
-            data = await _download(attachment.url)
-            return await _process_pdf(data, filename)
-
-        if content_type.startswith("video/") and attachment_config.video.enabled:
-            data = await _download(attachment.url)
-            return await _process_video(data, filename)
+        for kind in ATTACHMENT_KINDS:
+            if kind.handles(content_type) and kind.settings().enabled:
+                data = await _download(attachment.url)
+                return await kind.process(data, filename)
 
         return [{"type": "text", "text": f"[Attachment: {filename} (unsupported type: {content_type})]"}]
 

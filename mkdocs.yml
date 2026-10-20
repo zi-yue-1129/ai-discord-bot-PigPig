@@ -112,6 +112,7 @@ nav:
       - Circuit Breaker: llm/model_circuit_breaker.md
       - Callbacks: llm/callbacks.md
       - Prompt Protection: llm/protected_prompt_system.md
+      - Self-knowledge: llm/self_knowledge.md
       - Data Schema: llm/schema.md
   - Features (Cogs):
     - Overview: cogs/index.md

@@ -49,6 +49,16 @@ class PlaybackAbortedError(RuntimeError):
 
 
 class YTMusic(commands.Cog):
+    # Read by llm.self_knowledge so the bot can explain the player when asked.
+    GUIDE_NOTES = (
+        "The player message has buttons: ⏮️ previous, ⏯️ pause or resume, ⏭️ skip, ⏹️ stop, 🔄 loop mode, "
+        "🔀 shuffle, 📜 show or hide the queue list, 🎶 autoplay (keeps adding recommended songs). "
+        "With the queue list shown, two menus under it play a queued song next or remove one. "
+        "Members must be in the bot's voice channel to control it. /play takes YouTube links or keywords, "
+        "SoundCloud links and Spotify track links; with insert it plays next. "
+        "In chat the bot can also play, skip, pause, queue and change the volume when asked."
+    )
+
     def __init__(self, bot):
         self.bot = bot
         self.youtube = None  # Will be initialized in setup_hook

@@ -4,6 +4,8 @@ from typing import Any, List, MutableMapping, Optional
 import re
 
 from addons.logging import get_logger
+from addons.settings import memory_config
+from llm.self_knowledge import build_self_description
 
 logger = get_logger(server_id="Bot", source="llm.orchestrator")
 
@@ -686,6 +688,11 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                 if message_agent_tools:
                     action_tools_rules = self._build_action_tools_rules(message_agent_tools)
                     message_system_prompt = f"{message_system_prompt}\n\n{action_tools_rules}"
+
+                # What the bot can see and do, generated from its real settings and tools so it
+                # answers questions about itself correctly without a hand-kept list.
+                self_description = build_self_description(all_tools, memory_config.short_term_limit)
+                message_system_prompt = f"{message_system_prompt}\n\n{self_description}"
 
                 # IMPORTANT: Place static message_system_prompt before dynamic procedural_context_str to maximize KV cache reuse!
                 full_message_prompt = f"{message_system_prompt}\n\n{procedural_context_str}"

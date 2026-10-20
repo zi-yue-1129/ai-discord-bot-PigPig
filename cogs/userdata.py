@@ -173,6 +173,13 @@ class UserDataCog(commands.Cog):
         logger: Logger instance for this cog.
     """
 
+    # Read by llm.self_knowledge so the bot can explain memory and knowledge when asked.
+    GUIDE_NOTES = (
+        "/memory is personal: what the bot remembers about one member, the same in every server. "
+        "/knowledge is shared: facts and culture of the whole server or of one channel. "
+        "Both can be viewed, saved and cleared, and in chat the bot can save or change them when asked."
+    )
+
     memory_group = app_commands.Group(
         name="memory",
         description="Manage my personal memory and interaction preferences about you"
