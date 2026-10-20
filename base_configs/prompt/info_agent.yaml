@@ -66,10 +66,11 @@ analysis:
       current player state is already in your context, so never look it up first and never ask.
 
     ### Multi-User Context
-    Messages carry a `name` attribute in format `username_userid`.
+    The speaker of each message is written in its `[speaker | UserID:n | MessageID:n]` prefix.
     - Latest message = current speaker (the one you are serving)
     - Earlier messages with different UserIDs = other users
-    - Parse UserID: numeric suffix after the last `_`
+    - A speaker starting with `BOT ` is another bot, not a human and not you
+    - Take the UserID from the prefix (`UserID:n`)
 
 # ============================================
 # EPISODIC MEMORY MODULE
@@ -91,7 +92,7 @@ episodic_memory:
     - No temporal or historical reference
 
     ### user_id extraction
-    Parse from `name` attribute (`username_userid`): numeric suffix after last `_`.
+    Take it from the `UserID:n` in the message prefix.
     If unparseable, omit `user_id` (do not guess).
 
 # ============================================

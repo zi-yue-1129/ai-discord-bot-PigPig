@@ -27,9 +27,14 @@ The provider identifies and includes various attachment types:
 
 ## Multi-Agent Differentiation
 
-The provider uses explicit speaker identification to help the LLM distinguish between different users and the bot itself:
-- **Human Messages**: Include a `name` parameter formatted as `AuthorName_UserID`.
-- **AI Messages**: Identified as `AIMessage`.
+The model only reliably sees the text of a message (most chat templates drop the `name` field), so the speaker is written into the prefix `[speaker | UserID:n | MessageID:n]`:
+- **The bot's own messages**: the only `AIMessage` turns. The speaker is its plain username.
+- **Everyone else, including other bots**: `HumanMessage` turns with `name` set to `AuthorName_UserID`.
+  Treating another bot as an assistant turn would make the model take its words as its own.
+- **Speaker label**: `Display Name (username)` when the display name differs from the username, so the name people use
+  in conversation matches the history. Other bots are prefixed with `BOT `, for example `BOT MusicBot`.
+
+The reply and info agent prompts (`base_configs/prompt/`) explain these rules to the model.
 
 ## Markers
 

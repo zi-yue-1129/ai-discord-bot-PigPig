@@ -7,6 +7,27 @@ from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from function import func
 
 
+def _speaker_label(author: Any, is_own_message: bool) -> str:
+    """Names the author of a message the way the model should see them.
+
+    The bot's own label stays its plain username. Everyone else gets the name people call them
+    in the server (display name) next to the username, and other bots are marked ``BOT`` so
+    their words are never taken for the bot's own.
+
+    Args:
+        author: The Discord author of the message.
+        is_own_message: Whether this bot wrote the message.
+
+    Returns:
+        The label placed before ``| UserID:`` in the history prefix.
+    """
+    if is_own_message:
+        return author.name
+    display_name = getattr(author, "display_name", None) or author.name
+    label = author.name if display_name == author.name else f"{display_name} ({author.name})"
+    return f"BOT {label}" if author.bot else label
+
+
 class ShortTermMemoryProvider:
     """
     Provides short-term memory as a list of LangChain messages.
@@ -89,7 +110,8 @@ class ShortTermMemoryProvider:
                 content_parts = []
                 content_suffix = []
 
-                content_prefix = f"{msg.author.name} | UserID:{msg.author.id} | MessageID:{msg.id}"
+                is_own_message = msg.author.id == self.bot.user.id
+                content_prefix = f"{_speaker_label(msg.author, is_own_message)} | UserID:{msg.author.id} | MessageID:{msg.id}"
 
                 # Include reactions
                 if msg.reactions:
@@ -124,7 +146,6 @@ class ShortTermMemoryProvider:
                 # The bot's own past messages keep the identity prefix (its MessageID is a
                 # valid target for reactions and replies) but get no trailing metadata:
                 # models imitate that suffix and leak it into new replies.
-                is_own_message = msg.author.id == self.bot.user.id
                 suffix = "" if is_own_message else f" [{' | '.join(content_suffix)}]"
                 cleaned_content = ""
                 if msg.content:
@@ -140,12 +161,13 @@ class ShortTermMemoryProvider:
                         parts = process_embed(embed)
                         content_parts.extend(parts)
 
-                # Create message (using list format for content)
-                # Add explicit speaker identification to help LLM distinguish between users
-                if msg.author.bot:
+                # Only the bot's own messages are assistant turns. Other bots speak as
+                # participants: as assistant turns the model would take their words as its own.
+                if is_own_message:
                     result.append(AIMessage(content=content_parts))
                 else:
-                    # Include 'name' parameter to make speaker identity explicit
+                    # The name is only a hint: most chat templates drop it, so the speaker is
+                    # also written into the text prefix above.
                     result.append(HumanMessage(
                         content=content_parts,
                         name=f"{msg.author.name}_{msg.author.id}"
