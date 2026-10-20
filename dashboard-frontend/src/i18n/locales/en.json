@@ -226,7 +226,8 @@
     "whitelistNote": "Allow Bot to respond in this channel",
     "blacklistNote": "Forbid Bot to respond in this channel",
     "autoResponseNote": "Allow Bot to join conversations automatically",
-    "selectChannel": "Please select a channel from the left"
+    "selectChannel": "Please select a channel from the left",
+    "music": "Music"
   },
   "user": {
     "profile": "Profile",
@@ -308,6 +309,38 @@
     "users": "Users with Memory",
     "deleteSuccess": "Deleted memory for user {{id}}",
     "deleteFailed": "Deletion failed"
+  },
+  "music": {
+    "title": "Music Settings",
+    "subtitle": "The same settings as the /music_settings command in Discord.",
+    "djSection": "DJ & Voting",
+    "djRole": "DJ Role",
+    "djRoleNote": "Members with this role control the player freely. Without one, everyone in the bot's voice channel can.",
+    "noDjRole": "None (everyone can control the player)",
+    "voteRatio": "Vote-skip threshold",
+    "voteRatioNote": "Share of listeners who must vote before a non-DJ can skip a song (only used when a DJ role is set).",
+    "playbackSection": "Playback",
+    "defaultVolume": "Default volume",
+    "defaultVolumeNote": "Volume every new playback session starts at.",
+    "stageAnnounce": "Stage announcements",
+    "stageAnnounceNote": "When playing in a stage channel, set the stage topic to the current song.",
+    "staySection": "24/7 Mode",
+    "stay247": "Stay in voice 24/7",
+    "stay247Note": "Stay in the voice channel when the queue ends or everyone leaves, and rejoin after a restart.",
+    "stayChannel": "Voice channel",
+    "stayChannelNote": "The voice or stage channel the bot stays in.",
+    "selectVoiceChannel": "Select a voice channel",
+    "stayChannelRequired": "Choose a voice channel to turn on 24/7 mode.",
+    "requestSection": "Song Request Channel",
+    "requestChannel": "Request channel",
+    "requestChannelNote": "Every message sent in this channel is played as a song request. The bot needs Send Messages, Manage Messages and Read Message History there.",
+    "noRequestChannel": "None (off)",
+    "unsaved": "You have unsaved changes",
+    "saved": "Music settings saved",
+    "saveError": "Save failed, please try again",
+    "joinWarning": "Saved, but the bot could not join the voice channel. Check its Connect permission there.",
+    "loadError": "Could not load music settings",
+    "unavailable": "The music module is not loaded on the bot."
   }
 }
 

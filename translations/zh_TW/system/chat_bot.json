@@ -42,7 +42,14 @@
             "change_own_nickname": "✏️ 正在更改暱稱...",
             "clear_user_memory": "🧹 正在清除使用者記憶...",
             "delete_own_last_message": "🗑️ 正在刪除上一則訊息...",
-            "dramatic_pause": "⏳ 正在醞釀氣氛..."
+            "dramatic_pause": "⏳ 正在醞釀氣氛...",
+            "seek_music": "⏩ 正在調整播放位置...",
+            "set_music_effect": "🎛️ 正在套用音效...",
+            "play_previous_song": "⏮️ 正在回到上一首...",
+            "move_song_in_queue": "↕️ 正在調整待播順序...",
+            "get_current_song_lyrics": "🎤 正在查歌詞...",
+            "play_saved_playlist": "📁 正在播放歌單...",
+            "add_song_to_playlist": "➕ 正在加入歌單..."
         },
         "switching_model": "⏳ 這個模型沒有回應，正在改用備用模型..."
     }

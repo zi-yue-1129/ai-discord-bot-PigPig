@@ -42,7 +42,14 @@
             "change_own_nickname": "✏️ Changing my nickname...",
             "clear_user_memory": "🧹 Clearing the user's memory...",
             "delete_own_last_message": "🗑️ Deleting my last message...",
-            "dramatic_pause": "⏳ Building up the mood..."
+            "dramatic_pause": "⏳ Building up the mood...",
+            "seek_music": "⏩ Moving the playback position...",
+            "set_music_effect": "🎛️ Applying the effect...",
+            "play_previous_song": "⏮️ Going back to the previous song...",
+            "move_song_in_queue": "↕️ Reordering the queue...",
+            "get_current_song_lyrics": "🎤 Looking up the lyrics...",
+            "play_saved_playlist": "📁 Playing the playlist...",
+            "add_song_to_playlist": "➕ Adding to the playlist..."
         },
         "switching_model": "⏳ The model did not respond, switching to a backup model..."
     }

@@ -627,7 +627,8 @@ class MusicService:
         if not 0 <= percent <= 100:
             return _fail("invalid_volume", "Volume must be between 0 and 100.")
         volume = percent / 100
-        self._cog.state_manager.update_state(ctx.guild.id, volume=volume)
+        # A volume chosen before the first song is kept instead of the server's default.
+        self._cog.state_manager.update_state(ctx.guild.id, volume=volume, session_started=True)
         source = getattr(ctx.guild.voice_client, "source", None)
         if source is not None and hasattr(source, "volume"):
             source.volume = volume

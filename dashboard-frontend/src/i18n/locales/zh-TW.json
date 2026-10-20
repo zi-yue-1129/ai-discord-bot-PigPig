@@ -226,7 +226,8 @@
     "whitelistNote": "允許 Bot 在此頻道中回應",
     "blacklistNote": "禁止 Bot 在此頻道中回應",
     "autoResponseNote": "允許 Bot 自動參與對話",
-    "selectChannel": "請在左側選擇頻道"
+    "selectChannel": "請在左側選擇頻道",
+    "music": "音樂"
   },
   "user": {
     "profile": "個人資料",
@@ -308,6 +309,38 @@
     "users": "擁有記憶的使用者",
     "deleteSuccess": "已刪除使用者 {{id}} 的記憶資料",
     "deleteFailed": "刪除失敗"
+  },
+  "music": {
+    "title": "音樂設定",
+    "subtitle": "與 Discord 中 /music_settings 指令的設定相同。",
+    "djSection": "DJ 與投票",
+    "djRole": "DJ 身分組",
+    "djRoleNote": "擁有此身分組的成員可以自由控制播放器；未設定時，Bot 所在語音頻道中的所有人都能控制。",
+    "noDjRole": "無（所有人都能控制播放器）",
+    "voteRatio": "投票跳過門檻",
+    "voteRatioNote": "非 DJ 跳過歌曲時需要多少比例的聽眾投票（僅在設定 DJ 身分組時使用）。",
+    "playbackSection": "播放",
+    "defaultVolume": "預設音量",
+    "defaultVolumeNote": "每次開始播放時的音量。",
+    "stageAnnounce": "舞台頻道公告",
+    "stageAnnounceNote": "在舞台頻道播放時，把舞台主題設為目前的歌名。",
+    "staySection": "24/7 模式",
+    "stay247": "24/7 常駐語音",
+    "stay247Note": "播完或沒人時也留在語音頻道，重啟後自動回來。",
+    "stayChannel": "語音頻道",
+    "stayChannelNote": "Bot 常駐的語音或舞台頻道。",
+    "selectVoiceChannel": "選擇語音頻道",
+    "stayChannelRequired": "開啟 24/7 模式需要選擇語音頻道。",
+    "requestSection": "點歌頻道",
+    "requestChannel": "點歌頻道",
+    "requestChannelNote": "在此頻道輸入的每則訊息都會直接點歌。Bot 需要在該頻道擁有「傳送訊息」、「管理訊息」與「讀取訊息歷史」權限。",
+    "noRequestChannel": "無（關閉）",
+    "unsaved": "有尚未儲存的變更",
+    "saved": "音樂設定已儲存",
+    "saveError": "儲存失敗，請稍後再試",
+    "joinWarning": "已儲存，但 Bot 無法加入該語音頻道，請確認它在該頻道的「連接」權限。",
+    "loadError": "無法載入音樂設定",
+    "unavailable": "Bot 未載入音樂模組。"
   }
 }
 
