@@ -1,0 +1,33 @@
+{
+    "description": "Server music settings: DJ role, 24/7, request channel…",
+    "fields": {
+        "dj": "DJ role",
+        "vote_ratio": "Skip vote share",
+        "default_volume": "Default volume",
+        "stay_247": "24/7 mode",
+        "request_channel": "Request channel",
+        "stage_announce": "Stage topic announce"
+    },
+    "values": {
+        "on": "On",
+        "off": "Off",
+        "none": "Not set"
+    },
+    "responses": {
+        "view_title": "Music settings",
+        "dj_set": "DJ role set to {role}",
+        "dj_cleared": "DJ role removed: everyone can control the music",
+        "vote_ratio_set": "Skipping now needs {percent}% of the listeners",
+        "default_volume_set": "Default volume set to {percent}%",
+        "stay_247_on": "24/7 mode on: staying in {channel}",
+        "stay_247_off": "24/7 mode off",
+        "request_channel_set": "Request channel set to {channel}",
+        "request_channel_cleared": "Request channel removed",
+        "stage_announce_set": "Stage topic announce: {status}"
+    },
+    "errors": {
+        "no_permission": "You need the Manage Server permission to change the music settings.",
+        "no_channel": "Join a voice channel or pick the channel to stay in.",
+        "request_channel_failed": "I need Send Messages, Manage Messages and Read Message History in that channel."
+    }
+}

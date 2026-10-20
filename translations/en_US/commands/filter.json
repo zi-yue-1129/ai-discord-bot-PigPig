@@ -1,0 +1,7 @@
+{
+    "description": "Apply an audio effect (nightcore, 8D, karaoke…)",
+    "responses": {
+        "applied": "Effect applied: {effect}",
+        "cleared": "Effect turned off"
+    }
+}

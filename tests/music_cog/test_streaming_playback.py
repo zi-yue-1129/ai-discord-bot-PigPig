@@ -144,7 +144,7 @@ def wired_player(cog: YTMusic, monkeypatch: pytest.MonkeyPatch) -> List[Any]:
     """Replaces audio and UI with fakes; returns the list of created audio sources."""
     sources: List[Any] = []
 
-    def fake_source(song: dict, volume: float = 1.0, start_offset: float = 0.0) -> str:
+    def fake_source(song: dict, volume: float = 1.0, start_offset: float = 0.0, audio_filter: Optional[str] = None) -> str:
         sources.append((dict(song), start_offset))
         return "source"
 

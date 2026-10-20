@@ -1,0 +1,33 @@
+{
+    "description": "サーバーの音楽設定：DJ ロール、24/7、リクエストチャンネル…",
+    "fields": {
+        "dj": "DJ ロール",
+        "vote_ratio": "スキップ投票の割合",
+        "default_volume": "既定の音量",
+        "stay_247": "24/7 モード",
+        "request_channel": "リクエストチャンネル",
+        "stage_announce": "ステージにタイトル表示"
+    },
+    "values": {
+        "on": "オン",
+        "off": "オフ",
+        "none": "未設定"
+    },
+    "responses": {
+        "view_title": "音楽設定",
+        "dj_set": "DJ ロールを {role} に設定しました",
+        "dj_cleared": "DJ ロールを解除しました。全員が操作できます",
+        "vote_ratio_set": "スキップには {percent}% の投票が必要です",
+        "default_volume_set": "既定の音量を {percent}% にしました",
+        "stay_247_on": "24/7 モードをオンにしました（{channel}）",
+        "stay_247_off": "24/7 モードをオフにしました",
+        "request_channel_set": "リクエストチャンネルを {channel} にしました",
+        "request_channel_cleared": "リクエストチャンネルを解除しました",
+        "stage_announce_set": "ステージへのタイトル表示：{status}"
+    },
+    "errors": {
+        "no_permission": "音楽設定の変更には「サーバー管理」権限が必要です。",
+        "no_channel": "ボイスチャンネルに参加するか、チャンネルを指定してください。",
+        "request_channel_failed": "そのチャンネルで「メッセージを送信」「メッセージの管理」「メッセージ履歴を読む」権限が必要です。"
+    }
+}

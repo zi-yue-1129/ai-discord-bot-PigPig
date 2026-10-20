@@ -1,0 +1,8 @@
+{
+    "loading": "正在寻找歌词…",
+    "not_found": "找不到这首歌的歌词。",
+    "not_synced": "这首歌的歌词没有时间轴，用 /music lyrics 查看完整歌词。",
+    "disabled": "歌词功能未开启。",
+    "source": "歌词来源：LRCLIB",
+    "show_on_player": "在播放面板同步显示"
+}

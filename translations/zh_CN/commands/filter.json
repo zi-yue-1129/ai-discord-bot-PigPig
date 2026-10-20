@@ -1,0 +1,7 @@
+{
+    "description": "套用音效（nightcore、8D、卡拉 OK…）",
+    "responses": {
+        "applied": "已套用音效：{effect}",
+        "cleared": "已关闭音效"
+    }
+}

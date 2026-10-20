@@ -22,9 +22,15 @@
     },
     "not_in_channel": "你需要和机器人在同一个语音频道才能控制音乐",
     "no_songs": "❌ 没有可播放的歌曲！",
-    "queue_play_next_placeholder": "⏭️ 选一首插播到下一首",
-    "queue_remove_placeholder": "🗑️ 选一首从队列移除",
     "queue_select_empty": "队列是空的",
     "queue_played_next": "{user} 把「{title}」插播到下一首",
-    "queue_removed": "{user} 从队列移除了「{title}」"
+    "queue_removed": "{user} 从队列移除了「{title}」",
+    "queue_song_placeholder": "📜 选一首待播歌曲…",
+    "queue_play_next_action": "插播到下一首",
+    "queue_remove_action": "从队列移除",
+    "replayed": "{user} 从头播放",
+    "rewound": "{user} 倒退 {seconds} 秒（{position}）",
+    "forwarded": "{user} 快进 {seconds} 秒（{position}）",
+    "skip_voted": "{user} 投票跳过（{votes}/{required}）",
+    "filter_changed": "{user} 把音效换成 {effect}"
 }

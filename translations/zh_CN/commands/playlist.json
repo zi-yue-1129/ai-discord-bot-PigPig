@@ -1,0 +1,23 @@
+{
+    "description": "个人与服务器歌单",
+    "scopes": {
+        "personal": "个人歌单",
+        "server": "服务器歌单"
+    },
+    "responses": {
+        "created": "已建立{scope}「{name}」",
+        "deleted": "已删除歌单「{name}」（{count} 首）",
+        "renamed": "已把「{old}」改名为「{name}」",
+        "list_title": "歌单",
+        "none": "（没有）",
+        "more": "…还有 {count} 首",
+        "empty": "这个歌单是空的。",
+        "added": "已加入 {added} 首歌到「{name}」",
+        "added_one": "已把「{title}」加入「{name}」",
+        "removed": "已从「{name}」移除第 {position} 首：{title}",
+        "playing": "开始播放歌单「{name}」（{total} 首）",
+        "shared": "已把「{name}」复制给 {user}",
+        "shared_dm": "🎁 {sender} 分享了歌单「{name}」（{count} 首）给你，用 /playlist play 就能播放！",
+        "exported": "已导出「{name}」（{count} 首）"
+    }
+}

@@ -1,4 +1,6 @@
 import asyncio
+from types import SimpleNamespace
+
 import discord
 from typing import Optional, Dict, Any
 from .context import PlaybackContext
@@ -6,6 +8,7 @@ from .ui.controls import MusicControlView, set_queue_field
 from .ui.progress import ProgressDisplay
 from cogs.language_manager import LanguageManager
 from addons.logging import get_logger
+from addons.settings import music_config
 
 log = get_logger(server_id="system", source=__name__)
 
@@ -81,7 +84,6 @@ class UIManager:
                 "toggle_playback_callback": music_cog.handle_toggle_playback,
                 "skip_callback": music_cog.handle_skip,
                 "stop_callback": music_cog.handle_stop,
-                "toggle_mode_callback": music_cog.handle_toggle_mode,
                 "toggle_shuffle_callback": music_cog.handle_toggle_shuffle,
                 "show_queue_callback": music_cog.handle_show_queue,
                 "toggle_autoplay_callback": music_cog.handle_toggle_autoplay,
@@ -92,6 +94,11 @@ class UIManager:
                 "get_queue_text": music_cog.get_queue_text,
                 "get_queue_options": music_cog.queue_menu_options,
                 "queue_select_callback": music_cog.handle_queue_select,
+                "set_mode_callback": music_cog.handle_set_mode,
+                "set_filter_callback": music_cog.handle_set_filter,
+                "seek_callback": music_cog.handle_seek_step,
+                "toggle_lyrics_callback": music_cog.handle_toggle_lyrics if music_config.lyrics.enabled else None,
+                "refresh_lyrics": music_cog.refresh_lyrics_field,
             }
 
             # Before creating a new view, stop the previous view's background tasks
@@ -108,6 +115,10 @@ class UIManager:
                 set_queue_field(embed, self._translate_music(guild_id_str, "player", "queue"),
                                 await music_cog.get_queue_text(guild_id))
             
+            if state.show_lyrics:
+                # The lyrics switch stays on for the next songs too (filled in once looked up).
+                music_cog.refresh_lyrics_field(SimpleNamespace(current_embed=embed, guild=ctx.guild))
+
             # Clean up all previous UI messages
             for old_message in state.ui_messages:
                 try:

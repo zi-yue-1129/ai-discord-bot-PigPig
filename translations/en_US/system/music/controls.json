@@ -22,9 +22,15 @@
     },
     "not_in_channel": "You need to be in the same voice channel as the bot to control the music",
     "no_songs": "❌ There is nothing to play!",
-    "queue_play_next_placeholder": "⏭️ Pick a song to play next",
-    "queue_remove_placeholder": "🗑️ Pick a song to remove",
     "queue_select_empty": "The queue is empty",
     "queue_played_next": "{user} moved “{title}” up to play next",
-    "queue_removed": "{user} removed “{title}” from the queue"
+    "queue_removed": "{user} removed “{title}” from the queue",
+    "queue_song_placeholder": "📜 Pick a queued song…",
+    "queue_play_next_action": "Play next",
+    "queue_remove_action": "Remove",
+    "replayed": "{user} started the song over",
+    "rewound": "{user} rewound {seconds}s ({position})",
+    "forwarded": "{user} skipped ahead {seconds}s ({position})",
+    "skip_voted": "{user} voted to skip ({votes}/{required})",
+    "filter_changed": "{user} set the effect to {effect}"
 }

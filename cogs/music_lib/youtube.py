@@ -253,6 +253,51 @@ class YouTubeManager:
             log.error(f"[音樂] 播放清單下載失敗: {e}")
             return None, "播放清單下載失敗"
 
+    async def list_playlist(self, url: str, limit: int = 200) -> tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+        """Reads the songs of a playlist without downloading any of them.
+
+        Args:
+            url: A YouTube playlist link or SoundCloud set.
+            limit: How many entries to read at most.
+
+        Returns:
+            ``(tracks, None)`` with ``url``, ``title``, ``duration``, ``video_id`` and
+            ``author`` per song, or ``(None, error)``.
+        """
+        ydl_opts = {
+            'extract_flat': True,
+            'noplaylist': False,
+            'playlistend': limit,
+            'quiet': True,
+            'no_warnings': True,
+        }
+        cookies_path = self.settings.youtube_cookies_path
+        if os.path.exists(cookies_path):
+            ydl_opts['cookiefile'] = cookies_path
+
+        def extract() -> Dict[str, Any]:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                return ydl.extract_info(url, download=False)
+
+        try:
+            info_dict = await asyncio.to_thread(extract)
+        except Exception as e:
+            log.error(f"[音樂] 讀取播放清單失敗: {e}")
+            return None, "無法取得播放清單資訊"
+        entries = [entry for entry in (info_dict or {}).get('entries') or [] if entry and entry.get('url')]
+        if not entries:
+            return None, "播放清單是空的"
+        return [
+            {
+                "url": entry['url'],
+                "title": entry.get('title') or entry['url'],
+                "duration": entry.get('duration') or 0,
+                "video_id": entry.get('id') or entry['url'],
+                "author": entry.get('uploader') or entry.get('channel') or "",
+            }
+            for entry in entries[:limit]
+        ], None
+
     async def get_video_info_without_download(self, url: str, ctx: PlaybackContext) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
         """Get video information without downloading.
 

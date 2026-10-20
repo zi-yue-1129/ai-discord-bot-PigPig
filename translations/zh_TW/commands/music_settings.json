@@ -1,0 +1,33 @@
+{
+    "description": "伺服器音樂設定：DJ 身分組、24/7、點歌頻道…",
+    "fields": {
+        "dj": "DJ 身分組",
+        "vote_ratio": "投票跳過比例",
+        "default_volume": "預設音量",
+        "stay_247": "24/7 模式",
+        "request_channel": "點歌頻道",
+        "stage_announce": "舞台頻道顯示歌名"
+    },
+    "values": {
+        "on": "開啟",
+        "off": "關閉",
+        "none": "未設定"
+    },
+    "responses": {
+        "view_title": "音樂設定",
+        "dj_set": "DJ 身分組已設為 {role}",
+        "dj_cleared": "已取消 DJ 身分組，所有人都能控制音樂",
+        "vote_ratio_set": "跳過需要 {percent}% 的聽眾投票",
+        "default_volume_set": "預設音量已設為 {percent}%",
+        "stay_247_on": "已開啟 24/7 模式，會常駐在 {channel}",
+        "stay_247_off": "已關閉 24/7 模式",
+        "request_channel_set": "點歌頻道已設為 {channel}",
+        "request_channel_cleared": "已取消點歌頻道",
+        "stage_announce_set": "舞台頻道顯示歌名：{status}"
+    },
+    "errors": {
+        "no_permission": "需要「管理伺服器」權限才能修改音樂設定。",
+        "no_channel": "請先加入語音頻道，或指定要常駐的頻道。",
+        "request_channel_failed": "我在那個頻道需要「傳送訊息」「管理訊息」「讀取訊息記錄」權限。"
+    }
+}

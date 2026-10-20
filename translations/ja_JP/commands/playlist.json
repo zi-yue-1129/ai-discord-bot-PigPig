@@ -1,0 +1,23 @@
+{
+    "description": "個人とサーバーのプレイリスト",
+    "scopes": {
+        "personal": "個人のプレイリスト",
+        "server": "サーバーのプレイリスト"
+    },
+    "responses": {
+        "created": "{scope}「{name}」を作成しました",
+        "deleted": "「{name}」を削除しました（{count} 曲）",
+        "renamed": "「{old}」を「{name}」に変更しました",
+        "list_title": "プレイリスト",
+        "none": "（なし）",
+        "more": "…ほか {count} 曲",
+        "empty": "このプレイリストは空です。",
+        "added": "「{name}」に {added} 曲を追加しました",
+        "added_one": "「{title}」を「{name}」に追加しました",
+        "removed": "「{name}」から {position} 番目を削除しました：{title}",
+        "playing": "「{name}」を再生します（{total} 曲）",
+        "shared": "{user} に「{name}」をコピーしました",
+        "shared_dm": "🎁 {sender} さんがプレイリスト「{name}」（{count} 曲）を共有しました。/playlist play で再生できます！",
+        "exported": "「{name}」をエクスポートしました（{count} 曲）"
+    }
+}
