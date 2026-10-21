@@ -23,6 +23,13 @@ ACTION_TOOLS = {
     "set_music_volume",
     "remove_song_from_queue",
     "clear_music_queue",
+    "seek_music",
+    "set_music_effect",
+    "play_previous_song",
+    "move_song_in_queue",
+    "get_current_song_lyrics",
+    "play_saved_playlist",
+    "add_song_to_playlist",
 }
 
 

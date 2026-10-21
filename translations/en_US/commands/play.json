@@ -20,6 +20,7 @@
         "refreshed_ui": "Music UI refreshed.",
         "search_results_title": "Search Results",
         "select_song": "Please select a song to play.",
-        "song_added": "Song added to queue."
+        "song_added": "Song added to queue.",
+        "queue_finished_staying": "The queue has finished (24/7 mode: staying in the voice channel)."
     }
 }

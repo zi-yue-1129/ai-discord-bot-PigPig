@@ -19,6 +19,7 @@ import GuildOverview from './pages/admin/guild/Overview';
 import GuildChannels from './pages/admin/guild/Channels';
 import GuildPrompt from './pages/admin/guild/Prompt';
 import GuildStats from './pages/admin/guild/GuildStats';
+import GuildMusic from './pages/admin/guild/Music';
 import UserPortal from './pages/admin/UserPortal';
 import UserProfile from './pages/admin/user/Profile';
 import UserMemory from './pages/admin/user/Memory';
@@ -74,6 +75,7 @@ export default function App() {
               <Route index element={<GuildOverview />} />
               <Route path="channels" element={<GuildChannels />} />
               <Route path="prompt" element={<GuildPrompt />} />
+              <Route path="music" element={<GuildMusic />} />
               <Route path="stats" element={<GuildStats />} />
             </Route>
 

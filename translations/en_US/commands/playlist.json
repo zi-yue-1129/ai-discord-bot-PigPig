@@ -1,0 +1,23 @@
+{
+    "description": "Personal and server playlists",
+    "scopes": {
+        "personal": "Your playlists",
+        "server": "Server playlists"
+    },
+    "responses": {
+        "created": "Created \"{name}\" ({scope})",
+        "deleted": "Deleted \"{name}\" ({count} songs)",
+        "renamed": "Renamed \"{old}\" to \"{name}\"",
+        "list_title": "Playlists",
+        "none": "(none)",
+        "more": "…and {count} more",
+        "empty": "This playlist is empty.",
+        "added": "Added {added} songs to \"{name}\"",
+        "added_one": "Added \"{title}\" to \"{name}\"",
+        "removed": "Removed #{position} from \"{name}\": {title}",
+        "playing": "Playing \"{name}\" ({total} songs)",
+        "shared": "Gave {user} a copy of \"{name}\"",
+        "shared_dm": "🎁 {sender} shared the playlist \"{name}\" ({count} songs) with you. Play it with /playlist play!",
+        "exported": "Exported \"{name}\" ({count} songs)"
+    }
+}

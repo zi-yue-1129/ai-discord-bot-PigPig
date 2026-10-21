@@ -20,6 +20,7 @@
         "refreshed_ui": "ミュージックUIが更新されました。",
         "search_results_title": "検索結果",
         "select_song": "再生する曲を選択してください。",
-        "song_added": "曲がキューに追加されました。"
+        "song_added": "曲がキューに追加されました。",
+        "queue_finished_staying": "キューの再生が終わりました（24/7 モードのためボイスチャンネルに残ります）。"
     }
 }

@@ -10,6 +10,8 @@ Endpoints:
     GET  /api/guild/{guild_id}/prompt        — System prompt config
     PUT  /api/guild/{guild_id}/prompt        — Update system prompt
     GET  /api/guild/{guild_id}/stats         — Guild-scoped statistics
+    GET  /api/guild/{guild_id}/music         — Music settings + selectable roles/channels
+    PUT  /api/guild/{guild_id}/music         — Update music settings (partial)
 """
 
 from __future__ import annotations
@@ -919,3 +921,323 @@ async def guild_stats(
     except Exception as e:
         log.error(f"Guild stats error for {guild_id}: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ── Music Settings ────────────────────────────────────────────────────
+
+# Fields of ``GuildMusicSettings`` the dashboard may change. ``request_message_id``
+# is managed by the cog itself (it is the pinned header of the request channel).
+_MUSIC_EDITABLE_FIELDS: frozenset[str] = frozenset({
+    "dj_role_id",
+    "vote_ratio",
+    "stay_247",
+    "stay_channel_id",
+    "default_volume",
+    "request_channel_id",
+    "stage_announce",
+})
+
+
+def _get_music_cog(request: Request) -> Any:
+    """Return the loaded music cog.
+
+    Args:
+        request: FastAPI request (used to access bot state).
+
+    Returns:
+        The ``YTMusic`` cog.
+
+    Raises:
+        HTTPException: 503 when the music cog is not loaded.
+    """
+    cog = _get_bot(request).get_cog("YTMusic")
+    if cog is None:
+        raise HTTPException(status_code=503, detail="Music module is not loaded")
+    return cog
+
+
+def _get_music_guild(request: Request, guild_id: str) -> Any:
+    """Return the Discord guild for a music settings request.
+
+    Args:
+        request: FastAPI request.
+        guild_id: The guild ID from the URL.
+
+    Returns:
+        The Discord guild.
+
+    Raises:
+        HTTPException: 404 when the bot is not in the guild.
+    """
+    try:
+        guild = _get_bot(request).get_guild(int(guild_id))
+    except ValueError:
+        guild = None
+    if guild is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    return guild
+
+
+def _music_roles(guild: Any) -> list[Any]:
+    """Return the guild's roles that can be a DJ role, highest first (no @everyone)."""
+    default_id = getattr(getattr(guild, "default_role", None), "id", guild.id)
+    roles = [r for r in guild.roles if r.id != default_id]
+    return sorted(roles, key=lambda r: r.position, reverse=True)
+
+
+def _music_text_channels(guild: Any) -> list[Any]:
+    """Return the guild's text channels in display order."""
+    return sorted(guild.text_channels, key=lambda c: c.position)
+
+
+def _music_voice_channels(guild: Any) -> list[Any]:
+    """Return the guild's voice and stage channels in display order."""
+    channels = list(guild.voice_channels) + list(getattr(guild, "stage_channels", []))
+    return sorted(channels, key=lambda c: c.position)
+
+
+def _music_payload(guild: Any, cog: Any) -> dict[str, Any]:
+    """Build the music settings response for a guild.
+
+    Args:
+        guild: The Discord guild.
+        cog: The music cog.
+
+    Returns:
+        Dict with ``settings`` (IDs as strings) and the selectable roles,
+        text channels and voice channels (``{id, name}``, IDs as strings).
+    """
+    def _options(items: list[Any]) -> list[dict[str, str]]:
+        return [{"id": str(item.id), "name": item.name} for item in items]
+
+    return {
+        "settings": cog.store.get_settings(guild.id).to_dict(),
+        "roles": _options(_music_roles(guild)),
+        "text_channels": _options(_music_text_channels(guild)),
+        "voice_channels": _options(_music_voice_channels(guild)),
+    }
+
+
+def _parse_snowflake(value: Any, field: str) -> int | None:
+    """Parse a Discord ID sent as a string (or null) by the dashboard.
+
+    Args:
+        value: The raw JSON value.
+        field: Field name, for the error message.
+
+    Returns:
+        The ID as an int, or None when the value is null or empty.
+
+    Raises:
+        HTTPException: 400 when the value is not a valid ID.
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        raise HTTPException(status_code=400, detail=f"{field} must be an ID string or null")
+    if isinstance(value, int) and value > 0:
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    raise HTTPException(status_code=400, detail=f"{field} must be an ID string or null")
+
+
+def _pick(items: list[Any], item_id: int | None, field: str, kind: str) -> Any:
+    """Find the guild object with ``item_id`` among ``items``.
+
+    Args:
+        items: Candidate roles or channels of the guild.
+        item_id: The requested ID (None means "none").
+        field: Field name, for the error message.
+        kind: Human-readable kind ("role", "text channel"...), for the error message.
+
+    Returns:
+        The matching object, or None when ``item_id`` is None.
+
+    Raises:
+        HTTPException: 400 when no object of that kind with this ID is in the guild.
+    """
+    if item_id is None:
+        return None
+    for item in items:
+        if item.id == item_id:
+            return item
+    raise HTTPException(status_code=400, detail=f"{field}: {item_id} is not a {kind} of this server")
+
+
+def _parse_bool(value: Any, field: str) -> bool:
+    """Require a JSON boolean; raise 400 otherwise."""
+    if not isinstance(value, bool):
+        raise HTTPException(status_code=400, detail=f"{field} must be true or false")
+    return value
+
+
+@router.get("/{guild_id}/music")
+async def get_music_settings(
+    guild_id: str,
+    request: Request,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> JSONResponse:
+    """Return the music settings of a guild with the roles and channels to pick from.
+
+    Args:
+        guild_id: The target Discord guild ID.
+        request: FastAPI request.
+        user: Authenticated user payload.
+
+    Returns:
+        JSON with ``settings``, ``roles``, ``text_channels`` and
+        ``voice_channels`` (voice includes stage channels). All IDs are strings.
+
+    Raises:
+        HTTPException 404: If the bot is not in the guild.
+        HTTPException 503: If the music module is not loaded.
+    """
+    require_guild_admin_access(guild_id, user)
+
+    guild = _get_music_guild(request, guild_id)
+    cog = _get_music_cog(request)
+    return JSONResponse(_music_payload(guild, cog))
+
+
+@router.put("/{guild_id}/music")
+async def update_music_settings(
+    guild_id: str,
+    request: Request,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> JSONResponse:
+    """Update some of a guild's music settings.
+
+    Every field is validated before anything is changed. The request channel
+    and 24/7 mode go through the music cog so their side effects happen
+    (pinned header message, joining / leaving voice).
+
+    Accepted body fields (all optional):
+        dj_role_id (str | None): DJ role, or null for no DJ system.
+        vote_ratio (float): Share of listeners needed to vote-skip, 0.1–1.0.
+        default_volume (int): Starting volume, 0–100.
+        stay_247 (bool): Stay in voice 24/7 (needs a voice channel).
+        stay_channel_id (str | None): Voice or stage channel for 24/7.
+        request_channel_id (str | None): Song request text channel, or null.
+        stage_announce (bool): Set the stage topic to the playing song.
+
+    Args:
+        guild_id: The target Discord guild ID.
+        request: FastAPI request.
+        user: Authenticated user payload.
+
+    Returns:
+        The same JSON as the GET endpoint, plus ``warning`` when 24/7 was
+        saved but the bot could not join the voice channel.
+
+    Raises:
+        HTTPException 400: Invalid input, or the bot lacks permissions in the
+            chosen request channel.
+        HTTPException 404: If the bot is not in the guild.
+        HTTPException 503: If the music module is not loaded.
+    """
+    require_guild_admin_access(guild_id, user)
+
+    guild = _get_music_guild(request, guild_id)
+    cog = _get_music_cog(request)
+
+    try:
+        body: Any = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Request body must be JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+    unknown = set(body) - _MUSIC_EDITABLE_FIELDS
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown field(s): {', '.join(sorted(unknown))}")
+
+    current = cog.store.get_settings(guild.id)
+    plain: dict[str, Any] = {}
+
+    # ── Validate everything first ──
+    if "dj_role_id" in body:
+        role_id = _parse_snowflake(body["dj_role_id"], "dj_role_id")
+        role = _pick(_music_roles(guild), role_id, "dj_role_id", "role")
+        plain["dj_role_id"] = role.id if role else None
+
+    if "vote_ratio" in body:
+        ratio = body["vote_ratio"]
+        if isinstance(ratio, bool) or not isinstance(ratio, (int, float)) or not 0.1 <= ratio <= 1.0:
+            raise HTTPException(status_code=400, detail="vote_ratio must be a number between 0.1 and 1.0")
+        plain["vote_ratio"] = float(ratio)
+
+    if "default_volume" in body:
+        volume = body["default_volume"]
+        if isinstance(volume, float) and volume.is_integer():
+            volume = int(volume)
+        if isinstance(volume, bool) or not isinstance(volume, int) or not 0 <= volume <= 100:
+            raise HTTPException(status_code=400, detail="default_volume must be an integer between 0 and 100")
+        plain["default_volume"] = volume
+
+    if "stage_announce" in body:
+        plain["stage_announce"] = _parse_bool(body["stage_announce"], "stage_announce")
+
+    request_channel = None
+    request_change = False
+    if "request_channel_id" in body:
+        request_id = _parse_snowflake(body["request_channel_id"], "request_channel_id")
+        request_channel = _pick(_music_text_channels(guild), request_id, "request_channel_id", "text channel")
+        request_change = request_id != current.request_channel_id
+
+    voice_channels = _music_voice_channels(guild)
+    stay_target = current.stay_247
+    if "stay_247" in body:
+        stay_target = _parse_bool(body["stay_247"], "stay_247")
+    if "stay_channel_id" in body:
+        stay_id = _parse_snowflake(body["stay_channel_id"], "stay_channel_id")
+        stay_channel = _pick(voice_channels, stay_id, "stay_channel_id", "voice channel")
+    else:
+        stay_channel = next((c for c in voice_channels if c.id == current.stay_channel_id), None)
+    if stay_target and stay_channel is None:
+        raise HTTPException(status_code=400, detail="Choose a voice channel to turn on 24/7 mode")
+
+    # ── Apply ──
+    if request_change:
+        try:
+            if request_channel is None:
+                await cog.requests.disable(guild)
+            elif not await cog.requests.enable(guild, request_channel):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Cannot use #{request_channel.name} as the request channel: the bot needs "
+                        "Send Messages, Manage Messages and Read Message History there"
+                    ),
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            log.error(f"Music request channel update failed for guild {guild_id}: {e}")
+            raise HTTPException(status_code=500, detail="Failed to update the request channel")
+
+    if not stay_target and "stay_channel_id" in body:
+        plain["stay_channel_id"] = stay_channel.id if stay_channel else None
+    if plain:
+        cog.store.update_settings(guild.id, **plain)
+
+    warning: str | None = None
+    try:
+        if stay_target and (not current.stay_247 or stay_channel.id != current.stay_channel_id):
+            cog.store.update_settings(guild.id, stay_247=True, stay_channel_id=stay_channel.id)
+            if not await cog.stay_in(guild, stay_channel):
+                warning = (
+                    f"24/7 mode was saved, but the bot could not join {stay_channel.name}; "
+                    "check its Connect permission there"
+                )
+        elif not stay_target and current.stay_247:
+            cog.store.update_settings(guild.id, stay_247=False)
+            await cog.leave_if_idle(guild.id)
+    except Exception as e:
+        log.error(f"Music 24/7 update failed for guild {guild_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update 24/7 mode")
+
+    log.info(f"Guild {guild_id} music settings updated by user {user.get('sub')}: {sorted(body)}")
+    payload = _music_payload(guild, cog)
+    if warning:
+        payload["warning"] = warning
+    return JSONResponse(payload)

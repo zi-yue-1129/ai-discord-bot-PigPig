@@ -1,0 +1,9 @@
+{
+    "description": "Queue: reorder, export, import",
+    "responses": {
+        "moved": "Moved \"{title}\" to position {position}",
+        "swapped": "Swapped \"{first}\" and \"{second}\"",
+        "exported": "Exported {count} songs",
+        "imported": "Imported {count} songs"
+    }
+}

@@ -126,6 +126,7 @@ nav:
       - Image Generation: cogs/gen_img.md
       - GIF Tools: cogs/gif_tools.md
       - Music Feature: cogs/music.md
+      - Music Commands & Settings: cogs/music_commands.md
       - Math Operations: cogs/math.md
     - Admin & Maintenance:
       - User Statistics: cogs/stats_cog.md

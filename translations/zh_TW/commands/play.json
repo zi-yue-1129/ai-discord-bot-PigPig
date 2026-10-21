@@ -20,6 +20,7 @@
         "refreshed_ui": "音樂控制介面已更新。",
         "search_results_title": "搜尋結果",
         "select_song": "請選擇要播放的歌曲。",
-        "song_added": "歌曲已加入隊列。"
+        "song_added": "歌曲已加入隊列。",
+        "queue_finished_staying": "隊列播放完畢（24/7 模式，會留在語音頻道）。"
     }
 }

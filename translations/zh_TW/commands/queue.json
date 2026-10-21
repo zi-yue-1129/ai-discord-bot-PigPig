@@ -1,0 +1,9 @@
+{
+    "description": "待播清單：調整順序、匯出、匯入",
+    "responses": {
+        "moved": "已把「{title}」移到第 {position} 首",
+        "swapped": "已交換「{first}」和「{second}」",
+        "exported": "已匯出 {count} 首歌",
+        "imported": "已匯入 {count} 首歌"
+    }
+}

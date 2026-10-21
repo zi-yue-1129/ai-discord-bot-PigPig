@@ -12,7 +12,8 @@ class AudioManager:
         # Per-guild audio source tracking to avoid cross-guild interference.
         self._current_audio: Dict[int, Optional[FFmpegPCMAudio]] = {}
 
-    def create_audio_source(self, song: Dict[str, Any], volume: float = 1.0, start_offset: float = 0.0) -> AudioSource:
+    def create_audio_source(self, song: Dict[str, Any], volume: float = 1.0, start_offset: float = 0.0,
+                            audio_filter: Optional[str] = None) -> AudioSource:
         """Create an FFmpeg audio source based on song information.
 
         A local file is preferred. A song that is still downloading (or a live stream)
@@ -21,7 +22,9 @@ class AudioManager:
         Args:
             song: The song entry (``file_path`` and/or ``stream_url``).
             volume: Playback volume from 0.0 to 1.0.
-            start_offset: Seconds to skip at the start of a local file (used to resume).
+            start_offset: Seconds to skip at the start of the song (used to resume and seek);
+                ignored for a live stream.
+            audio_filter: An FFmpeg ``-af`` filter chain (see filters.py), or ``None``.
 
         Returns:
             An audio source whose volume can be changed while it plays.
@@ -29,11 +32,13 @@ class AudioManager:
         Raises:
             ValueError: If the song has neither a playable file nor a stream URL.
         """
+        output_options = '-vn' + (f' -af "{audio_filter}"' if audio_filter else '')
+        seek = f"-ss {start_offset:g} " if start_offset > 0 and not song.get('is_live') else ""
         file_path = song.get('file_path')
         if file_path and os.path.exists(file_path):
-            options: Dict[str, Any] = {}
-            if start_offset > 0:
-                options['before_options'] = f"-ss {start_offset:g}"
+            options: Dict[str, Any] = {'options': output_options}
+            if seek:
+                options['before_options'] = seek.strip()
             return PCMVolumeTransformer(FFmpegPCMAudio(file_path, **options), volume=volume)
 
         stream_url = song.get('stream_url')
@@ -42,12 +47,12 @@ class AudioManager:
                 raise ValueError("Live song is missing stream_url")
             raise ValueError(f"Song has neither a local file nor a stream URL: {file_path}")
 
-        before_options = '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
+        before_options = seek + '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
         headers = song.get('stream_headers')
         if headers:
             header_block = "".join(f"{name}: {value}\r\n" for name, value in headers.items())
             before_options += f' -headers "{header_block}"'
-        ffmpeg_options = {'before_options': before_options, 'options': '-vn'}
+        ffmpeg_options = {'before_options': before_options, 'options': output_options}
         return PCMVolumeTransformer(FFmpegPCMAudio(stream_url, **ffmpeg_options), volume=volume)
 
     async def delete_file(self, guild_id: int, file_path: str):

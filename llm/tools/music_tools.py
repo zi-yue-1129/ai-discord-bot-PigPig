@@ -37,10 +37,14 @@ from langchain_core.tools import tool
 from addons.logging import get_logger
 from cogs.music_lib.context import PlaybackContext
 from addons.settings import music_config
+from cogs.music_lib.filters import FILTER_NAMES
 from cogs.music_lib.service import ActionResult
 from llm.music_context import format_seconds
 
 _logger = get_logger(server_id="Bot", source="llm.tools.music_tools")
+
+# Lyrics handed to the model at most (a whole song fits; the context stays small).
+_MAX_LYRICS_CHARS = 4000
 
 
 def _in_channel(data: dict) -> str:
@@ -90,6 +94,11 @@ class MusicTools:
             runtime: The orchestrator request (bot, message, logger).
         """
         self.runtime = runtime
+
+    def _cog(self) -> Optional[Any]:
+        """Returns the music cog, if loaded."""
+        bot = getattr(self.runtime, "bot", None)
+        return bot.get_cog("YTMusic") if bot is not None else None
 
     def _resolve(self) -> "tuple[Optional[Any], Optional[PlaybackContext], Optional[str]]":
         """Finds the music service and the playback context for this request.
@@ -329,6 +338,159 @@ class MusicTools:
                 return await _failure(ctx, result)
             return f"Cleared the queue ({result.data.get('removed')} songs removed)."
 
+        @tool
+        async def seek_music(seconds: float, relative: bool = False) -> str:
+            """Jumps to a point of the song that is playing, or fast-forwards / rewinds it.
+
+            Args:
+                seconds: With relative=false, the time to jump to in seconds from the start
+                    (e.g. 90 for 1:30; 0 starts the song over). With relative=true, how far
+                    to jump: positive fast-forwards, negative rewinds (e.g. -10).
+                relative: Whether seconds is counted from the current position.
+
+            Returns:
+                The new position, or an error (nothing playing, a live stream, past the end).
+            """
+            service, ctx, error = resolve()
+            if error:
+                return error
+            result = await service.seek(ctx, seconds, relative=relative)
+            if not result.ok:
+                return await _failure(ctx, result)
+            return (f"Now at {format_seconds(result.data['position'])} of {_quoted(result.data.get('title'))} "
+                    f"({format_seconds(result.data['duration'])}).")
+
+        async def set_music_effect(effect: str) -> str:
+            service, ctx, error = resolve()
+            if error:
+                return error
+            result = await service.set_filter(ctx, effect)
+            if not result.ok:
+                return await _failure(ctx, result)
+            return "The audio effect is off." if effect == "off" else f"The audio effect is now {effect}."
+
+        # The effect list comes from filters.py, so the docstring is built rather than written out.
+        set_music_effect.__doc__ = (
+            "Applies an audio effect to the music (it stays on for the next songs).\n\n"
+            "Args:\n"
+            f"    effect: One of {', '.join(FILTER_NAMES)}. \"off\" removes the effect; \"karaoke\" "
+            "removes the vocals; \"speed_up\" and \"slow_down\" keep the pitch.\n\n"
+            "Returns:\n"
+            "    A confirmation, or an error if the effect does not exist."
+        )
+        set_music_effect = tool(set_music_effect)
+
+        @tool
+        async def play_previous_song() -> str:
+            """Goes back to the song that played before the current one (with none, starts the current song over).
+
+            Returns:
+                What plays now, or an error explaining why not.
+            """
+            service, ctx, error = resolve()
+            if error:
+                return error
+            result = await service.previous(ctx)
+            if not result.ok:
+                return await _failure(ctx, result)
+            if result.data.get("replayed"):
+                return f"There was no earlier song, so {_quoted(result.data.get('title'))} started over."
+            return f"Went back to {_quoted(result.data.get('title'))}; the song that was playing comes after it."
+
+        @tool
+        async def move_song_in_queue(position: int, to: int) -> str:
+            """Moves an upcoming song to another place in the queue.
+
+            The queue and its positions are listed in the music player section of the context.
+
+            Args:
+                position: The song's current position (1 is the next song).
+                to: The position to move it to (1 makes it play next).
+
+            Returns:
+                A confirmation, or an error if a position does not exist.
+            """
+            service, ctx, error = resolve()
+            if error:
+                return error
+            result = await service.move(ctx, position, to)
+            if not result.ok:
+                return await _failure(ctx, result)
+            return f"Moved '{result.data.get('title')}' to position {to}."
+
+        @tool
+        async def get_current_song_lyrics() -> str:
+            """Looks up the lyrics of the song that is playing.
+
+            Only call this when the user asks about the lyrics (what they say, what they
+            mean, a translation); never to find out what is playing.
+
+            Returns:
+                The lyrics, or an error when nothing plays or no lyrics were found.
+            """
+            cog = self._cog()
+            service, ctx, error = resolve()
+            if error:
+                return error
+            song = cog.state_manager.get_state(ctx.guild.id).current_song
+            if not song:
+                return "Error: Nothing is playing."
+            lyrics = await cog.current_lyrics(ctx.guild.id)
+            if lyrics is None:
+                return f"No lyrics were found for '{song.get('title')}'."
+            text = lyrics.plain[:_MAX_LYRICS_CHARS]
+            return f"Lyrics of '{lyrics.track or song.get('title')}' by {lyrics.artist or song.get('author')}:\n{text}"
+
+        @tool
+        async def play_saved_playlist(name: str, shuffle: bool = False) -> str:
+            """Plays one of the user's saved playlists (or the server's) by name.
+
+            Call this when the user asks to play "my playlist X" or a server playlist.
+
+            Args:
+                name: The playlist's name (case does not matter).
+                shuffle: Shuffle its songs.
+
+            Returns:
+                How many songs were queued, or an error (no such playlist, user not in voice).
+            """
+            service, ctx, error = resolve()
+            if error:
+                return error
+            result = await self._cog().playlists.play(ctx, name, shuffle=shuffle)
+            if not result.ok:
+                return await _failure(ctx, result)
+            return f"Queued the playlist '{result.data.get('name')}' ({result.data.get('total')} songs){_in_channel(result.data)}."
+
+        @tool
+        async def add_song_to_playlist(playlist: str, query: str = "", server_playlist: bool = False) -> str:
+            """Saves a song into one of the user's playlists (created if it does not exist).
+
+            Args:
+                playlist: The playlist's name.
+                query: The song to add (title, artist or link). Leave empty to add the song
+                    that is playing now.
+                server_playlist: Save to the server's shared playlist instead of the user's own.
+
+            Returns:
+                What was added, or an error.
+            """
+            service, ctx, error = resolve()
+            if error:
+                return error
+            playlists = self._cog().playlists
+            scope = "server" if server_playlist else "personal"
+            found = await playlists.resolve(ctx, query)
+            if not found.ok:
+                return await _failure(ctx, found)
+            result = await playlists.add_tracks(ctx, playlist, scope, found.data["tracks"], create=True)
+            if not result.ok:
+                return await _failure(ctx, result)
+            titles = ", ".join(f"'{track.get('title')}'" for track in found.data["tracks"][:3])
+            if not result.data.get("added"):
+                return f"{titles} was already in the playlist '{playlist}'."
+            return f"Added {result.data['added']} song(s) ({titles}) to the playlist '{playlist}'."
+
         # All music tools run in the info agent: its tool results are handed to the reply
         # agent, whereas the reply agent calls the model once and never sees tool results
         # (and its tool calls are cut off after 10 seconds, too short for a download).
@@ -336,6 +498,8 @@ class MusicTools:
             play_music, skip_music, pause_music, resume_music,
             stop_music, set_music_loop_mode, set_music_shuffle,
             set_music_volume, remove_song_from_queue, clear_music_queue,
+            seek_music, set_music_effect, play_previous_song, move_song_in_queue,
+            get_current_song_lyrics, play_saved_playlist, add_song_to_playlist,
         )
 
         return list(action_tools)

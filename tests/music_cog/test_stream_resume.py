@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, List, Tuple
+from typing import Any, List, Optional, Tuple
 
 import pytest
 from music_cog.helpers import GUILD_ID, FakeVoiceClient, make_song
@@ -60,7 +60,7 @@ def recorder(cog: YTMusic, monkeypatch: pytest.MonkeyPatch) -> dict:
     """Replaces everything a resume touches with recorders."""
     record: dict = {"sources": [], "loops": [], "after_play": 0}
 
-    def fake_source(song: dict, volume: float = 1.0, start_offset: float = 0.0) -> str:
+    def fake_source(song: dict, volume: float = 1.0, start_offset: float = 0.0, audio_filter: Optional[str] = None) -> str:
         record["sources"].append(start_offset)
         return "source"
 

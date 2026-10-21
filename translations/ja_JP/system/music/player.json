@@ -20,5 +20,6 @@
     "now_playing": "🎵 再生中",
     "uploader": "👤 アップローダー",
     "more_songs": "... 他に {count} 曲",
-    "live": "ライブ"
+    "live": "ライブ",
+    "lyrics": "🎤 歌詞"
 }

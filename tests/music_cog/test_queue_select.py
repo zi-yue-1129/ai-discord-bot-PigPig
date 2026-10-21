@@ -1,4 +1,4 @@
-"""Two menus under the player: pick a queued song to play next, or to remove it."""
+"""The queue menu under the player: pick a queued song, then play it next or remove it (privately)."""
 
 from __future__ import annotations
 
@@ -13,8 +13,10 @@ from music_cog.helpers import post_player as _post
 
 from cogs.music import YTMusic
 from cogs.music_lib.context import PlaybackContext
+from cogs.music_lib.queue_manager import PlayMode
 
 ROOT = Path(__file__).resolve().parents[2]
+QUEUE_MENU = "queue_song"
 PLAY_NEXT = "queue_play_next"
 REMOVE = "queue_remove"
 
@@ -36,11 +38,22 @@ async def _fill(cog: YTMusic, requester: Any, count: int = 3) -> None:
         await cog.queue_manager.add_to_queue(GUILD_ID, make_song(index) | {"requester": requester})
 
 
-async def _choose(cog: YTMusic, ctx: PlaybackContext, custom_id: str, video_id: str, user: Any = None) -> Any:
+async def _pick(cog: YTMusic, ctx: PlaybackContext, video_id: str, user: Any = None) -> Any:
+    """Picks a song in the queue menu; returns the private message's action view."""
     interaction = make_interaction(ctx.guild, ctx.channel, user or ctx.user)
-    menu = _menu(cog, custom_id)
+    menu = _menu(cog, QUEUE_MENU)
     menu._values = [video_id]
     await menu.callback(interaction)
+    (reply,) = interaction.response.sent
+    assert reply["ephemeral"] is True
+    return reply["view"]
+
+
+async def _choose(cog: YTMusic, ctx: PlaybackContext, custom_id: str, video_id: str, user: Any = None) -> Any:
+    actions = await _pick(cog, ctx, video_id, user)
+    button = next(child for child in actions.children if child.custom_id == custom_id)
+    interaction = make_interaction(ctx.guild, ctx.channel, user or ctx.user)
+    await button.callback(interaction)
     return interaction
 
 
@@ -48,16 +61,26 @@ async def _choose(cog: YTMusic, ctx: PlaybackContext, custom_id: str, video_id: 
 
 
 @pytest.mark.asyncio
-async def test_both_menus_list_the_queue_in_order(cog: YTMusic, player: PlaybackContext) -> None:
+async def test_the_menu_lists_the_queue_in_order(cog: YTMusic, player: PlaybackContext) -> None:
     await _fill(cog, player.user)
     await _post(cog, player)
 
-    for custom_id in (PLAY_NEXT, REMOVE):
-        menu = _menu(cog, custom_id)
-        assert [option.value for option in menu.options] == ["v1", "v2", "v3"]
-        assert menu.options[0].label.startswith("1. song 1")
-        assert player.user.name in menu.options[0].description
-        assert not menu.disabled
+    menu = _menu(cog, QUEUE_MENU)
+    assert [option.value for option in menu.options] == ["v1", "v2", "v3"]
+    assert menu.options[0].label.startswith("1. song 1")
+    assert player.user.name in menu.options[0].description
+    assert not menu.disabled
+
+
+@pytest.mark.asyncio
+async def test_picking_a_song_offers_to_play_it_next_or_remove_it(cog: YTMusic, player: PlaybackContext) -> None:
+    await _fill(cog, player.user)
+    await _post(cog, player)
+
+    actions = await _pick(cog, player, "v2")
+
+    assert [child.custom_id for child in actions.children] == [PLAY_NEXT, REMOVE]
+    assert _order(cog) == ["v1", "v2", "v3"]
 
 
 @pytest.mark.asyncio
@@ -65,15 +88,14 @@ async def test_a_recommended_song_is_described_as_recommended(cog: YTMusic, play
     await cog.queue_manager.add_to_queue(GUILD_ID, make_song(1, added_by=BOT_USER_ID))
     await _post(cog, player)
 
-    assert "system.music.controls.recommended" in _menu(cog, REMOVE).options[0].description
+    assert "system.music.controls.recommended" in _menu(cog, QUEUE_MENU).options[0].description
 
 
 @pytest.mark.asyncio
-async def test_the_menus_are_disabled_while_the_queue_is_empty(cog: YTMusic, player: PlaybackContext) -> None:
+async def test_the_menu_is_disabled_while_the_queue_is_empty(cog: YTMusic, player: PlaybackContext) -> None:
     await _post(cog, player)
 
-    assert _menu(cog, PLAY_NEXT).disabled
-    assert _menu(cog, REMOVE).disabled
+    assert _menu(cog, QUEUE_MENU).disabled
 
 
 @pytest.mark.asyncio
@@ -81,7 +103,7 @@ async def test_the_menus_list_at_most_25_songs(cog: YTMusic, player: PlaybackCon
     await _fill(cog, player.user, 30)
     await _post(cog, player)
 
-    assert len(_menu(cog, REMOVE).options) == 25
+    assert len(_menu(cog, QUEUE_MENU).options) == 25
 
 
 @pytest.mark.asyncio
@@ -89,7 +111,7 @@ async def test_a_long_title_fits_the_option_label(cog: YTMusic, player: Playback
     await cog.queue_manager.add_to_queue(GUILD_ID, make_song(1) | {"title": "x" * 300})
     await _post(cog, player)
 
-    assert len(_menu(cog, REMOVE).options[0].label) <= 100
+    assert len(_menu(cog, QUEUE_MENU).options[0].label) <= 100
 
 
 @pytest.mark.asyncio
@@ -99,8 +121,8 @@ async def test_the_menus_follow_queue_changes(cog: YTMusic, player: PlaybackCont
 
     await _view(cog).update_button_state()
 
-    assert [option.value for option in _menu(cog, REMOVE).options] == ["v1", "v2"]
-    assert not _menu(cog, REMOVE).disabled
+    assert [option.value for option in _menu(cog, QUEUE_MENU).options] == ["v1", "v2"]
+    assert not _menu(cog, QUEUE_MENU).disabled
 
 
 # ------------------------------------------------------------- choosing
@@ -115,7 +137,7 @@ async def test_choosing_a_song_to_play_next_moves_it_to_the_front(cog: YTMusic, 
 
     assert _order(cog) == ["v3", "v1", "v2"]
     assert _view(cog).current_embed.title == "system.music.controls.queue_played_next"
-    assert [option.value for option in _menu(cog, REMOVE).options] == ["v3", "v1", "v2"]
+    assert [option.value for option in _menu(cog, QUEUE_MENU).options] == ["v3", "v1", "v2"]
 
 
 @pytest.mark.asyncio
@@ -127,7 +149,7 @@ async def test_choosing_a_song_to_remove_takes_it_out_of_the_queue(cog: YTMusic,
 
     assert _order(cog) == ["v1", "v3"]
     assert _view(cog).current_embed.title == "system.music.controls.queue_removed"
-    assert [option.value for option in _menu(cog, REMOVE).options] == ["v1", "v3"]
+    assert [option.value for option in _menu(cog, QUEUE_MENU).options] == ["v1", "v3"]
 
 
 @pytest.mark.asyncio
@@ -139,7 +161,7 @@ async def test_a_song_that_already_left_the_queue_is_reported(cog: YTMusic, play
     interaction = await _choose(cog, player, REMOVE, "v2")
 
     assert _order(cog) == ["v1", "v3"]
-    (reply,) = interaction.response.sent
+    reply = interaction.response.sent[0]
     assert reply["ephemeral"] is True
     assert "not_in_queue" in reply["args"][0]
 
@@ -182,7 +204,7 @@ def test_the_menu_texts_are_translated(locale: str) -> None:
     controls = json.loads((ROOT / "translations" / locale / "system" / "music" / "controls.json").read_text(encoding="utf-8"))
     errors = json.loads((ROOT / "translations" / locale / "system" / "music" / "ai_errors.json").read_text(encoding="utf-8"))
 
-    for key in ("queue_play_next_placeholder", "queue_remove_placeholder", "queue_select_empty"):
+    for key in ("queue_song_placeholder", "queue_play_next_action", "queue_remove_action", "queue_select_empty"):
         assert controls[key].strip()
     assert "{title}" in controls["queue_played_next"] and "{user}" in controls["queue_played_next"]
     assert "{title}" in controls["queue_removed"] and "{user}" in controls["queue_removed"]
@@ -191,12 +213,42 @@ def test_the_menu_texts_are_translated(locale: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_menus_sit_in_their_own_rows_below_the_buttons(cog: YTMusic, player: PlaybackContext) -> None:
+async def test_the_player_has_two_rows_of_buttons_and_three_menus(cog: YTMusic, player: PlaybackContext) -> None:
     await _fill(cog, player.user)
     await _post(cog, player)
 
     rows = _view(cog).to_components()
 
-    assert len(rows) <= 5
-    assert [len(row["components"]) for row in rows] == [5, 3, 1, 1]
-    assert [rows[2]["components"][0]["custom_id"], rows[3]["components"][0]["custom_id"]] == [PLAY_NEXT, REMOVE]
+    assert [len(row["components"]) for row in rows] == [5, 5, 1, 1, 1]
+    assert [rows[index]["components"][0]["custom_id"] for index in (2, 3, 4)] == [QUEUE_MENU, "play_mode", "audio_filter"]
+    assert [button["custom_id"] for button in rows[0]["components"]] == [
+        "previous", "toggle_playback", "skip", "stop", "toggle_lyrics"
+    ]
+    assert [button["custom_id"] for button in rows[1]["components"]] == [
+        "toggle_shuffle", "show_queue", "toggle_autoplay", "seek_back", "seek_forward"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_mode_and_effect_menus_show_the_current_setting(cog: YTMusic, player: PlaybackContext) -> None:
+    await _post(cog, player)
+    cog.queue_manager.set_play_mode(GUILD_ID, PlayMode.LOOP_QUEUE)
+    cog.state_manager.get_state(GUILD_ID).audio_filter = "nightcore"
+
+    await _view(cog).update_button_state()
+
+    assert [option.value for option in _menu(cog, "play_mode").options if option.default] == ["loop_queue"]
+    assert [option.value for option in _menu(cog, "audio_filter").options if option.default] == ["nightcore"]
+
+
+@pytest.mark.asyncio
+async def test_choosing_a_mode_in_the_menu_sets_it(cog: YTMusic, player: PlaybackContext) -> None:
+    await _post(cog, player)
+    interaction = make_interaction(player.guild, player.channel, player.user)
+    menu = _menu(cog, "play_mode")
+    menu._values = ["loop_single"]
+
+    await menu.callback(interaction)
+
+    assert cog.queue_manager.get_play_mode(GUILD_ID) == PlayMode.LOOP_SINGLE
+    assert _view(cog).current_embed.title == "system.music.controls.mode_changed"

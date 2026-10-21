@@ -20,5 +20,6 @@
     "now_playing": "🎵 Now Playing",
     "uploader": "👤 Uploader",
     "more_songs": "... and {count} more songs",
-    "live": "LIVE"
+    "live": "LIVE",
+    "lyrics": "🎤 Lyrics"
 }

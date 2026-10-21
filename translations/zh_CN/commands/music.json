@@ -1,0 +1,14 @@
+{
+    "description": "音乐播放工具：快进、倒退、上一首、历史、歌词",
+    "responses": {
+        "seeked": "跳到 {position} / {duration}",
+        "forwarded": "快进 {seconds} 秒（{position} / {duration}）",
+        "rewound": "倒退 {seconds} 秒（{position} / {duration}）",
+        "replayed": "从头播放「{title}」",
+        "previous": "回到上一首：「{title}」",
+        "history_title": "最近播放的 {count} 首歌"
+    },
+    "errors": {
+        "invalid_time": "时间格式不正确，请输入例如 1:30 或 90。"
+    }
+}

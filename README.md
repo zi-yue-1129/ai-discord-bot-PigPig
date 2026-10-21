@@ -26,7 +26,7 @@ To ensure user rights and service transparency, please refer to the following do
 
 *   🧠 **AI-Powered Conversations**: Utilizes advanced LLMs for natural language understanding and generation.
 *   🖼️ **Multi-modal Capabilities**: Supports visual question answering (VQA) and AI image generation.
-*   🎵 **Music Playback**: Plays music from YouTube with queue and playlist management.
+*   🎵 **Music Playback**: Plays music from YouTube, SoundCloud and Spotify links with seeking, audio effects (nightcore, 8D, karaoke ...), synced lyrics, personal and server playlists, a DJ role with vote skipping, 24/7 mode and a song request channel.
 *   🧠 **Intelligent Channel Memory**: Permanently stores and intelligently retrieves conversation history with semantic search to provide enhanced context for responses.
 *   🔄 **Auto-Update System**: Automatically checks for and applies GitHub updates with secure backups and rollback functionality.
 *   🍽️ **Practical Tools**: Set reminders, get restaurant recommendations, perform calculations, and more.
@@ -153,9 +153,9 @@ The bot's functionality is divided into modules called "Cogs". Here are the key 
 ---
 
 ### 🎵 Music
-*   **Description:** Provides full music playback from YouTube, supporting song requests, queue management, playlists, and various playback modes.
-*   **Key Commands:** `/play`, `/mode`, `/shuffle`
-*   **[Full Documentation](./docs/cogs/music_lib/index.md)**
+*   **Description:** Provides full music playback from YouTube, supporting song requests, queue management, playlists, and various playback modes, plus seeking, audio effects, synced lyrics, saved playlists and per-server settings (DJ role, 24/7, request channel).
+*   **Key Commands:** `/play`, `/mode`, `/shuffle`, `/music`, `/filter`, `/queue`, `/playlist`, `/music_settings`
+*   **[Full Documentation](./docs/cogs/music_lib/index.md)** · **[Commands & Settings](./docs/cogs/music_commands.md)**
 
 ---
 

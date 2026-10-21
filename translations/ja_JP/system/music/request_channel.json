@@ -1,0 +1,7 @@
+{
+    "title": "リクエストチャンネル",
+    "description": "曲名、YouTube／SoundCloud のリンク、Spotify の曲リンクを入力するとリクエストできます。\n先にボイスチャンネルに参加してください。メッセージは自動で削除されます。",
+    "footer": "PigPig との会話は他のチャンネルでどうぞ",
+    "queued": "{user} が「{title}」をリクエストしました（{position} 番目）",
+    "playlist_queued": "{user} が {count} 曲を追加しました"
+}

@@ -33,7 +33,9 @@ def render_music_context(status: Dict[str, Any], *, list_titles: bool, max_title
     lines: List[str] = ["[Music Player]", f"State: {status['state']}"]
     current = status["current"]
     if current:
-        lines.append(f"Now playing: '{current['title']}' by {current['author']} ({format_seconds(current['duration'])})")
+        position = status.get("position")
+        progress = f"{format_seconds(position)} / " if position else ""
+        lines.append(f"Now playing: '{current['title']}' by {current['author']} ({progress}{format_seconds(current['duration'])})")
 
     queue: List[Dict[str, Any]] = status["queue"]
     if not queue:
@@ -50,6 +52,7 @@ def render_music_context(status: Dict[str, Any], *, list_titles: bool, max_title
     lines.append(
         f"Loop mode: {status['mode']}; shuffle: {'on' if status['shuffle'] else 'off'}; "
         f"autoplay: {'on' if status['autoplay'] else 'off'}; volume: {status['volume']}%"
+        + (f"; audio effect: {status['filter']}" if status.get("filter", "off") != "off" else "")
     )
     return "\n".join(lines)
 
