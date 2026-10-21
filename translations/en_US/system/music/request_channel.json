@@ -1,0 +1,7 @@
+{
+    "title": "Song requests",
+    "description": "Type a song name, a YouTube/SoundCloud link or a Spotify track link here to request it.\nJoin a voice channel first. Your message is deleted to keep the channel tidy.",
+    "footer": "Chat with PigPig in another channel",
+    "queued": "{user} queued \"{title}\" (#{position})",
+    "playlist_queued": "{user} queued {count} songs"
+}

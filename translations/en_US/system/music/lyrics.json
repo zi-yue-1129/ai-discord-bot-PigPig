@@ -1,0 +1,8 @@
+{
+    "loading": "Looking for the lyrics…",
+    "not_found": "No lyrics were found for this song.",
+    "not_synced": "These lyrics are not time-stamped; use /music lyrics to read them.",
+    "disabled": "Lyrics are turned off.",
+    "source": "Lyrics from LRCLIB",
+    "show_on_player": "Show synced on the player"
+}

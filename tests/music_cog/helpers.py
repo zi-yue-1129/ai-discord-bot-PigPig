@@ -113,6 +113,10 @@ class FakeResponse:
     async def defer(self, *args: Any, **kwargs: Any) -> None:
         self.done = True
 
+    async def edit_message(self, *args: Any, **kwargs: Any) -> None:
+        self.done = True
+        self.sent.append({"args": args, "edited": True, **kwargs})
+
 
 class FakeFollowup:
     """Interaction followup that records replies."""

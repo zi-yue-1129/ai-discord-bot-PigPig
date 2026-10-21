@@ -13,5 +13,21 @@
     "invalid_position": "待播列表中没有这个位置的歌曲。",
     "playback_not_started": "歌曲已加入，但没有成功开始播放。",
     "already_playing": "这首歌正在播放，所以没有重复加入。",
-    "not_in_queue": "这首歌已经不在队列中了。"
+    "not_in_queue": "这首歌已经不在队列中了。",
+    "dj_only": "只有 DJ 才能这样做（服务器设置了 DJ 身份组）。",
+    "not_your_song": "只有 DJ 能移除别人点的歌。",
+    "cannot_seek_live": "直播无法快进或倒退。",
+    "invalid_seek": "超出歌曲长度了。",
+    "invalid_filter": "没有这个音效。",
+    "no_history": "还没有播放过的歌曲。",
+    "nothing_to_import": "没有可以播放的歌曲。",
+    "playlist_not_found": "找不到这个歌单。",
+    "playlist_exists": "已经有同名的歌单了。",
+    "playlist_too_many": "歌单数量已达上限。",
+    "playlist_full": "歌单已满。",
+    "playlist_invalid_name": "歌单名称需要 1 到 50 个字。",
+    "playlist_invalid_position": "歌单中没有这个位置的歌曲。",
+    "playlist_no_permission": "只有服务器管理员和 DJ 能修改服务器歌单。",
+    "playlist_invalid_recipient": "不能分享给自己或机器人。",
+    "playlist_empty": "这个歌单是空的。"
 }

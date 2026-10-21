@@ -270,6 +270,11 @@ class PigPig(commands.Bot):
             
             
             await self.process_commands(message)
+
+            # Every message in the music request channel is a song request, not a chat message.
+            music_cog = self.get_cog('YTMusic')
+            if music_cog is not None and await music_cog.requests.handle(message):
+                return
             
             # Delegate message processing to MessageHandler
             # Check if message should be handled by bot (e.g., @mention or in specific channel)
@@ -356,6 +361,9 @@ class PigPig(commands.Bot):
             
             guild_id = str(after.guild.id)
             channel_manager = self.get_cog('ChannelManager')
+            music_cog = self.get_cog('YTMusic')
+            if music_cog is not None and music_cog.requests.is_request_channel(after.channel):
+                return
             
             # Implement logic for generating responses
             if self.user.id in after.raw_mentions and not after.mention_everyone:

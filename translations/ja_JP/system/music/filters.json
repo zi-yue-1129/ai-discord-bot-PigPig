@@ -1,0 +1,14 @@
+{
+    "off": "エフェクトなし",
+    "nightcore": "Nightcore",
+    "vaporwave": "Vaporwave",
+    "slowed_reverb": "Slowed + Reverb",
+    "8d": "8D オーディオ",
+    "bassboost": "低音ブースト",
+    "karaoke": "カラオケ（ボーカル除去）",
+    "soft": "ソフト",
+    "tremolo": "トレモロ",
+    "vibrato": "ビブラート",
+    "speed_up": "1.25 倍速",
+    "slow_down": "0.8 倍速"
+}

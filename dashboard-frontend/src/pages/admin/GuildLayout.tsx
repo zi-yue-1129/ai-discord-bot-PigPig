@@ -15,6 +15,7 @@ const GUILD_NAV = [
   { to: '', label: 'guild.overview', icon: '📊', end: true },
   { to: 'channels', label: 'guild.channels', icon: '📋', end: false },
   { to: 'prompt', label: 'guild.prompt', icon: '✍️', end: false },
+  { to: 'music', label: 'guild.music', icon: '🎵', end: false },
   { to: 'stats', label: 'guild.stats', icon: '📈', end: false },
 ];
 

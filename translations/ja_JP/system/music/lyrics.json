@@ -1,0 +1,8 @@
+{
+    "loading": "歌詞を探しています…",
+    "not_found": "この曲の歌詞が見つかりませんでした。",
+    "not_synced": "この歌詞にはタイムスタンプがありません。/music lyrics で全文を表示できます。",
+    "disabled": "歌詞機能はオフになっています。",
+    "source": "歌詞提供：LRCLIB",
+    "show_on_player": "プレイヤーに同期表示"
+}

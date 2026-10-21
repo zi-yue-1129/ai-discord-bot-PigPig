@@ -1,0 +1,7 @@
+{
+    "title": "点歌频道",
+    "description": "在这个频道输入歌名、YouTube／SoundCloud 链接或 Spotify 单曲链接就能点歌。\n请先加入语音频道，你的消息会自动删除，让频道保持干净。",
+    "footer": "想和猪猪聊天请到其他频道",
+    "queued": "{user} 点了「{title}」（第 {position} 首）",
+    "playlist_queued": "{user} 加入了 {count} 首歌"
+}

@@ -1,0 +1,14 @@
+{
+    "description": "Music tools: seek, previous, history, lyrics",
+    "responses": {
+        "seeked": "Jumped to {position} / {duration}",
+        "forwarded": "Skipped ahead {seconds}s ({position} / {duration})",
+        "rewound": "Rewound {seconds}s ({position} / {duration})",
+        "replayed": "Started \"{title}\" over",
+        "previous": "Back to the previous song: \"{title}\"",
+        "history_title": "The last {count} songs played"
+    },
+    "errors": {
+        "invalid_time": "That is not a time; try 1:30 or 90."
+    }
+}

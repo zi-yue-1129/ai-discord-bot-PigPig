@@ -1,0 +1,33 @@
+{
+    "description": "服务器音乐设置：DJ 身份组、24/7、点歌频道…",
+    "fields": {
+        "dj": "DJ 身份组",
+        "vote_ratio": "投票跳过比例",
+        "default_volume": "默认音量",
+        "stay_247": "24/7 模式",
+        "request_channel": "点歌频道",
+        "stage_announce": "舞台频道显示歌名"
+    },
+    "values": {
+        "on": "开启",
+        "off": "关闭",
+        "none": "未设置"
+    },
+    "responses": {
+        "view_title": "音乐设置",
+        "dj_set": "DJ 身份组已设为 {role}",
+        "dj_cleared": "已取消 DJ 身份组，所有人都能控制音乐",
+        "vote_ratio_set": "跳过需要 {percent}% 的听众投票",
+        "default_volume_set": "默认音量已设为 {percent}%",
+        "stay_247_on": "已开启 24/7 模式，会常驻在 {channel}",
+        "stay_247_off": "已关闭 24/7 模式",
+        "request_channel_set": "点歌频道已设为 {channel}",
+        "request_channel_cleared": "已取消点歌频道",
+        "stage_announce_set": "舞台频道显示歌名：{status}"
+    },
+    "errors": {
+        "no_permission": "需要“管理服务器”权限才能修改音乐设置。",
+        "no_channel": "请先加入语音频道，或指定要常驻的频道。",
+        "request_channel_failed": "我在那个频道需要“发送消息”“管理消息”“读取消息历史”权限。"
+    }
+}

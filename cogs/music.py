@@ -19,10 +19,15 @@ from .music_lib.context import PlaybackContext, user_shares_voice_channel
 from .music_lib.prefetch import Prefetcher
 from .music_lib.recommender import TasteMemory
 from .music_lib.taste_store import TasteStore
-from .music_lib.service import MusicService, classify_query
+from .music_lib.music_store import MusicStore
+from .music_lib.filters import get_preset
+from .music_lib.lyrics import LyricsClient, synced_excerpt
+from .music_lib.playlists import PlaylistService
+from .music_lib.requests import RequestChannel
+from .music_lib.service import HISTORY_SIZE, MusicService, classify_query
 from .music_lib.ui_manager import UIManager
 from .music_lib.ui.controls import remove_queue_field, set_queue_field
-from .music_lib.ui.text import shorten
+from .music_lib.ui.text import format_clock, shorten
 from .music_lib.ui.song_select import SongSelectView
 from cogs.language_manager import LanguageManager # Import LanguageManager
 from function import func
@@ -42,6 +47,8 @@ QUEUE_TITLE_WIDTH = 36
 # Discord allows 25 options per menu and 100 characters per option label.
 QUEUE_MENU_LIMIT = 25
 QUEUE_MENU_LABEL_WIDTH = 90
+# A stage topic may hold 120 characters (counted here as columns, which is stricter).
+STAGE_TOPIC_WIDTH = 110
 
 
 class PlaybackAbortedError(RuntimeError):
@@ -79,7 +86,15 @@ class YTMusic(commands.Cog):
         # What each guild plays, requests and skips; guides autoplay recommendations.
         self._taste_store = TasteStore(music_config.autoplay.database_path)
         self._taste: Dict[int, TasteMemory] = {}
+        # Each guild's music settings (DJ role, 24/7, ...) and the saved playlists.
+        library = music_config.library
+        self.store = MusicStore(
+            library.database_path, max_playlists=library.max_playlists, max_tracks=library.max_playlist_tracks
+        )
         self.service = MusicService(self, music_config.ai, music_config.streaming)
+        self.lyrics = LyricsClient(music_config.lyrics)
+        self.playlists = PlaylistService(self)
+        self.requests = RequestChannel(self)
         self.prefetcher = Prefetcher(
             get_youtube=lambda: self.youtube,
             queue_manager=self.queue_manager,
@@ -178,7 +193,7 @@ class YTMusic(commands.Cog):
         if result.reason == "not_in_bot_channel":
             text = self.lang_manager.translate(guild_id, "system", "music", "controls", "not_in_channel")
         else:
-            text = self.lang_manager.translate(guild_id, "commands", "queue_tools", "errors", result.reason)
+            text = self.lang_manager.translate(guild_id, "system", "music", "ai_errors", result.reason, detail=result.detail)
         await interaction.response.send_message(embed=discord.Embed(title=f"❌ | {text}", color=discord.Color.red()), ephemeral=True)
 
     @app_commands.command(name="volume", description="調整音樂音量 (0-100)")
@@ -451,7 +466,10 @@ class YTMusic(commands.Cog):
     async def _announce_queue_finished(self, ctx: PlaybackContext) -> None:
         """Tell the channel that the queue ran out and clear the current song."""
         guild_id = ctx.guild.id
-        title = self.lang_manager.translate(str(guild_id), "commands", "play", "responses", "queue_finished")
+        staying = self.store.get_settings(guild_id).stay_247
+        title = self.lang_manager.translate(
+            str(guild_id), "commands", "play", "responses", "queue_finished_staying" if staying else "queue_finished"
+        )
         embed = discord.Embed(title=f"🌟 | {title}", color=discord.Color.blue())
         await self._send_channel_message(ctx, embed=embed)
         self.state_manager.update_state(guild_id, current_song=None, current_message=None, consecutive_failures=0)
@@ -482,7 +500,7 @@ class YTMusic(commands.Cog):
                 voice_client.stop()
 
             song = state.current_song
-            audio_source = self.audio_manager.create_audio_source(song, volume=state.volume)
+            audio_source = self._make_source(ctx.guild.id, song)
 
             message = await self.ui_manager.update_player_ui(
                 ctx,
@@ -494,7 +512,9 @@ class YTMusic(commands.Cog):
             self.state_manager.update_state(ctx.guild.id, current_message=message)
 
             voice_client.play(audio_source)
-            self.state_manager.update_state(ctx.guild.id, user_stopped=False, force_next=False)
+            self.state_manager.update_state(
+                ctx.guild.id, user_stopped=False, force_next=False, position=0.0, skip_votes=set(), playback_ctx=ctx
+            )
             self.state_manager.cancel_player_loop(ctx.guild.id)
             task = self.bot.loop.create_task(self._player_loop(ctx, song))
             self.state_manager.update_state(ctx.guild.id, player_loop_task=task)
@@ -572,7 +592,8 @@ class YTMusic(commands.Cog):
         file_path = song.get('file_path')
         has_file = bool(file_path) and await asyncio.to_thread(os.path.exists, file_path)
         song['streaming'] = bool(song.get('stream_url')) and not has_file and not song.get('is_live')
-        audio_source = self.audio_manager.create_audio_source(song, volume=self.state_manager.get_state(guild_id).volume)
+        self._start_session(guild_id)
+        audio_source = self._make_source(guild_id, song)
         message = await self.ui_manager.update_player_ui(
             ctx,
             song,
@@ -591,8 +612,15 @@ class YTMusic(commands.Cog):
 
         voice_client.play(audio_source)
         song['resumes'] = 0
-        self.state_manager.update_state(guild_id, consecutive_failures=0, user_stopped=False, force_next=False, auto_paused=False)
+        self.state_manager.update_state(
+            guild_id, consecutive_failures=0, user_stopped=False, force_next=False, auto_paused=False,
+            position=0.0, skip_votes=set(), playback_ctx=ctx, lyrics=None,
+        )
         self.prefetcher.schedule(ctx)
+        if self.state_manager.get_state(guild_id).show_lyrics:
+            self.bot.loop.create_task(self._show_lyrics_for_new_song(guild_id))
+        if self.store.get_settings(guild_id).stage_announce:
+            self.bot.loop.create_task(self._announce_on_stage(voice_client, song))
         if song.get('stream_url') and not song.get('file_path') and not song.get('is_live'):
             self.prefetcher.download_current(ctx, song)
         # Live streams are watched too, so the queue moves on when one ends or is skipped.
@@ -616,6 +644,7 @@ class YTMusic(commands.Cog):
             state = self.state_manager.get_state(guild_id)
             current_song = state.current_song
             play_mode = self.queue_manager.get_play_mode(guild_id)
+            self._record_history(state, song)
 
             # 如果是清單循環模式，將剛播放完的歌曲（包含檔案路徑）重新加入佇列
             if play_mode == PlayMode.LOOP_QUEUE and current_song:
@@ -750,6 +779,83 @@ class YTMusic(commands.Cog):
             )
         return len(related_videos)
 
+    def _make_source(self, guild_id: int, song: dict, start_offset: float = 0.0) -> Any:
+        """Creates the audio source of ``song`` with the guild's volume and audio effect."""
+        state = self.state_manager.get_state(guild_id)
+        chain = get_preset(state.audio_filter).chain
+        if chain:
+            return self.audio_manager.create_audio_source(
+                song, volume=state.volume, start_offset=start_offset, audio_filter=chain
+            )
+        return self.audio_manager.create_audio_source(song, volume=state.volume, start_offset=start_offset)
+
+    def _start_session(self, guild_id: int) -> None:
+        """Applies the server's default volume when a voice session plays its first song."""
+        state = self.state_manager.get_state(guild_id)
+        if state.session_started:
+            return
+        state.session_started = True
+        state.volume = self.store.get_settings(guild_id).default_volume / 100
+
+    async def _announce_on_stage(self, voice_client: Any, song: dict) -> None:
+        """Sets a stage channel's topic to the song that starts (needs the stage moderator permission)."""
+        channel = getattr(voice_client, "channel", None)
+        if not isinstance(channel, discord.StageChannel):
+            return
+        topic = shorten(f"🎵 {song.get('title', '')}", STAGE_TOPIC_WIDTH)
+        try:
+            if channel.instance is not None:
+                await channel.instance.edit(topic=topic)
+            else:
+                await channel.create_instance(topic=topic)
+        except (discord.Forbidden, discord.HTTPException):
+            logger.warning(f"[音樂] 伺服器 ID: {channel.guild.id}, 無法更新舞台主題（權限不足？）。")
+
+    @staticmethod
+    def _record_history(state: Any, song: dict) -> None:
+        """Remembers a song that finished or was skipped (not one the previous button left)."""
+        if state.going_back:
+            state.going_back = False
+            return
+        if state.history and state.history[-1].get('video_id') == song.get('video_id'):
+            return
+        state.history.append(song)
+        del state.history[:-HISTORY_SIZE]
+
+    async def restart_current(self, guild_id: int, start_offset: float) -> bool:
+        """Plays the current song again from ``start_offset`` seconds (seek, effect change).
+
+        A paused song stays paused at the new position.
+
+        Args:
+            guild_id: The guild.
+            start_offset: Where to start, in seconds of the song.
+
+        Returns:
+            Whether a song was restarted.
+        """
+        state = self.state_manager.get_state(guild_id)
+        song = state.current_song
+        ctx = state.playback_ctx
+        voice_client = self.get_voice_client(guild_id)
+        if not song or ctx is None or voice_client is None or not voice_client.is_connected():
+            return False
+        was_paused = voice_client.is_paused()
+        self.state_manager.cancel_player_loop(guild_id)
+        if voice_client.is_playing() or voice_client.is_paused():
+            voice_client.stop()
+        offset = 0.0 if song.get('is_live') else max(0.0, start_offset)
+        voice_client.play(self._make_source(guild_id, song, start_offset=offset))
+        if was_paused:
+            voice_client.pause()
+        self.state_manager.update_state(guild_id, position=offset, user_stopped=False)
+        view = self.ui_manager.get_current_view(guild_id)
+        if view and not song.get('is_live'):
+            view.start_progress_updater(int(song.get('duration') or 0), start_position=int(offset))
+        task = asyncio.get_running_loop().create_task(self._player_loop(ctx, song, offset))
+        self.state_manager.update_state(guild_id, player_loop_task=task)
+        return True
+
     def _get_guild_folder(self, guild_id: int) -> tuple:
         """Get guild queue and folder"""
         return self.queue_manager.get_guild_queue_and_folder(guild_id)
@@ -778,18 +884,20 @@ class YTMusic(commands.Cog):
         guild_id = str(interaction.guild.id)
         if result.reason == "not_in_bot_channel":
             text = self.lang_manager.translate(guild_id, "system", "music", "controls", "not_in_channel")
-        else:
+        elif result.reason == "nothing_playing":
             text = self.lang_manager.translate(guild_id, "system", "music", "controls", "no_music")
+        else:
+            text = self.lang_manager.translate(guild_id, "system", "music", "ai_errors", result.reason, detail=result.detail)
         if interaction.response.is_done():
             await interaction.followup.send(text, ephemeral=True)
         else:
             await interaction.response.send_message(text, ephemeral=True)
 
     async def _ensure_can_control(self, interaction: discord.Interaction) -> bool:
-        """Check that the user sits in the bot's voice channel before changing playback.
+        """Check that the user may change playback (shares the bot's channel, is a DJ).
 
-        Without a voice client there is nothing to protect, so the handler's own
-        "nothing is playing" reply applies and this returns ``True``.
+        Without a voice client there is nothing to protect from listeners, so the
+        handler's own "nothing is playing" reply applies; the DJ rule still holds.
 
         Args:
             interaction: The interaction that triggered the control.
@@ -798,35 +906,42 @@ class YTMusic(commands.Cog):
             ``True`` when the control may proceed; otherwise an ephemeral
             explanation has been sent and ``False`` is returned.
         """
-        guild_id = interaction.guild.id
-        voice_client = self.get_voice_client(guild_id)
-        if voice_client is None or user_shares_voice_channel(interaction.user, voice_client):
+        denied = self.service.check_control(PlaybackContext.from_interaction(interaction), require_connection=False)
+        if denied is None:
             return True
-        text = self.lang_manager.translate(str(guild_id), "system", "music", "controls", "not_in_channel")
-        if interaction.response.is_done():
-            await interaction.followup.send(text, ephemeral=True)
-        else:
-            await interaction.response.send_message(text, ephemeral=True)
+        await self._reply_menu_failure(interaction, denied)
         return False
 
     # --- Callback Handlers ---
     async def handle_previous(self, interaction: discord.Interaction):
-        if not await self._ensure_can_control(interaction):
+        """Goes back to the previous song (or starts the current one over)."""
+        guild_id = interaction.guild.id
+        result = await self.service.previous(PlaybackContext.from_interaction(interaction))
+        if not result.ok:
+            await self._reply_menu_failure(interaction, result)
             return
-        voice_client = self.get_voice_client(interaction.guild.id)
-        if not voice_client:
-            await interaction.response.send_message(self.lang_manager.translate(str(interaction.guild.id), "system", "music", "controls", "no_music"), ephemeral=True)
-            return
+        view = self.ui_manager.get_current_view(guild_id)
+        if view:
+            key = "replayed" if result.data.get("replayed") else "previous"
+            await view.update_embed(
+                interaction,
+                self.lang_manager.translate(str(guild_id), "system", "music", "controls", key, user=interaction.user.display_name)
+            )
 
-        if voice_client.is_playing() or voice_client.is_paused():
-            self.mark_user_stop(interaction.guild.id)
-            voice_client.stop()
-            view = self.ui_manager.get_current_view(interaction.guild.id)
-            if view:
-                await view.update_embed(
-                    interaction,
-                    self.lang_manager.translate(str(interaction.guild.id), "system", "music", "controls", "previous", user=interaction.user.name)
-                )
+    async def handle_seek_step(self, interaction: discord.Interaction, seconds: int):
+        """Rewinds (negative) or fast-forwards the current song from the player's buttons."""
+        guild_id = interaction.guild.id
+        result = await self.service.seek(PlaybackContext.from_interaction(interaction), seconds, relative=True)
+        if not result.ok:
+            await self._reply_menu_failure(interaction, result)
+            return
+        view = self.ui_manager.get_current_view(guild_id)
+        if view:
+            key = "rewound" if seconds < 0 else "forwarded"
+            await view.update_embed(interaction, self.lang_manager.translate(
+                str(guild_id), "system", "music", "controls", key,
+                user=interaction.user.display_name, seconds=abs(seconds), position=format_clock(result.data["position"]),
+            ))
 
     async def handle_toggle_playback(self, interaction: discord.Interaction):
         guild_id = interaction.guild.id
@@ -864,6 +979,13 @@ class YTMusic(commands.Cog):
             return
 
         view = self.ui_manager.get_current_view(guild_id)
+        if result.data.get("voted"):
+            if view:
+                await view.update_embed(interaction, self.lang_manager.translate(
+                    str(guild_id), "system", "music", "controls", "skip_voted",
+                    user=interaction.user.display_name, votes=result.data["votes"], required=result.data["required"],
+                ))
+            return
         if view:
             await view.update_embed(interaction, self.lang_manager.translate(str(guild_id), "system", "music", "controls", "skipped", user=interaction.user.name))
             await view.update_button_state()
@@ -891,24 +1013,114 @@ class YTMusic(commands.Cog):
         else:
             await interaction.followup.send(embed=embed, ephemeral=True)
 
-    async def handle_toggle_mode(self, interaction: discord.Interaction):
-        if not await self._ensure_can_control(interaction):
-            return
+    async def handle_set_mode(self, interaction: discord.Interaction, mode: str):
+        """Sets the loop mode chosen in the player's menu."""
         guild_id = interaction.guild.id
-        current_mode = self.queue_manager.get_play_mode(guild_id)
-        
-        mode_order = ["no_loop", "loop_queue", "loop_single"]
-        current_index = mode_order.index(current_mode.value)
-        next_mode_str = mode_order[(current_index + 1) % len(mode_order)]
-        
-        self.queue_manager.set_play_mode(guild_id, PlayMode(next_mode_str))
-        
-        mode_name = self.lang_manager.translate(str(guild_id), "commands", "mode", "choices", next_mode_str)
-        
+        result = await self.service.set_mode(PlaybackContext.from_interaction(interaction), mode)
         view = self.ui_manager.get_current_view(guild_id)
+        if not result.ok:
+            await self._reply_menu_failure(interaction, result)
+            if view:
+                # Put the menu back on the mode that is really in effect.
+                await view.update_button_state()
+            return
+        mode_name = self.lang_manager.translate(str(guild_id), "commands", "mode", "choices", mode)
         if view:
+            await view.update_embed(interaction, self.lang_manager.translate(
+                str(guild_id), "system", "music", "controls", "mode_changed", user=interaction.user.display_name, mode=mode_name
+            ))
+
+    async def handle_set_filter(self, interaction: discord.Interaction, name: str):
+        """Applies the audio effect chosen in the player's menu."""
+        guild_id = interaction.guild.id
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+        result = await self.service.set_filter(PlaybackContext.from_interaction(interaction), name)
+        view = self.ui_manager.get_current_view(guild_id)
+        if not result.ok:
+            await self._reply_menu_failure(interaction, result)
+            if view:
+                await view.update_button_state()
+            return
+        effect = self.lang_manager.translate(str(guild_id), "system", "music", "filters", name)
+        if view:
+            await view.update_embed(interaction, self.lang_manager.translate(
+                str(guild_id), "system", "music", "controls", "filter_changed", user=interaction.user.display_name, effect=effect
+            ))
+
+    async def handle_toggle_lyrics(self, interaction: discord.Interaction):
+        """Shows or hides the synced lyrics on the player (a switch, like the queue button)."""
+        guild_id = interaction.guild.id
+        denied = self.service.check_control(PlaybackContext.from_interaction(interaction), permission="listener")
+        if denied:
+            await self._reply_menu_failure(interaction, denied)
+            return
+        view = self.ui_manager.get_current_view(guild_id)
+        state = self.state_manager.get_state(guild_id)
+        state.show_lyrics = not state.show_lyrics
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+        if state.show_lyrics:
+            await self.current_lyrics(guild_id)
+        if view:
+            self.refresh_lyrics_field(view)
+            await view.update_embed(interaction, view.current_embed.title if view.current_embed else "", view.current_embed.color if view.current_embed else discord.Color.blue())
             await view.update_button_state()
-            await view.update_embed(interaction, self.lang_manager.translate(str(guild_id), "system", "music", "controls", "mode_changed", user=interaction.user.name, mode=mode_name))
+
+    async def current_lyrics(self, guild_id: int) -> Optional[Any]:
+        """Returns the lyrics of the song that is playing, looking them up once per song."""
+        state = self.state_manager.get_state(guild_id)
+        song = state.current_song
+        if not song or not music_config.lyrics.enabled:
+            return None
+        if state.lyrics and state.lyrics[0] == song.get('video_id'):
+            return state.lyrics[1]
+        found = await self.lyrics.for_song(song)
+        current = state.current_song
+        if current and current.get('video_id') == song.get('video_id'):
+            state.lyrics = (song.get('video_id'), found)
+        return found
+
+    def refresh_lyrics_field(self, view: Any) -> bool:
+        """Puts the lines around the current position on the player (or removes the field).
+
+        Returns:
+            Whether the lyrics are shown.
+        """
+        embed = getattr(view, "current_embed", None)
+        if embed is None:
+            return False
+        guild_id = view.guild.id
+        guild_id_str = str(guild_id)
+        state = self.state_manager.get_state(guild_id)
+        name = self.lang_manager.translate(guild_id_str, "system", "music", "player", "lyrics")
+        song = state.current_song
+        if not state.show_lyrics or not song:
+            remove_queue_field(embed, name)
+            return False
+        lyrics = state.lyrics[1] if state.lyrics and state.lyrics[0] == song.get('video_id') else None
+        if state.lyrics is None or state.lyrics[0] != song.get('video_id'):
+            text = self.lang_manager.translate(guild_id_str, "system", "music", "lyrics", "loading")
+        elif lyrics is None:
+            text = self.lang_manager.translate(guild_id_str, "system", "music", "lyrics", "not_found")
+        elif not lyrics.synced:
+            text = self.lang_manager.translate(guild_id_str, "system", "music", "lyrics", "not_synced")
+        else:
+            text = synced_excerpt(lyrics, state.position)
+        set_queue_field(embed, name, text)
+        return True
+
+    async def _show_lyrics_for_new_song(self, guild_id: int) -> None:
+        """Looks up the new song's lyrics while the synced lyrics are switched on."""
+        try:
+            await self.current_lyrics(guild_id)
+            view = self.ui_manager.get_current_view(guild_id)
+            if view and view.message and view.current_embed and self.refresh_lyrics_field(view):
+                await view.message.edit(embed=view.current_embed, view=view)
+        except discord.HTTPException:
+            pass
+        except Exception as e:
+            await func.report_error(e, "loading lyrics for the player")
 
     async def handle_toggle_shuffle(self, interaction: discord.Interaction):
         if not await self._ensure_can_control(interaction):
@@ -1132,7 +1344,11 @@ class YTMusic(commands.Cog):
         self.queue_manager.set_playlist(guild_id, [])
         _, folder = self._get_guild_folder(guild_id)
         await self.audio_manager.cleanup_guild_files(guild_id, folder)
-        self.state_manager.update_state(guild_id, current_song=None, last_played_song=None, current_message=None, current_view=None, ui_messages=[])
+        self.state_manager.update_state(
+            guild_id, current_song=None, last_played_song=None, current_message=None, current_view=None, ui_messages=[],
+            history=[], going_back=False, skip_votes=set(), position=0.0, playback_ctx=None, audio_filter="off",
+            lyrics=None, session_started=False,
+        )
         logger.info(f"[音樂] 伺服器 ID: {guild_id}, 已清理語音會話。")
 
     async def _cancel_disconnect_timer(self, guild_id: int):
@@ -1150,6 +1366,9 @@ class YTMusic(commands.Cog):
             delay: Seconds to wait before disconnecting.
         """
         await self._cancel_disconnect_timer(guild_id) # Cancel any existing timer
+        if self.store.get_settings(guild_id).stay_247:
+            logger.info(f"[音樂] 伺服器 ID: {guild_id}, 24/7 模式開啟，不啟動閒置斷線計時器。")
+            return
 
         logger.info(f"[音樂] 伺服器 ID: {guild_id}, 啟動 {delay:g} 秒閒置斷線計時器。")
         self.disconnect_timers[guild_id] = asyncio.get_running_loop().create_task(
@@ -1195,6 +1414,47 @@ class YTMusic(commands.Cog):
         # Clean up the timer task from the dictionary
         if guild_id in self.disconnect_timers:
             del self.disconnect_timers[guild_id]
+
+    async def stay_in(self, guild: Any, channel: Any) -> bool:
+        """Joins (or moves to, when idle) the 24/7 channel and stops any idle-disconnect timer.
+
+        Returns:
+            Whether the bot is now in a voice channel of the guild.
+        """
+        voice_client = guild.voice_client
+        try:
+            if voice_client is None:
+                await channel.connect()
+            elif voice_client.channel != channel and self._is_idle(voice_client):
+                await voice_client.move_to(channel)
+        except (discord.ClientException, discord.HTTPException, asyncio.TimeoutError):
+            logger.error(f"[音樂] 伺服器 ID: {guild.id}, 無法加入 24/7 頻道。", exc_info=True)
+            return False
+        await self._cancel_disconnect_timer(guild.id)
+        return guild.voice_client is not None
+
+    async def leave_if_idle(self, guild_id: int) -> None:
+        """Starts the usual idle disconnect after 24/7 was turned off, if nothing is going on."""
+        voice_client = self.get_voice_client(guild_id)
+        if voice_client is None or not voice_client.is_connected():
+            return
+        if self._is_idle(voice_client) and self.queue_manager.is_queue_empty(guild_id):
+            await self._start_disconnect_timer(guild_id, QUEUE_END_DISCONNECT_SECONDS)
+        elif voice_client.is_paused() or not self._has_listeners(voice_client):
+            await self._start_disconnect_timer(
+                guild_id, PAUSED_DISCONNECT_SECONDS if self._has_listeners(voice_client) else EMPTY_CHANNEL_DISCONNECT_SECONDS
+            )
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """Rejoins the 24/7 voice channels after a restart."""
+        for guild_id, channel_id in self.store.guilds_staying().items():
+            guild = self.bot.get_guild(guild_id)
+            channel = guild.get_channel(channel_id) if guild else None
+            if channel is None or guild.voice_client is not None:
+                continue
+            logger.info(f"[音樂] 伺服器 ID: {guild_id}, 24/7 模式：重新加入語音頻道。")
+            await self.stay_in(guild, channel)
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
@@ -1295,6 +1555,10 @@ class YTMusic(commands.Cog):
         logger.info(f"[{guild_id}] Player loop started for '{song['title']}'.")
 
         played = float(start_offset)
+        state = self.state_manager.get_state(guild_id)
+        state.position = played
+        # A sped-up or slowed-down effect plays more or less than a second of the song per second.
+        speed = get_preset(state.audio_filter).speed
         last_tick = self._clock()
         await asyncio.sleep(2)  # Wait for playback to start
 
@@ -1314,8 +1578,9 @@ class YTMusic(commands.Cog):
                 logger.info(f"[{guild_id}] Player loop detected song has finished.")
                 break
 
-            played += now - last_tick
+            played += (now - last_tick) * speed
             last_tick = now
+            state.position = played
             await asyncio.sleep(1)
 
         state = self.state_manager.get_state(guild_id)
@@ -1373,7 +1638,7 @@ class YTMusic(commands.Cog):
         if not current or current['video_id'] != song['video_id']:
             return False
 
-        audio_source = self.audio_manager.create_audio_source(song, volume=state.volume, start_offset=played)
+        audio_source = self._make_source(guild_id, song, start_offset=played)
         voice_client.play(audio_source)
         song['streaming'] = False
         view = self.ui_manager.get_current_view(guild_id)

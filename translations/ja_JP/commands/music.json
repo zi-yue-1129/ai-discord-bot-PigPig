@@ -1,0 +1,14 @@
+{
+    "description": "音楽ツール：シーク、前の曲、履歴、歌詞",
+    "responses": {
+        "seeked": "{position} / {duration} に移動しました",
+        "forwarded": "{seconds} 秒早送りしました（{position} / {duration}）",
+        "rewound": "{seconds} 秒巻き戻しました（{position} / {duration}）",
+        "replayed": "「{title}」を最初から再生します",
+        "previous": "前の曲に戻ります：「{title}」",
+        "history_title": "最近再生した {count} 曲"
+    },
+    "errors": {
+        "invalid_time": "時間の形式が正しくありません。1:30 や 90 のように入力してください。"
+    }
+}
