@@ -302,11 +302,14 @@ class LyricsSettings:
         enabled: Whether ``/music lyrics`` and the lyrics button look lyrics up.
         api_url: Base URL of the LRCLIB API (free, no key needed).
         timeout_seconds: How long to wait for the lyrics service.
+        offset_seconds: Shifts the synced lyrics on the player. Negative values show every line
+            later (use when the lines appear before they are sung), positive values earlier.
     """
 
     enabled: bool = True
     api_url: str = "https://lrclib.net/api"
     timeout_seconds: int = 10
+    offset_seconds: float = 0.0
 
 
 class MusicConfig:

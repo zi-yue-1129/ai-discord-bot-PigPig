@@ -81,9 +81,10 @@ Without a DJ role, everyone in the bot's voice channel may (unchanged behaviour)
 ```
 
 * ⏮️ goes back through the session history (or starts the song over when there is none).
-* 🎤 shows the synced lyrics on the player (refreshed every 2 seconds while shown, showing the line due
-  1.5 seconds ahead so the display does not lag). Among the lyrics found, the ones with time stamps and a length
-  closest to the song's win; an entry whose length is unknown ranks after the ones known to fit.
+* 🎤 shows the synced lyrics on the player (refreshed every 2 seconds while shown). Among the lyrics found, the
+  ones with time stamps and a length closest to the song's win; an entry whose length is unknown ranks after the
+  ones known to fit. If the lines come out ahead of or behind the singing, `lyrics.offset_seconds` in
+  `music.yaml` shifts all of them (negative shows them later).
 * ⏪ ⏩ jump 10 seconds.
 
 ## Song request channel
@@ -111,4 +112,5 @@ lyrics:
   enabled: true
   api_url: "https://lrclib.net/api"      # LRCLIB: free, no API key
   timeout_seconds: 10
+  offset_seconds: 0.0                    # negative = show the lines later
 ```

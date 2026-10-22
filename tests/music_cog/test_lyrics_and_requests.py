@@ -289,17 +289,52 @@ async def test_time_stamps_of_a_recording_a_few_seconds_off_are_kept() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_lyrics_field_shows_the_line_that_is_about_to_be_sung(cog: YTMusic) -> None:
+async def test_the_lyrics_field_follows_the_position_exactly_by_default(cog: YTMusic) -> None:
+    # A listener measured the lyrics 3 s ahead of the song while the field showed the line due
+    # 1.5 s ahead, so the default no longer shifts the lines at all.
     state = cog.state_manager.get_state(GUILD_ID)
     state.current_song = make_song(1)
     state.show_lyrics = True
     state.lyrics = ("v1", Lyrics(track="t", artist="a", plain="", synced=parse_lrc(SYNCED)))
     view = SimpleNamespace(guild=SimpleNamespace(id=GUILD_ID), current_embed=discord.Embed(title="x"))
 
-    state.position = 7.6
+    state.position = 8.9
+    cog.refresh_lyrics_field(view)
+    assert "**▶ second**" in view.current_embed.fields[0].value
+
+    state.position = 9.0
+    cog.refresh_lyrics_field(view)
+    assert "**▶ third**" in view.current_embed.fields[0].value
+
+
+@pytest.mark.asyncio
+async def test_a_negative_lyrics_offset_delays_the_lines_and_a_positive_one_advances_them(cog: YTMusic) -> None:
+    state = cog.state_manager.get_state(GUILD_ID)
+    state.current_song = make_song(1)
+    state.show_lyrics = True
+    state.lyrics = ("v1", Lyrics(track="t", artist="a", plain="", synced=parse_lrc(SYNCED)))
+    view = SimpleNamespace(guild=SimpleNamespace(id=GUILD_ID), current_embed=discord.Embed(title="x"))
+    state.position = 10.2
+
+    cog.lyrics.settings = LyricsSettings(offset_seconds=-1.5)
+    cog.refresh_lyrics_field(view)
+    assert "**▶ second**" in view.current_embed.fields[0].value
+
+    cog.lyrics.settings = LyricsSettings(offset_seconds=0.0)
     cog.refresh_lyrics_field(view)
     assert "**▶ third**" in view.current_embed.fields[0].value
 
     state.position = 7.4
+    cog.lyrics.settings = LyricsSettings(offset_seconds=2.0)
     cog.refresh_lyrics_field(view)
-    assert "**▶ second**" in view.current_embed.fields[0].value
+    assert "**▶ third**" in view.current_embed.fields[0].value
+
+
+def test_the_lyrics_offset_is_read_from_music_yaml(tmp_path: Any) -> None:
+    from addons.settings import MusicConfig
+
+    path = tmp_path / "music.yaml"
+    path.write_text("lyrics:\n  offset_seconds: -1.5\n", encoding="utf-8")
+
+    assert MusicConfig(str(path)).lyrics.offset_seconds == -1.5
+    assert LyricsSettings().offset_seconds == 0.0

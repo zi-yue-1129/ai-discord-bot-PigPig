@@ -40,9 +40,6 @@ PAUSED_DISCONNECT_SECONDS = 300
 EMPTY_CHANNEL_DISCONNECT_SECONDS = 60
 # How long the "queue finished" message stays before the bot leaves the voice channel.
 QUEUE_END_DISCONNECT_SECONDS = 10
-# The lyrics field is edited every 2 seconds from a position that is up to a second old, and an
-# edit takes a moment to arrive, so it shows the line due this many seconds ahead to avoid lagging.
-LYRICS_DISPLAY_LEAD = 1.5
 
 # Columns a song title may take in the queue list (full-width characters count twice), so a
 # line with its length and requester still fits on one row of the player interface.
@@ -1113,7 +1110,7 @@ class YTMusic(commands.Cog):
         elif not lyrics.synced:
             text = self.lang_manager.translate(guild_id_str, "system", "music", "lyrics", "not_synced")
         else:
-            text = synced_excerpt(lyrics, state.position + LYRICS_DISPLAY_LEAD)
+            text = synced_excerpt(lyrics, state.position + self.lyrics.settings.offset_seconds)
         set_queue_field(embed, name, text)
         return True
 
