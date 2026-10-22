@@ -649,15 +649,6 @@ class YTMusic(commands.Cog):
             play_mode = self.queue_manager.get_play_mode(guild_id)
             self._record_history(state, song)
 
-            # 如果是清單循環模式，將剛播放完的歌曲（包含檔案路徑）重新加入佇列
-            if play_mode == PlayMode.LOOP_QUEUE and current_song:
-                if self.queue_manager.is_shuffle_enabled(guild_id):
-                    # Shuffle plays every song once per round, so it waits for the next round.
-                    self.queue_manager.finish_for_cycle(guild_id, current_song)
-                else:
-                    await self.queue_manager.add_to_queue(guild_id, current_song, force=True)
-                logger.info(f"[音樂] 在清單循環模式下，'{current_song['title']}' 已播完，等待下一輪。")
-
             # 只有在非循環且非直播的模式下才刪除檔案
             if play_mode not in [PlayMode.LOOP_SINGLE, PlayMode.LOOP_QUEUE] and not song.get('is_live'):
                 file_path = song.get('file_path')
@@ -671,22 +662,35 @@ class YTMusic(commands.Cog):
                 elif song.get('stream_url'):
                     self._delete_when_downloaded(guild_id, song)
 
-            # Add more songs from playlist if needed
-            queue = self.queue_manager.get_queue(guild_id)
-            if queue.qsize() < 5 and self.queue_manager.has_playlist_songs(guild_id):
-                next_songs = await self.queue_manager.get_next_playlist_songs(
-                    guild_id,
-                    count=5 - queue.qsize()
-                )
-                for next_song_item in next_songs:
-                    await self.queue_manager.add_to_queue(guild_id, next_song_item)
+            try:
+                # Add more songs from playlist if needed
+                queue = self.queue_manager.get_queue(guild_id)
+                if queue.qsize() < 5 and self.queue_manager.has_playlist_songs(guild_id):
+                    next_songs = await self.queue_manager.get_next_playlist_songs(
+                        guild_id,
+                        count=5 - queue.qsize()
+                    )
+                    for next_song_item in next_songs:
+                        await self.queue_manager.add_to_queue(guild_id, next_song_item)
 
-                # Enforce autoplay limit after adding new songs
-                await self.queue_manager.enforce_autoplay_limit(guild_id)
+                    # Enforce autoplay limit after adding new songs
+                    await self.queue_manager.enforce_autoplay_limit(guild_id)
 
-            # Trigger autoplay if enabled and not enough songs in queue
-            if state.autoplay:
-                await self._trigger_autoplay(ctx, guild_id)
+                # Trigger autoplay if enabled and not enough songs in queue
+                if state.autoplay:
+                    await self._trigger_autoplay(ctx, guild_id)
+            finally:
+                # 如果是清單循環模式，將剛播放完的歌曲（包含檔案路徑）重新加入佇列。
+                # This comes last so the song goes behind everything else: put back first into an
+                # empty queue, it would be the next song and play again before the recommendations.
+                # It runs even when filling the queue failed, so the song never drops out of the loop.
+                if play_mode == PlayMode.LOOP_QUEUE and current_song:
+                    if self.queue_manager.is_shuffle_enabled(guild_id):
+                        # Shuffle plays every song once per round, so it waits for the next round.
+                        self.queue_manager.finish_for_cycle(guild_id, current_song)
+                    else:
+                        await self.queue_manager.add_to_queue(guild_id, current_song, force=True)
+                    logger.info(f"[音樂] 在清單循環模式下，'{current_song['title']}' 已播完，等待下一輪。")
         except Exception as e:
             # The queue housekeeping failed, but the listeners still want music:
             # report it and carry on with the next song.
