@@ -246,3 +246,58 @@ async def test_the_ai_can_play_a_saved_playlist() -> None:
 
     assert played == [("chill", True)]
     assert "12" in reply and "Chill" in reply
+
+
+# ------------------------------------------------------- timing accuracy
+
+
+@pytest.mark.asyncio
+async def test_an_entry_of_unknown_length_does_not_beat_one_of_the_right_length() -> None:
+    client = _client([
+        {"trackName": "Song", "artistName": "A", "plainLyrics": "unknown length", "syncedLyrics": SYNCED},
+        {"trackName": "Song", "artistName": "A", "duration": 238, "plainLyrics": "right length", "syncedLyrics": SYNCED},
+    ])
+
+    found = await client.search({"q": "song"}, duration=238)
+
+    assert found.plain == "right length"
+
+
+@pytest.mark.asyncio
+async def test_time_stamps_of_a_recording_far_off_in_length_are_not_trusted() -> None:
+    client = _client([
+        {"trackName": "Song", "artistName": "A", "duration": 150, "plainLyrics": "la la", "syncedLyrics": SYNCED},
+    ])
+
+    found = await client.search({"q": "song"}, duration=160)
+
+    assert found.plain == "la la"
+    assert found.synced == []
+
+
+@pytest.mark.asyncio
+async def test_time_stamps_of_a_recording_a_few_seconds_off_are_kept() -> None:
+    client = _client([
+        {"trackName": "Song", "artistName": "A", "duration": 156, "plainLyrics": "la la", "syncedLyrics": SYNCED},
+    ])
+
+    found = await client.search({"q": "song"}, duration=160)
+
+    assert len(found.synced) == 3
+
+
+@pytest.mark.asyncio
+async def test_the_lyrics_field_shows_the_line_that_is_about_to_be_sung(cog: YTMusic) -> None:
+    state = cog.state_manager.get_state(GUILD_ID)
+    state.current_song = make_song(1)
+    state.show_lyrics = True
+    state.lyrics = ("v1", Lyrics(track="t", artist="a", plain="", synced=parse_lrc(SYNCED)))
+    view = SimpleNamespace(guild=SimpleNamespace(id=GUILD_ID), current_embed=discord.Embed(title="x"))
+
+    state.position = 7.6
+    cog.refresh_lyrics_field(view)
+    assert "**▶ third**" in view.current_embed.fields[0].value
+
+    state.position = 7.4
+    cog.refresh_lyrics_field(view)
+    assert "**▶ second**" in view.current_embed.fields[0].value

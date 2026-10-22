@@ -81,7 +81,10 @@ Without a DJ role, everyone in the bot's voice channel may (unchanged behaviour)
 ```
 
 * ⏮️ goes back through the session history (or starts the song over when there is none).
-* 🎤 shows the synced lyrics on the player (refreshed every 2 seconds while shown).
+* 🎤 shows the synced lyrics on the player (refreshed every 2 seconds while shown, showing the line due
+  1.5 seconds ahead so the display does not lag). Time stamps belong to one recording, so they are only used
+  when its length is within 5 seconds of the song's; otherwise the player says the lyrics are not synced and
+  `/music lyrics` still shows the text.
 * ⏪ ⏩ jump 10 seconds.
 
 ## Song request channel
