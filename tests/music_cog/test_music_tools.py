@@ -31,6 +31,13 @@ ACTION_TOOLS = {
     "get_current_song_lyrics",
     "play_saved_playlist",
     "add_song_to_playlist",
+    "create_music_playlist",
+    "list_music_playlists",
+    "view_music_playlist",
+    "remove_song_from_playlist",
+    "save_queue_as_playlist",
+    "get_music_history",
+    "get_music_settings",
 }
 
 
