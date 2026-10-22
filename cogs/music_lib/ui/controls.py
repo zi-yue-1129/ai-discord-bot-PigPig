@@ -15,6 +15,9 @@ log = get_logger(source=__name__, server_id="system")
 _EMPTY_QUEUE_VALUE = "__empty__"
 # Seconds the rewind and fast-forward buttons jump.
 SEEK_STEP_SECONDS = 10
+# Fewest seconds between two edits of the player message made for a new lyrics line (Discord
+# rate-limits message edits, and lines never need to change faster than this).
+LYRICS_EDIT_GAP_SECONDS = 1.0
 _MODE_EMOJIS = {"no_loop": "➡️", "loop_queue": "🔁", "loop_single": "🔂"}
 
 
@@ -80,7 +83,7 @@ class MusicControlView(discord.ui.View):
                 get_queue_manager, get_state_manager, get_voice_client, get_lang_manager,
                 get_queue_text=None, get_queue_options=None, queue_select_callback=None,
                 set_mode_callback=None, set_filter_callback=None, seek_callback=None,
-                toggle_lyrics_callback=None, refresh_lyrics=None):
+                toggle_lyrics_callback=None, refresh_lyrics=None, lyrics_line_changed=None):
         super().__init__(timeout=None)
         self.guild = ctx.guild
         self.message = None
@@ -102,6 +105,8 @@ class MusicControlView(discord.ui.View):
         self.toggle_lyrics_callback = toggle_lyrics_callback
         # Updates the synced lyrics field of ``current_embed``; returns whether it is shown.
         self.refresh_lyrics = refresh_lyrics
+        # Tells whether the sung line differs from the one drawn; ``None`` when lyrics are off.
+        self.lyrics_line_changed = lyrics_line_changed
         self.toggle_shuffle_callback = toggle_shuffle_callback
         self.show_queue_callback = show_queue_callback
         self.toggle_autoplay_callback = toggle_autoplay_callback
@@ -416,7 +421,13 @@ class MusicControlView(discord.ui.View):
                     # Update progress bar every update_interval seconds (more often while synced lyrics show)
                     lyrics_shown = self.get_state_manager().get_state(self.guild.id).show_lyrics
                     interval = 2 if lyrics_shown else update_interval
-                    if current_time - last_update >= interval:
+                    # A new sung line is drawn as soon as it starts, not at the next timer tick.
+                    line_changed = (
+                        lyrics_shown and self.lyrics_line_changed is not None
+                        and current_time - last_update >= LYRICS_EDIT_GAP_SECONDS
+                        and self.lyrics_line_changed(self)
+                    )
+                    if current_time - last_update >= interval or line_changed:
                         if self.current_embed and self.message:
                             try:
                                 progress_bar = ProgressDisplay.create_progress_bar(self.current_position, duration)
@@ -449,7 +460,8 @@ class MusicControlView(discord.ui.View):
                                 else:
                                     log.error(f"更新進度條位置失敗: {e}")
 
-                    await asyncio.sleep(1)
+                    # Check twice a second while synced lyrics show so a line change is not missed by long.
+                    await asyncio.sleep(0.5 if lyrics_shown else 1)
             finally:
                 self._is_updating = False
                 if hasattr(self, 'update_task'):

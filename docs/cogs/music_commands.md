@@ -81,7 +81,8 @@ Without a DJ role, everyone in the bot's voice channel may (unchanged behaviour)
 ```
 
 * ⏮️ goes back through the session history (or starts the song over when there is none).
-* 🎤 shows the synced lyrics on the player (refreshed every 2 seconds while shown). Among the lyrics found, the
+* 🎤 shows the synced lyrics on the player. The player message is edited as soon as the sung line changes
+  (the position is checked twice a second, and edits are at least one second apart). Among the lyrics found, the
   ones with time stamps and a length closest to the song's win; an entry whose length is unknown ranks after the
   ones known to fit. If the lines come out ahead of or behind the singing, `lyrics.offset_seconds` in
   `music.yaml` shifts all of them (negative shows them later).

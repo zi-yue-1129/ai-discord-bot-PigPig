@@ -42,6 +42,8 @@ class PlayerState:
     show_lyrics: bool = False
     # Lyrics of the current song: ``(video_id, Lyrics or None)`` once looked up.
     lyrics: Optional[tuple] = None
+    # Index of the synced lyrics line the player shows now (-2 while none was drawn yet).
+    lyrics_line: int = -2
     # Whether this voice session already applied the server's default volume.
     session_started: bool = False
 

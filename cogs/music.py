@@ -1110,9 +1110,33 @@ class YTMusic(commands.Cog):
         elif not lyrics.synced:
             text = self.lang_manager.translate(guild_id_str, "system", "music", "lyrics", "not_synced")
         else:
-            text = synced_excerpt(lyrics, state.position + self.lyrics.settings.offset_seconds)
+            shown_at = state.position + self.lyrics.settings.offset_seconds
+            text = synced_excerpt(lyrics, shown_at)
+            state.lyrics_line = lyrics.line_index(shown_at)
         set_queue_field(embed, name, text)
         return True
+
+    def lyrics_line_changed(self, view: Any) -> bool:
+        """Tells whether the sung line is no longer the one the player shows.
+
+        The player panel uses this to edit the message exactly when a line changes instead of
+        on a timer, so the lines do not lag by up to the timer's interval.
+
+        Args:
+            view: The player view (only its guild is used).
+
+        Returns:
+            True when synced lyrics are shown and the line for the current position differs from
+            the line drawn last.
+        """
+        state = self.state_manager.get_state(view.guild.id)
+        song = state.current_song
+        if not state.show_lyrics or not song or state.lyrics is None or state.lyrics[0] != song.get('video_id'):
+            return False
+        lyrics = state.lyrics[1]
+        if lyrics is None or not lyrics.synced:
+            return False
+        return lyrics.line_index(state.position + self.lyrics.settings.offset_seconds) != state.lyrics_line
 
     async def _show_lyrics_for_new_song(self, guild_id: int) -> None:
         """Looks up the new song's lyrics while the synced lyrics are switched on."""

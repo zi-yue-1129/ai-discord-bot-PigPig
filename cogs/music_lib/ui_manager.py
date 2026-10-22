@@ -99,6 +99,7 @@ class UIManager:
                 "seek_callback": music_cog.handle_seek_step,
                 "toggle_lyrics_callback": music_cog.handle_toggle_lyrics if music_config.lyrics.enabled else None,
                 "refresh_lyrics": music_cog.refresh_lyrics_field,
+                "lyrics_line_changed": music_cog.lyrics_line_changed,
             }
 
             # Before creating a new view, stop the previous view's background tasks

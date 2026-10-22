@@ -330,6 +330,66 @@ async def test_a_negative_lyrics_offset_delays_the_lines_and_a_positive_one_adva
     assert "**▶ third**" in view.current_embed.fields[0].value
 
 
+def _lyrics_view(cog: YTMusic, *, synced: bool = True) -> SimpleNamespace:
+    state = cog.state_manager.get_state(GUILD_ID)
+    state.current_song = make_song(1)
+    state.show_lyrics = True
+    lines = parse_lrc(SYNCED) if synced else []
+    state.lyrics = ("v1", Lyrics(track="t", artist="a", plain="la", synced=lines))
+    return SimpleNamespace(guild=SimpleNamespace(id=GUILD_ID), current_embed=discord.Embed(title="x"))
+
+
+@pytest.mark.asyncio
+async def test_the_player_is_edited_when_the_sung_line_changes_not_on_a_timer(cog: YTMusic) -> None:
+    view = _lyrics_view(cog)
+    state = cog.state_manager.get_state(GUILD_ID)
+    state.position = 2.0
+    cog.refresh_lyrics_field(view)
+
+    assert cog.lyrics_line_changed(view) is False
+    state.position = 5.4
+    assert cog.lyrics_line_changed(view) is False
+    state.position = 5.5
+    assert cog.lyrics_line_changed(view) is True
+
+    cog.refresh_lyrics_field(view)
+    assert cog.lyrics_line_changed(view) is False
+
+
+@pytest.mark.asyncio
+async def test_a_line_that_was_never_shown_counts_as_changed(cog: YTMusic) -> None:
+    view = _lyrics_view(cog)
+    cog.state_manager.get_state(GUILD_ID).position = 2.0
+
+    assert cog.lyrics_line_changed(view) is True
+
+
+@pytest.mark.asyncio
+async def test_no_edits_are_needed_for_hidden_or_unsynced_lyrics(cog: YTMusic) -> None:
+    view = _lyrics_view(cog, synced=False)
+    state = cog.state_manager.get_state(GUILD_ID)
+    state.position = 6.0
+    assert cog.lyrics_line_changed(view) is False
+
+    view = _lyrics_view(cog)
+    state.show_lyrics = False
+    assert cog.lyrics_line_changed(view) is False
+
+
+@pytest.mark.asyncio
+async def test_the_line_change_follows_the_lyrics_offset(cog: YTMusic) -> None:
+    view = _lyrics_view(cog)
+    state = cog.state_manager.get_state(GUILD_ID)
+    cog.lyrics.settings = LyricsSettings(offset_seconds=-1.0)
+    state.position = 2.0
+    cog.refresh_lyrics_field(view)
+
+    state.position = 5.5
+    assert cog.lyrics_line_changed(view) is False
+    state.position = 6.5
+    assert cog.lyrics_line_changed(view) is True
+
+
 def test_the_lyrics_offset_is_read_from_music_yaml(tmp_path: Any) -> None:
     from addons.settings import MusicConfig
 
