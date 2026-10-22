@@ -20,6 +20,7 @@ ACTION_TOOLS = {
     "stop_music",
     "set_music_loop_mode",
     "set_music_shuffle",
+    "set_music_autoplay",
     "set_music_volume",
     "remove_song_from_queue",
     "clear_music_queue",
@@ -70,6 +71,9 @@ class FakeService:
 
     async def set_shuffle(self, ctx: PlaybackContext, enabled: bool) -> ActionResult:
         return await self._record("set_shuffle", ctx, enabled)
+
+    async def set_autoplay(self, ctx: PlaybackContext, enabled: bool) -> ActionResult:
+        return await self._record("set_autoplay", ctx, enabled)
 
     async def set_volume(self, ctx: PlaybackContext, percent: int) -> ActionResult:
         return await self._record("set_volume", ctx, percent)
@@ -171,6 +175,8 @@ async def test_failures_are_returned_as_error_text_the_model_can_relay() -> None
         ("stop_music", {}, ("stop",)),
         ("set_music_loop_mode", {"mode": "loop_queue"}, ("set_mode", "loop_queue")),
         ("set_music_shuffle", {"enabled": True}, ("set_shuffle", True)),
+        ("set_music_autoplay", {"enabled": True}, ("set_autoplay", True)),
+        ("set_music_autoplay", {"enabled": False}, ("set_autoplay", False)),
         ("set_music_volume", {"percent": 30}, ("set_volume", 30)),
         ("remove_song_from_queue", {"position": 2}, ("remove_from_queue", 2)),
         ("clear_music_queue", {}, ("clear_queue",)),

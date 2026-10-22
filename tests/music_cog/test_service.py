@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any, List, Optional
 
@@ -502,3 +503,52 @@ async def test_search_where_everything_is_too_long_reports_it(
     assert result.reason == "no_results"
     assert "30 minutes" in result.detail
     assert youtube.downloaded == []
+
+
+@pytest.mark.asyncio
+async def test_set_autoplay_switches_the_recommendations_without_touching_the_loop_mode(
+    service: MusicService, ctx: PlaybackContext, cog: YTMusic, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    filled: List[bool] = []
+
+    async def fill(_ctx: PlaybackContext, _guild_id: int, notify: bool = False) -> int:
+        filled.append(notify)
+        return 0
+
+    monkeypatch.setattr(cog, "_trigger_autoplay", fill)
+    await cog.queue_manager.add_to_queue(GUILD_ID, make_song(1))
+
+    turned_on = await service.set_autoplay(ctx, True)
+
+    assert turned_on.ok
+    assert cog.state_manager.get_state(GUILD_ID).autoplay is True
+    assert cog.queue_manager.get_play_mode(GUILD_ID) == PlayMode.NO_LOOP
+    assert filled == []
+
+    turned_off = await service.set_autoplay(ctx, False)
+
+    assert turned_off.ok
+    assert cog.state_manager.get_state(GUILD_ID).autoplay is False
+
+
+@pytest.mark.asyncio
+async def test_set_autoplay_fills_an_empty_queue_with_recommendations(
+    service: MusicService, ctx: PlaybackContext, cog: YTMusic, voice_client: FakeVoiceClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    filled: List[bool] = []
+
+    async def fill(_ctx: PlaybackContext, _guild_id: int, notify: bool = False) -> int:
+        filled.append(notify)
+        return 0
+
+    monkeypatch.setattr(cog, "_trigger_autoplay", fill)
+    # The fixture's fake bot holds a loop that is not the one this test runs on.
+    monkeypatch.setattr(cog.bot, "loop", asyncio.get_running_loop())
+    voice_client.playing = True
+
+    result = await service.set_autoplay(ctx, True)
+    await asyncio.sleep(0)
+
+    assert result.ok
+    assert filled == [True]

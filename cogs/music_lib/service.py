@@ -614,6 +614,26 @@ class MusicService:
             await view.update_button_state()
         return ActionResult(ok=True, detail=f"Shuffle {'on' if enabled else 'off'}.", data={"shuffle": enabled})
 
+    async def set_autoplay(self, ctx: PlaybackContext, enabled: bool) -> ActionResult:
+        """Turns autoplay (the bot queues recommended songs when the queue runs out) on or off.
+
+        This is separate from the loop mode, which only repeats songs already queued.
+
+        Args:
+            ctx: The playback context.
+            enabled: Whether recommendations are wanted.
+        """
+        denied = self._check_control(ctx, require_connection=False)
+        if denied:
+            return denied
+        self._cog.state_manager.update_state(ctx.guild.id, autoplay=enabled)
+        view = self._refresh_buttons(ctx.guild.id)
+        if view:
+            await view.update_button_state()
+        if enabled:
+            self._cog.start_autoplay_if_needed(ctx, ctx.guild.id)
+        return ActionResult(ok=True, detail=f"Autoplay {'on' if enabled else 'off'}.", data={"autoplay": enabled})
+
     async def set_volume(self, ctx: PlaybackContext, percent: int) -> ActionResult:
         """Sets the playback volume of the guild.
 

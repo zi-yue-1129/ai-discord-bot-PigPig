@@ -33,6 +33,7 @@
             "stop_music": "⏹️ 音楽を停止中...",
             "set_music_loop_mode": "🔁 ループモードを設定中...",
             "set_music_shuffle": "🔀 シャッフルを設定中...",
+            "set_music_autoplay": "🎶 自動再生のおすすめを設定中...",
             "set_music_volume": "🔊 音量を調整中...",
             "remove_song_from_queue": "🗑️ 曲を削除中...",
             "clear_music_queue": "🧹 キューを空にしています...",

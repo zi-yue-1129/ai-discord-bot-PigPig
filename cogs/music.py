@@ -1179,8 +1179,16 @@ class YTMusic(commands.Cog):
         if not state.autoplay:
             return
 
-        ctx = PlaybackContext.from_interaction(interaction)
-        voice_client = interaction.guild.voice_client
+        self.start_autoplay_if_needed(PlaybackContext.from_interaction(interaction), guild_id)
+
+    def start_autoplay_if_needed(self, ctx: PlaybackContext, guild_id: int) -> None:
+        """Gets recommendations going right after autoplay was switched on.
+
+        Args:
+            ctx: The playback context.
+            guild_id: The guild.
+        """
+        voice_client = ctx.guild.voice_client
         if voice_client and self._is_idle(voice_client):
             # Nothing playing: play_next fills the empty queue through autoplay itself.
             logger.info(f"[音樂] 伺服器 ID: {guild_id}, 觸發閒置時的 Autoplay。")

@@ -288,6 +288,25 @@ class MusicTools:
             return f"Shuffle is now {'on' if enabled else 'off'}." if result.ok else await _failure(ctx, result)
 
         @tool
+        async def set_music_autoplay(enabled: bool) -> str:
+            """Turns autoplay on or off: when the queue runs out the bot keeps playing songs it recommends.
+
+            This is not the loop mode. Use set_music_loop_mode to repeat the queue or one song, and
+            this tool when the user asks for automatic recommendations or autoplay.
+
+            Args:
+                enabled: True to let the bot queue recommended songs, False to stop when the queue ends.
+
+            Returns:
+                A confirmation, or an error explaining why it could not change.
+            """
+            service, ctx, error = resolve()
+            if error:
+                return error
+            result = await service.set_autoplay(ctx, enabled)
+            return f"Autoplay is now {'on' if enabled else 'off'}." if result.ok else await _failure(ctx, result)
+
+        @tool
         async def set_music_volume(percent: int) -> str:
             """Sets the music volume.
 
@@ -496,7 +515,7 @@ class MusicTools:
         # (and its tool calls are cut off after 10 seconds, too short for a download).
         action_tools = (
             play_music, skip_music, pause_music, resume_music,
-            stop_music, set_music_loop_mode, set_music_shuffle,
+            stop_music, set_music_loop_mode, set_music_shuffle, set_music_autoplay,
             set_music_volume, remove_song_from_queue, clear_music_queue,
             seek_music, set_music_effect, play_previous_song, move_song_in_queue,
             get_current_song_lyrics, play_saved_playlist, add_song_to_playlist,
