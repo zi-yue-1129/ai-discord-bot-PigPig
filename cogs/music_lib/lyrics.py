@@ -37,10 +37,6 @@ _AUTHOR_NOISE = re.compile(r"\s*(?:-\s*topic|vevo|official(?:\s+channel)?|官方
 _LRC_TIME = re.compile(r"\[(\d+):(\d+(?:\.\d+)?)\]")
 # A search result whose length differs more than this from the song is another version.
 _DURATION_TOLERANCE = 15
-# Time stamps belong to one recording. When its length differs from the song's by more than
-# this, the cut (an intro, a longer ending) is probably another one and the lines would be
-# sung earlier or later than shown, so only the plain lyrics are used.
-SYNC_TOLERANCE = 5
 _CACHE_SIZE = 200
 # Searches tried per song before giving up (each is one request to LRCLIB).
 _MAX_QUERIES = 4
@@ -185,19 +181,15 @@ class LyricsClient:
             """Seconds between the entry's length and the song's (``None`` when either is unknown)."""
             return abs(float(item["duration"]) - duration) if duration and item.get("duration") else None
 
-        def trusted_time_stamps(item: Dict[str, Any]) -> bool:
-            gap = length_gap(item)
-            return bool(item.get("syncedLyrics")) and (gap is None or gap <= SYNC_TOLERANCE)
-
-        # Time stamps of the right recording first; an entry of unknown length ranks after the
-        # ones known to fit, then the closest length wins.
+        # Time-stamped lyrics first; an entry of unknown length ranks after the ones known to fit,
+        # then the closest length wins.
         best = min(candidates, key=lambda item: (
-            not trusted_time_stamps(item), length_gap(item) is None, length_gap(item) or 0,
+            not item.get("syncedLyrics"), length_gap(item) is None, length_gap(item) or 0,
         ))
-        parsed = parse_lrc(best.get("syncedLyrics") or "")
-        plain = (best.get("plainLyrics") or "\n".join(line for _, line in parsed)).strip()
+        synced = parse_lrc(best.get("syncedLyrics") or "")
+        plain = (best.get("plainLyrics") or "\n".join(line for _, line in synced)).strip()
         return Lyrics(track=str(best.get("trackName") or ""), artist=str(best.get("artistName") or ""),
-                      plain=plain, synced=parsed if trusted_time_stamps(best) else [])
+                      plain=plain, synced=synced)
 
     async def for_song(self, song: Dict[str, Any]) -> Optional[Lyrics]:
         """Finds the lyrics of a queue entry (cached by video ID).

@@ -264,7 +264,9 @@ async def test_an_entry_of_unknown_length_does_not_beat_one_of_the_right_length(
 
 
 @pytest.mark.asyncio
-async def test_time_stamps_of_a_recording_far_off_in_length_are_not_trusted() -> None:
+async def test_time_stamps_of_a_recording_ten_seconds_off_in_length_are_kept() -> None:
+    # Measured against YouTube's own captions: an entry 10 s shorter than the video was still
+    # within about a second of the real timing, so a length gap alone does not mean a shifted axis.
     client = _client([
         {"trackName": "Song", "artistName": "A", "duration": 150, "plainLyrics": "la la", "syncedLyrics": SYNCED},
     ])
@@ -272,7 +274,7 @@ async def test_time_stamps_of_a_recording_far_off_in_length_are_not_trusted() ->
     found = await client.search({"q": "song"}, duration=160)
 
     assert found.plain == "la la"
-    assert found.synced == []
+    assert len(found.synced) == 3
 
 
 @pytest.mark.asyncio
