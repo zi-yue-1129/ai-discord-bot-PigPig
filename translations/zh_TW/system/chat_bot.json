@@ -33,6 +33,7 @@
             "stop_music": "⏹️ 正在停止音樂...",
             "set_music_loop_mode": "🔁 正在設定循環模式...",
             "set_music_shuffle": "🔀 正在設定隨機播放...",
+            "set_music_autoplay": "🎶 正在設定自動推薦...",
             "set_music_volume": "🔊 正在調整音量...",
             "remove_song_from_queue": "🗑️ 正在移除歌曲...",
             "clear_music_queue": "🧹 正在清空待播清單...",
