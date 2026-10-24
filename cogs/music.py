@@ -38,6 +38,8 @@ MAX_CONSECUTIVE_FAILURES = 3
 PAUSED_DISCONNECT_SECONDS = 300
 # How long the bot waits in a voice channel nobody is in before it leaves and removes the panel.
 EMPTY_CHANNEL_DISCONNECT_SECONDS = 60
+# How long the player loop waits for discord.py to bring a dropped voice connection back.
+VOICE_RECONNECT_GRACE_SECONDS = 15
 # How long the "queue finished" message stays before the bot leaves the voice channel.
 QUEUE_END_DISCONNECT_SECONDS = 10
 
@@ -1601,8 +1603,13 @@ class YTMusic(commands.Cog):
         while True:
             voice_client = self.get_voice_client(guild_id)
             if not voice_client or not voice_client.is_connected():
-                logger.warning(f"[{guild_id}] Player loop exiting: voice client disconnected.")
-                return
+                # Discord drops the voice connection now and then and discord.py brings it
+                # back within seconds; the song carries on from where it stopped.
+                if not await self._wait_for_voice_reconnect(guild_id):
+                    logger.warning(f"[{guild_id}] Player loop exiting: voice client disconnected.")
+                    return
+                last_tick = self._clock()
+                continue
 
             now = self._clock()
             if voice_client.is_paused():
@@ -1628,6 +1635,24 @@ class YTMusic(commands.Cog):
             await self._handle_after_play(ctx, song)
         else:
             logger.info(f"[{guild_id}] Player loop for '{song['title']}' exiting without action. (Song might have been skipped).")
+
+    async def _wait_for_voice_reconnect(self, guild_id: int) -> bool:
+        """Waits for a dropped voice connection to come back.
+
+        Args:
+            guild_id: The guild whose voice connection dropped.
+
+        Returns:
+            True when the bot is connected again within ``VOICE_RECONNECT_GRACE_SECONDS``;
+            False when it is still gone after that (kicked, or the channel was deleted).
+        """
+        for _ in range(VOICE_RECONNECT_GRACE_SECONDS):
+            await asyncio.sleep(1)
+            voice_client = self.get_voice_client(guild_id)
+            if voice_client and voice_client.is_connected():
+                logger.info(f"[{guild_id}] Voice connection is back; the player loop carries on.")
+                return True
+        return False
 
     async def _resume_dropped_stream(self, ctx: PlaybackContext, song: dict, played: float) -> bool:
         """Continues a streamed song from its downloaded file when the stream ended early.
