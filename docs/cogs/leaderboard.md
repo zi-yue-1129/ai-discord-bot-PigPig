@@ -12,10 +12,10 @@ Rankings only list people who are still in the server; bots and hidden members a
 |---|---|
 | `/leaderboard top [period] [kind]` | Top 10 by messages this week (default), this month or all time, by current daily streak, or by game points (see [Games](games.md)). Shows your own place when you are outside the top 10 |
 | `/leaderboard optout hide` | `True` hides you from leaderboards, weekly recaps and achievement announcements; `False` shows you again |
-| `/profile [user]` | Activity card (messages, active hours, channels, words, emojis), all-time rank and badges |
+| `/profile [user]` | Activity card (messages, active hours, public channels), all-time rank and badges |
 | `/achievements [user]` | Every achievement, unlocked (with the date) or locked, and what it takes |
 
-A hidden member's profile and achievements are only shown to themselves.
+A hidden member's profile and achievements are only shown to themselves, privately. Words and emojis are not on the card: the all-time counts do not record which channel they came from, so they could reveal what was said in private channels.
 
 Weeks start on Monday and months on the 1st, in the server's time zone (`/community timezone`). Week and month counts come from the dashboard's `message_events`; all-time counts and streaks from `user_stats`. A streak counts only while it is alive (a message today or yesterday).
 

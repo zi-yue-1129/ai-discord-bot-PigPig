@@ -84,6 +84,9 @@ CREATE TABLE IF NOT EXISTS birthday_roles (
 
 # Columns added after a table first shipped: (table, column, definition).
 _ADDED_COLUMNS = [
+    # 0 for entries written before the bot skipped members who already had the role: those
+    # members may have had it all along, so it is not taken back from them.
+    ("birthday_roles", "given_by_bot", "INTEGER NOT NULL DEFAULT 0"),
     ("guild_settings", "achievement_mode", "TEXT NOT NULL DEFAULT 'off'"),
     ("guild_settings", "weekly_enabled", "INTEGER NOT NULL DEFAULT 0"),
     ("guild_settings", "weekly_channel_id", "INTEGER"),
@@ -240,6 +243,14 @@ class CommunityStore:
             ).fetchall()
 
     # ------------------------------------------------------------ job runs
+    def has_run(self, guild_id: int, job: str, period: str) -> bool:
+        """Whether a job was already marked done for a period (see ``claim_run``)."""
+        with self._session() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM job_runs WHERE guild_id = ? AND job = ? AND period = ?", (guild_id, job, period)
+            ).fetchone()
+            return row is not None
+
     def claim_run(self, guild_id: int, job: str, period: str) -> bool:
         """Marks a job as done for a period; returns False when it already was (so it runs once).
 
@@ -352,16 +363,21 @@ class CommunityStore:
         """Remembers to take a birthday role back at ``remove_at`` (UNIX time)."""
         with self._session() as connection:
             connection.execute(
-                "INSERT OR REPLACE INTO birthday_roles (guild_id, user_id, role_id, remove_at) VALUES (?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO birthday_roles (guild_id, user_id, role_id, remove_at, given_by_bot) VALUES (?, ?, ?, ?, 1)",
                 (guild_id, user_id, role_id, remove_at),
             )
 
-    def due_birthday_roles(self, now: float) -> List[Tuple[int, int, int]]:
-        """Returns ``(guild_id, user_id, role_id)`` for birthday roles that should be taken back."""
+    def due_birthday_roles(self, now: float) -> List[Tuple[int, int, int, bool]]:
+        """Returns ``(guild_id, user_id, role_id, given_by_bot)`` for birthday roles that should be taken back.
+
+        ``given_by_bot`` is False for entries from before the bot checked whether the member
+        already had the role; those are dropped without taking the role away.
+        """
         with self._session() as connection:
-            return connection.execute(
-                "SELECT guild_id, user_id, role_id FROM birthday_roles WHERE remove_at <= ?", (now,)
+            rows = connection.execute(
+                "SELECT guild_id, user_id, role_id, given_by_bot FROM birthday_roles WHERE remove_at <= ?", (now,)
             ).fetchall()
+        return [(guild_id, user_id, role_id, bool(given)) for guild_id, user_id, role_id, given in rows]
 
     def forget_birthday_role(self, guild_id: int, user_id: int, role_id: int) -> None:
         """Drops a birthday role entry once it has been taken back (or cannot be)."""

@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 import discord
 
 from addons.logging import get_logger
-from cogs.memory.db.stats_storage import week_start
+from cogs.memory.db.stats_storage import MAX_WORD_CHARS, week_start
 
 from .limits import CommunityLimits
 
@@ -27,6 +27,8 @@ TOP_TALKERS = 3
 TOP_EMOJIS = 5
 TOP_WORDS = 5
 QUOTE_CHARS = 200
+# Discord refuses an embed field value longer than this.
+FIELD_CHARS = 1024
 # A song of the week needs this many plays and fewer than half of them skipped.
 MIN_SONG_PLAYS = 2
 # Rotating titles, in the order shown.
@@ -82,6 +84,30 @@ def _visible(guild: Any, rows: Sequence[Tuple[Any, int]], hidden: Set[int], limi
     return found
 
 
+def is_public(guild: Any, channel: Any) -> bool:
+    """Whether every member (the @everyone role) can see ``channel`` and read its history."""
+    try:
+        permissions = channel.permissions_for(guild.default_role)
+    except (AttributeError, TypeError, discord.ClientException):
+        return False  # e.g. a thread whose parent channel is not cached: left out, never leaked
+    return bool(permissions.view_channel and permissions.read_message_history)
+
+
+def public_channel_ids(guild: Any) -> List[str]:
+    """The ids of the channels and (public) threads every member can read."""
+    found = [c for c in getattr(guild, "channels", []) if is_public(guild, c)]
+    found += [
+        t for t in getattr(guild, "threads", [])
+        if getattr(t, "type", None) != discord.ChannelType.private_thread and is_public(guild, t)
+    ]
+    return [str(c.id) for c in found]
+
+
+def _field(text: str) -> str:
+    """Cuts an embed field value to what Discord accepts."""
+    return text if len(text) <= FIELD_CHARS else text[: FIELD_CHARS - 1] + "…"
+
+
 def _parse_time(value: Any) -> Optional[datetime]:
     if not value:
         return None
@@ -124,7 +150,7 @@ class RecapBuilder:
         recap.talkers = _visible(guild, per_user, hidden, TOP_TALKERS)
         for channel_id, count in await collector.message_counts_by_channel(gid, since, until):
             channel = guild.get_channel(int(channel_id)) if str(channel_id).isdigit() else None
-            if channel is not None:
+            if channel is not None and is_public(guild, channel):
                 recap.channels.append((channel, count))
             if len(recap.channels) >= TOP_CHANNELS:
                 break
@@ -137,8 +163,12 @@ class RecapBuilder:
 
         storage = self._stats_storage()
         if storage is not None:
-            recap.emojis = await storage.get_weekly_terms(gid, recap.week, "emoji", TOP_EMOJIS)
-            recap.words = await storage.get_weekly_terms(gid, recap.week, "word", TOP_WORDS)
+            # Only what was said where everyone can read it goes into a public post.
+            public = public_channel_ids(guild)
+            recap.emojis = await storage.get_weekly_terms(gid, recap.week, "emoji", TOP_EMOJIS, public)
+            # Words counted before the length cap existed are skipped here too.
+            words = await storage.get_weekly_terms(gid, recap.week, "word", TOP_WORDS * 4, public)
+            recap.words = [(w, n) for w, n in words if len(w) <= MAX_WORD_CHARS][:TOP_WORDS]
             funny = _visible(guild, await storage.reactions_by_author(gid, since, until), hidden, 1)
             if funny:
                 recap.titles["funny"] = funny[0]
@@ -157,11 +187,13 @@ class RecapBuilder:
         return recap
 
     async def _quote(self, guild: Any, storage: Any, since: float, until: float, hidden: Set[int]) -> Optional[Dict[str, Any]]:
-        """The most reacted message of the week that is still there and was written by a visible member."""
+        """The most reacted message of the week that is still there, in a channel everyone can read, by a visible member."""
         for row in await storage.get_top_reacted_messages(str(guild.id), since, until, 10):
             author = _visible(guild, [(row["author_id"], row["count"])], hidden)
-            channel = guild.get_channel(int(row["channel_id"])) if str(row["channel_id"]).isdigit() else None
-            if not author or channel is None:
+            lookup = getattr(guild, "get_channel_or_thread", None) or guild.get_channel
+            channel = lookup(int(row["channel_id"])) if str(row["channel_id"]).isdigit() else None
+            # The bot can read private channels; their messages must not end up in a public post.
+            if not author or channel is None or not is_public(guild, channel):
                 continue
             try:
                 message = await channel.fetch_message(int(row["message_id"]))
@@ -203,33 +235,33 @@ def format_recap(recap: Recap, t: Callable[..., str], title_name: Callable[[str]
         trend = t("weekly_trend", change=f"{change:+d}%", previous=f"{recap.previous_total:,}")
     else:
         trend = ""
-    embed.add_field(name=t("weekly_messages"), value=f"**{recap.total:,}** {trend}".strip(), inline=False)
+    embed.add_field(name=t("weekly_messages"), value=_field(f"**{recap.total:,}** {trend}".strip()), inline=False)
     if recap.channels:
-        embed.add_field(name=t("weekly_channels"), value="\n".join(f"{c.mention} · {n:,}" for c, n in recap.channels), inline=True)
+        embed.add_field(name=t("weekly_channels"), value=_field("\n".join(f"{c.mention} · {n:,}" for c, n in recap.channels)), inline=True)
     if recap.talkers:
-        embed.add_field(name=t("weekly_talkers"), value="\n".join(f"{m.mention} · {n:,}" for m, n in recap.talkers), inline=True)
+        embed.add_field(name=t("weekly_talkers"), value=_field("\n".join(f"{m.mention} · {n:,}" for m, n in recap.talkers)), inline=True)
     if recap.emojis:
-        embed.add_field(name=t("weekly_emojis"), value=" ".join(f"{e}×{n}" for e, n in recap.emojis), inline=False)
+        embed.add_field(name=t("weekly_emojis"), value=_field(" ".join(f"{e}×{n}" for e, n in recap.emojis)), inline=False)
     if recap.words:
-        embed.add_field(name=t("weekly_words"), value="、".join(w for w, _ in recap.words), inline=False)
+        embed.add_field(name=t("weekly_words"), value=_field("、".join(w for w, _ in recap.words)), inline=False)
     if recap.quote:
         quote = recap.quote
         embed.add_field(
             name=t("weekly_quote", count=quote["count"]),
-            value=f"> {quote['content']}\n— {quote['member'].mention} · [{t('weekly_jump')}]({quote['url']})",
+            value=_field(f"> {quote['content']}\n— {quote['member'].mention} · [{t('weekly_jump')}]({quote['url']})"),
             inline=False,
         )
     if recap.song:
         video_id, title, plays = recap.song
         embed.add_field(
-            name=t("weekly_song"), value=f"[{title or video_id}](https://www.youtube.com/watch?v={video_id}) · {t('weekly_plays', count=plays)}", inline=False
+            name=t("weekly_song"), value=_field(f"[{title or video_id}](https://www.youtube.com/watch?v={video_id}) · {t('weekly_plays', count=plays)}"), inline=False
         )
     if recap.titles:
         lines = [f"{emoji} {title_name(title_id)}：{recap.titles[title_id][0].mention}" for title_id, emoji in TITLES if title_id in recap.titles]
-        embed.add_field(name=t("weekly_titles"), value="\n".join(lines), inline=False)
+        embed.add_field(name=t("weekly_titles"), value=_field("\n".join(lines)), inline=False)
     if recap.missing:
         lines = [t("weekly_missing_line", name=m.mention, days=days) for m, days in recap.missing]
-        embed.add_field(name=t("weekly_missing"), value="\n".join(lines), inline=False)
+        embed.add_field(name=t("weekly_missing"), value=_field("\n".join(lines)), inline=False)
     return embed
 
 

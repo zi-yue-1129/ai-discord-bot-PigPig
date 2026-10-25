@@ -42,6 +42,10 @@ Feb 29 birthdays and join dates are celebrated on Feb 28 in common years.
 
 A background check runs every 5 minutes. Once the server's local hour reaches the configured hour, today's birthday and anniversary messages are posted, once per day (recorded in `job_runs`, so a restart neither repeats nor loses them). Several people on the same day share one message, naming at most `max_mentions` of them.
 
+A job that fails (Discord error, no channel to post in yet) is retried while it is still due, waiting 5 minutes and then twice as long each time, up to an hour; it is only recorded as done once it succeeds. The wait is kept in memory, so after a restart a failing job is tried once right away.
+
+The birthday role must be one the admin could hand out themselves (Manage Roles and a higher role, or the server owner), the bot must have Manage Roles, and roles with moderator permissions (including mute, deafen and move members) are refused. The role is checked again each time it is given. Members who already had the role keep it after their birthday.
+
 ## Weekly recap
 
 Once a week, at the configured day and hour, one embed sums up the week (Monday 00:00 to now, server time):
@@ -54,6 +58,8 @@ Once a week, at the configured day and hour, one embed sums up the week (Monday 
 - **Rotating titles**: 🎤 本週話王 (most messages), 🌙 夜貓王 (most messages between 0:00 and 4:59), 😂 笑點製造機 (most reactions received), 🎧 本週 DJ (most songs requested). Titles move to the new holders each week and show on `/profile`
 - **Missing in action**: up to 3 former regulars (`missing_min_messages`) who have been silent for `missing_after_days`
 - An AI-written news paragraph on top, in the server persona; the plain numbers are posted when the model is unavailable
+
+Only channels everyone can read (`@everyone` can view the channel and read its history) count toward the busiest channels, hot words, top emojis and the quote of the week; private channels never show up in the recap. Threads count when they are public and in the bot's cache: an archived thread is left out (its words and quotes are dropped, never leaked).
 
 Members who opted out with `/leaderboard optout` are never named, quoted or given a title. Weeks with fewer than `min_messages` messages are skipped. If the bot was down at the scheduled time, the recap is still posted within 24 hours, once (`job_runs`).
 
