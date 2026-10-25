@@ -101,17 +101,16 @@ def test_the_opt_out_list_fails_closed() -> None:
     assert _is_hidden(runtime, GUILD_ID, str(AUTHOR_ID)) is True
 
 
-def test_without_the_leaderboard_cog_the_stored_opt_outs_are_read(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_without_the_leaderboard_cog_the_stored_opt_outs_are_read(tmp_path: Any) -> None:
     from cogs.community_lib.store import CommunityStore
     from llm.tools.user_stats import _is_hidden
 
-    path = tmp_path / "community.db"
+    path = str(tmp_path / "community.db")
     CommunityStore(path).set_optout(GUILD_ID, HIDDEN_ID, True)
-    monkeypatch.setattr("cogs.community.COMMUNITY_DB_PATH", str(path))
     runtime = SimpleNamespace(bot=SimpleNamespace(get_cog=lambda name: None))
 
-    assert _is_hidden(runtime, GUILD_ID, str(HIDDEN_ID)) is True
-    assert _is_hidden(runtime, GUILD_ID, str(AUTHOR_ID)) is False
+    assert _is_hidden(runtime, GUILD_ID, str(HIDDEN_ID), db_path=path) is True
+    assert _is_hidden(runtime, GUILD_ID, str(AUTHOR_ID), db_path=path) is False
 
 
 @pytest.mark.asyncio
