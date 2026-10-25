@@ -13,5 +13,21 @@
     "invalid_position": "キューのその位置に曲はありません。",
     "playback_not_started": "曲は追加されましたが、再生を開始できませんでした。",
     "already_playing": "その曲はすでに再生中のため、重複して追加しませんでした。",
-    "not_in_queue": "その曲はもうキューにありません。"
+    "not_in_queue": "その曲はもうキューにありません。",
+    "dj_only": "このサーバーでは DJ だけがこの操作をできます。",
+    "not_your_song": "他の人がリクエストした曲を削除できるのは DJ だけです。",
+    "cannot_seek_live": "ライブ配信は早送りや巻き戻しができません。",
+    "invalid_seek": "曲の長さを超えています。",
+    "invalid_filter": "そのエフェクトはありません。",
+    "no_history": "まだ再生した曲がありません。",
+    "nothing_to_import": "再生できる曲がありません。",
+    "playlist_not_found": "そのプレイリストは見つかりません。",
+    "playlist_exists": "同じ名前のプレイリストがすでにあります。",
+    "playlist_too_many": "プレイリストの数が上限に達しました。",
+    "playlist_full": "プレイリストがいっぱいです。",
+    "playlist_invalid_name": "プレイリスト名は 1〜50 文字にしてください。",
+    "playlist_invalid_position": "その位置に曲はありません。",
+    "playlist_no_permission": "サーバーのプレイリストを変更できるのは管理者と DJ だけです。",
+    "playlist_invalid_recipient": "自分やボットには共有できません。",
+    "playlist_empty": "そのプレイリストは空です。"
 }

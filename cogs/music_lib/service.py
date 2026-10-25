@@ -9,6 +9,7 @@ player (queueing, pausing, skipping, ...) therefore lives here and only needs a
 from __future__ import annotations
 
 import asyncio
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -18,6 +19,7 @@ from addons.logging import get_logger
 from addons.settings import MusicAISettings, StreamingSettings, music_config
 
 from .context import PlaybackContext, user_shares_voice_channel
+from .filters import is_known as is_known_filter
 from .sources import classify_url, extract_youtube_id, fetch_spotify_search_query
 from .queue_manager import PlayMode
 
@@ -41,7 +43,26 @@ FAILURE_REASONS = (
     "playback_not_started",
     "already_playing",
     "not_in_queue",
+    "dj_only",
+    "not_your_song",
+    "cannot_seek_live",
+    "invalid_seek",
+    "invalid_filter",
+    "no_history",
+    "nothing_to_import",
+    "playlist_not_found",
+    "playlist_exists",
+    "playlist_too_many",
+    "playlist_full",
+    "playlist_invalid_name",
+    "playlist_invalid_position",
+    "playlist_no_permission",
+    "playlist_invalid_recipient",
+    "playlist_empty",
 )
+
+# Songs kept in a guild's history (the previous button and /music history).
+HISTORY_SIZE = 25
 
 # How long the bot stays in the channel after a request that could not be served.
 FAILED_PLAY_DISCONNECT_SECONDS = 60
@@ -117,13 +138,44 @@ class MusicService:
         """Returns the guild's control view, if one is showing."""
         return self._cog.ui_manager.get_current_view(guild_id)
 
-    def _check_control(self, ctx: PlaybackContext, *, require_connection: bool = True) -> Optional[ActionResult]:
+    @staticmethod
+    def listeners(voice_client: Any) -> List[Any]:
+        """Returns the people (not bots) in the voice channel the bot is in."""
+        channel = getattr(voice_client, "channel", None)
+        return [member for member in getattr(channel, "members", None) or [] if not getattr(member, "bot", False)]
+
+    def is_dj(self, ctx: PlaybackContext) -> bool:
+        """Tells whether ``ctx.user`` may control the player freely.
+
+        Without a DJ role everyone may. With one, its members may, as well as server
+        managers and whoever is alone with the bot (nobody else would be bothered).
+
+        Args:
+            ctx: The playback context.
+        """
+        dj_role_id = self._cog.store.get_settings(ctx.guild.id).dj_role_id
+        if dj_role_id is None:
+            return True
+        user = ctx.user
+        permissions = getattr(user, "guild_permissions", None)
+        if permissions is not None and (getattr(permissions, "administrator", False) or getattr(permissions, "manage_guild", False)):
+            return True
+        if any(getattr(role, "id", None) == dj_role_id for role in getattr(user, "roles", None) or ()):
+            return True
+        others = [member for member in self.listeners(ctx.guild.voice_client) if member.id != user.id]
+        return not others and ctx.guild.voice_client is not None
+
+    def check_control(
+        self, ctx: PlaybackContext, *, require_connection: bool = True, permission: str = "dj"
+    ) -> Optional[ActionResult]:
         """Checks that ``ctx.user`` may control the player.
 
         Args:
             ctx: The playback context.
             require_connection: Whether a missing voice connection is a failure
                 (``True``) or means there is nothing to protect (``False``).
+            permission: ``"dj"`` for changes that affect everyone (see ``is_dj``) or
+                ``"listener"`` when sharing the bot's voice channel is enough.
 
         Returns:
             A failed result when control is not allowed, otherwise ``None``.
@@ -132,14 +184,17 @@ class MusicService:
         if voice_client is None:
             if require_connection:
                 return _fail("nothing_playing", "The bot is not connected to a voice channel.")
-            return None
-        if not user_shares_voice_channel(ctx.user, voice_client):
+        elif not user_shares_voice_channel(ctx.user, voice_client):
             return _fail(
                 "not_in_bot_channel",
                 f"Nothing was changed: the requester is not in the voice channel '{_channel_name(voice_client.channel)}' "
                 "where the bot is playing.",
             )
+        if permission == "dj" and not self.is_dj(ctx):
+            return _fail("dj_only", "Nothing was changed: only DJs may do this on this server.")
         return None
+
+    _check_control = check_control
 
     async def _ensure_voice(self, ctx: PlaybackContext) -> Optional[ActionResult]:
         """Joins the user's voice channel when needed and checks they share it.
@@ -420,7 +475,7 @@ class MusicService:
             ctx: The playback context.
             refresh_buttons: Whether to refresh the player buttons afterwards.
         """
-        denied = self._check_control(ctx)
+        denied = self._check_control(ctx, permission="listener")
         if denied:
             return denied
         voice_client = ctx.guild.voice_client
@@ -429,6 +484,9 @@ class MusicService:
 
         guild_id = ctx.guild.id
         state = self._cog.state_manager.get_state(guild_id)
+        vote = self._vote_skip(ctx, state)
+        if vote is not None:
+            return vote
         skipped = state.current_song["title"] if state.current_song else None
         queued = self.queue_titles(guild_id)
         upcoming = queued[0] if queued else None
@@ -445,6 +503,29 @@ class MusicService:
             asyncio.create_task(self._cog._trigger_autoplay(ctx, guild_id))
         more_coming = self._cog.queue_manager.has_playlist_songs(guild_id) or state.autoplay
         return ActionResult(ok=True, detail="Skipped.", data={"skipped": skipped, "next": upcoming, "more_coming": more_coming})
+
+    def _vote_skip(self, ctx: PlaybackContext, state: Any) -> Optional[ActionResult]:
+        """Counts a skip vote from someone who may not skip on their own.
+
+        DJs and whoever requested the current song skip right away.
+
+        Returns:
+            The vote's result while too few listeners voted, or ``None`` to skip now.
+        """
+        song = state.current_song or {}
+        if self.is_dj(ctx) or song.get("added_by") == ctx.user.id:
+            return None
+        state.skip_votes.add(ctx.user.id)
+        listener_ids = {member.id for member in self.listeners(ctx.guild.voice_client)}
+        votes = len(state.skip_votes & listener_ids) if listener_ids else len(state.skip_votes)
+        ratio = self._cog.store.get_settings(ctx.guild.id).vote_ratio
+        required = max(1, math.ceil(len(listener_ids) * ratio))
+        if votes >= required:
+            return None
+        return ActionResult(
+            ok=True, reason="voted", detail=f"Vote counted ({votes}/{required}); the song plays on until enough listeners vote.",
+            data={"voted": True, "votes": votes, "required": required, "title": song.get("title")},
+        )
 
     def _record_quick_skip(self, guild_id: int, state: Any) -> None:
         """Counts a skipped recommendation against its author when it was skipped right away."""
@@ -533,6 +614,26 @@ class MusicService:
             await view.update_button_state()
         return ActionResult(ok=True, detail=f"Shuffle {'on' if enabled else 'off'}.", data={"shuffle": enabled})
 
+    async def set_autoplay(self, ctx: PlaybackContext, enabled: bool) -> ActionResult:
+        """Turns autoplay (the bot queues recommended songs when the queue runs out) on or off.
+
+        This is separate from the loop mode, which only repeats songs already queued.
+
+        Args:
+            ctx: The playback context.
+            enabled: Whether recommendations are wanted.
+        """
+        denied = self._check_control(ctx, require_connection=False)
+        if denied:
+            return denied
+        self._cog.state_manager.update_state(ctx.guild.id, autoplay=enabled)
+        view = self._refresh_buttons(ctx.guild.id)
+        if view:
+            await view.update_button_state()
+        if enabled:
+            self._cog.start_autoplay_if_needed(ctx, ctx.guild.id)
+        return ActionResult(ok=True, detail=f"Autoplay {'on' if enabled else 'off'}.", data={"autoplay": enabled})
+
     async def set_volume(self, ctx: PlaybackContext, percent: int) -> ActionResult:
         """Sets the playback volume of the guild.
 
@@ -546,7 +647,8 @@ class MusicService:
         if not 0 <= percent <= 100:
             return _fail("invalid_volume", "Volume must be between 0 and 100.")
         volume = percent / 100
-        self._cog.state_manager.update_state(ctx.guild.id, volume=volume)
+        # A volume chosen before the first song is kept instead of the server's default.
+        self._cog.state_manager.update_state(ctx.guild.id, volume=volume, session_started=True)
         source = getattr(ctx.guild.voice_client, "source", None)
         if source is not None and hasattr(source, "volume"):
             source.volume = volume
@@ -571,10 +673,13 @@ class MusicService:
             ctx: The playback context.
             position: One-based position in the queue (1 is the next song).
         """
-        denied = self._check_control(ctx, require_connection=False)
+        denied = self._check_control(ctx, require_connection=False, permission="listener")
         if denied:
             return denied
         guild_id = ctx.guild.id
+        snapshot = self._cog.queue_manager.get_queue_snapshot(guild_id)
+        if 1 <= position <= len(snapshot) and snapshot[position - 1].get("added_by") != ctx.user.id and not self.is_dj(ctx):
+            return _fail("not_your_song", "Only DJs may remove songs that someone else requested.")
         removed = self._cog.queue_manager.remove_at(guild_id, position - 1) if position >= 1 else None
         if removed is None:
             size = len(self._cog.queue_manager.get_queue_snapshot(guild_id))
@@ -619,7 +724,7 @@ class MusicService:
         Returns:
             The outcome; on success ``data`` holds the song's title.
         """
-        denied = self._check_control(ctx, require_connection=False)
+        denied = self._check_control(ctx, require_connection=False, permission="listener")
         if denied:
             return denied
         index = self._queued_index(ctx.guild.id, video_id)
@@ -640,6 +745,205 @@ class MusicService:
         await self._cog.prefetcher.cancel(guild_id, keep_current=True)
         await self._discard_files(guild_id, removed)
         return ActionResult(ok=True, detail="Queue cleared.", data={"removed": len(removed)})
+
+    # ------------------------------------------------------- position & effects
+    def _playing_song(self, ctx: PlaybackContext) -> Optional[Dict[str, Any]]:
+        """Returns the song that is playing or paused, or ``None``."""
+        voice_client = ctx.guild.voice_client
+        if voice_client is None or not (voice_client.is_playing() or voice_client.is_paused()):
+            return None
+        return self._cog.state_manager.get_state(ctx.guild.id).current_song
+
+    async def seek(self, ctx: PlaybackContext, seconds: float, *, relative: bool = False) -> ActionResult:
+        """Jumps to a point of the current song.
+
+        Args:
+            ctx: The playback context.
+            seconds: The target in seconds, or the jump (negative goes back) when ``relative``.
+            relative: Whether ``seconds`` is counted from the current position.
+
+        Returns:
+            The outcome; on success ``data`` holds ``position``, ``duration`` and ``title``.
+        """
+        denied = self._check_control(ctx)
+        if denied:
+            return denied
+        song = self._playing_song(ctx)
+        if song is None:
+            return _fail("nothing_playing", "Nothing is playing.")
+        if song.get("is_live"):
+            return _fail("cannot_seek_live", "A live stream cannot be rewound or fast-forwarded.")
+        state = self._cog.state_manager.get_state(ctx.guild.id)
+        duration = float(song.get("duration") or 0)
+        target = max(0.0, (state.position + seconds) if relative else float(seconds))
+        if duration and target >= duration:
+            return _fail("invalid_seek", f"The song is only {int(duration)} seconds long.")
+        if not await self._cog.restart_current(ctx.guild.id, target):
+            return _fail("nothing_playing", "Nothing is playing.")
+        return ActionResult(ok=True, detail=f"Jumped to {int(target)} s.",
+                            data={"position": target, "duration": duration, "title": song.get("title")})
+
+    async def set_filter(self, ctx: PlaybackContext, name: str) -> ActionResult:
+        """Applies an audio effect to the current song and the ones after it.
+
+        Args:
+            ctx: The playback context.
+            name: A preset name from filters.py (``"off"`` removes the effect).
+        """
+        denied = self._check_control(ctx, require_connection=False)
+        if denied:
+            return denied
+        if not is_known_filter(name):
+            return _fail("invalid_filter", f"Unknown effect {name!r}.")
+        state = self._cog.state_manager.get_state(ctx.guild.id)
+        state.audio_filter = name
+        if self._playing_song(ctx) is not None:
+            await self._cog.restart_current(ctx.guild.id, state.position)
+        view = self._refresh_buttons(ctx.guild.id)
+        if view:
+            await view.update_button_state()
+        return ActionResult(ok=True, detail=f"Effect set to {name}.", data={"filter": name})
+
+    async def previous(self, ctx: PlaybackContext) -> ActionResult:
+        """Goes back to the song played before the current one.
+
+        With no earlier song the current one starts over. The song being left plays
+        again right after the previous one.
+
+        Returns:
+            The outcome; ``data`` holds ``title`` and ``replayed`` (started over instead).
+        """
+        denied = self._check_control(ctx)
+        if denied:
+            return denied
+        song = self._playing_song(ctx)
+        if song is None:
+            return _fail("nothing_playing", "Nothing is playing.")
+        guild_id = ctx.guild.id
+        state = self._cog.state_manager.get_state(guild_id)
+        if not state.history:
+            result = await self.seek(ctx, 0)
+            result.data["replayed"] = True
+            return result
+
+        earlier = dict(state.history.pop())
+        queue_manager = self._cog.queue_manager
+        queue = queue_manager.get_queue(guild_id)
+        # In loop-queue mode the song being left goes back into the loop by itself.
+        if queue_manager.get_play_mode(guild_id) != PlayMode.LOOP_QUEUE:
+            queue._queue.appendleft(song)
+        earlier["added_by"] = earlier.get("added_by", ctx.user.id)
+        queue._queue.appendleft(earlier)
+        state.going_back = True
+        view = self._refresh_buttons(guild_id)
+        if view:
+            view.stop_progress_updater()
+        self._cog.mark_user_stop(guild_id)
+        self._cog.state_manager.update_state(guild_id, force_next=True)
+        ctx.guild.voice_client.stop()
+        return ActionResult(ok=True, detail=f"Went back to '{earlier.get('title')}'.",
+                            data={"title": earlier.get("title"), "replayed": False})
+
+    def history(self, guild_id: int) -> List[Dict[str, Any]]:
+        """Returns the songs played in this session, most recent first."""
+        return list(reversed(self._cog.state_manager.get_state(guild_id).history))
+
+    # -------------------------------------------------------------- queue edits
+    async def move(self, ctx: PlaybackContext, source: int, target: int) -> ActionResult:
+        """Moves a queued song from one one-based position to another."""
+        denied = self._check_control(ctx, require_connection=False)
+        if denied:
+            return denied
+        song = self._cog.queue_manager.move_item(ctx.guild.id, source - 1, target - 1)
+        if song is None:
+            size = len(self._cog.queue_manager.get_queue_snapshot(ctx.guild.id))
+            return _fail("invalid_position", f"Positions must be between 1 and {size}.")
+        self._cog.prefetcher.schedule(ctx)
+        return ActionResult(ok=True, detail="Moved.", data={"title": song["title"], "position": target})
+
+    async def swap(self, ctx: PlaybackContext, first: int, second: int) -> ActionResult:
+        """Swaps two queued songs (one-based positions)."""
+        denied = self._check_control(ctx, require_connection=False)
+        if denied:
+            return denied
+        pair = self._cog.queue_manager.swap_items(ctx.guild.id, first - 1, second - 1)
+        if pair is None:
+            size = len(self._cog.queue_manager.get_queue_snapshot(ctx.guild.id))
+            return _fail("invalid_position", f"Positions must be between 1 and {size}.")
+        self._cog.prefetcher.schedule(ctx)
+        return ActionResult(ok=True, detail="Swapped.",
+                            data={"first": pair[0]["title"], "second": pair[1]["title"]})
+
+    def upcoming_tracks(self, guild_id: int) -> List[Dict[str, Any]]:
+        """Returns the current song, the queue and the buffered playlist songs, in play order."""
+        cog = self._cog
+        current = cog.state_manager.get_state(guild_id).current_song
+        songs = ([current] if current else []) + cog.queue_manager.get_queue_snapshot(guild_id)
+        return songs + list(cog.queue_manager.guild_playlists.get(guild_id, []))
+
+    @staticmethod
+    def song_from_track(track: Dict[str, Any], ctx: PlaybackContext) -> Dict[str, Any]:
+        """Turns a saved track into a queue entry requested by ``ctx.user``.
+
+        The song is downloaded when its turn comes, like a buffered playlist song.
+        """
+        url = track["url"]
+        return {
+            "url": url,
+            "title": track.get("title") or url,
+            "duration": track.get("duration") or 0,
+            "video_id": track.get("video_id") or extract_youtube_id(url) or url,
+            "author": track.get("author") or "",
+            "views": 0,
+            "requester": ctx.user,
+            "user_avatar": ctx.user.display_avatar.url,
+            "file_path": None,
+            "is_live": False,
+            "added_by": ctx.user.id,
+        }
+
+    async def play_tracks(self, ctx: PlaybackContext, tracks: List[Dict[str, Any]], *, shuffle: bool = False) -> ActionResult:
+        """Queues saved tracks (a playlist or an imported queue) and starts playback if idle.
+
+        The first songs go into the queue and the rest wait in the playlist buffer, like
+        a YouTube playlist.
+
+        Args:
+            ctx: The playback context (the user must be in a voice channel).
+            tracks: Saved tracks (``url``, ``title``, ...).
+            shuffle: Whether to shuffle them first.
+
+        Returns:
+            The outcome; ``data`` holds ``added`` (queued now), ``total`` and ``started``.
+        """
+        # Saved lists are user content: only links to the allowed hosts are opened.
+        tracks = [track for track in tracks if classify_query(str(track.get("url") or "")) == "video"]
+        if not tracks:
+            return _fail("nothing_to_import", "There are no songs to play.")
+        problem = await self._ensure_voice(ctx)
+        if problem:
+            return problem
+        await self._keep_connected(ctx)
+        cog = self._cog
+        guild_id = ctx.guild.id
+        songs = [self.song_from_track(track, ctx) for track in tracks]
+        if shuffle or cog.queue_manager.is_shuffle_enabled(guild_id):
+            songs = cog.queue_manager.shuffled(songs)
+        queue_size = cog.queue_manager.get_queue(guild_id).qsize()
+        slots = max(0, min(_PLAYLIST_INITIAL_SLOTS - queue_size, len(songs)))
+        for song in songs[:slots]:
+            await cog.queue_manager.add_to_queue(guild_id, song)
+        if songs[slots:]:
+            cog.queue_manager.extend_playlist(guild_id, songs[slots:])
+
+        data: Dict[str, Any] = {"added": slots, "total": len(songs), "started": False}
+        voice_client = ctx.guild.voice_client
+        if voice_client is not None and cog._is_idle(voice_client):
+            await cog.play_next(ctx)
+            data["started"] = True
+        else:
+            cog.prefetcher.schedule(ctx)
+        return ActionResult(ok=True, detail=f"Queued {len(songs)} songs.", data=data)
 
     # ------------------------------------------------------------------- queries
     def queue_titles(self, guild_id: int) -> List[str]:
@@ -684,4 +988,6 @@ class MusicService:
             "shuffle": cog.queue_manager.is_shuffle_enabled(guild_id),
             "autoplay": state.autoplay,
             "volume": round(state.volume * 100),
+            "position": int(state.position) if state.current_song else 0,
+            "filter": state.audio_filter,
         }

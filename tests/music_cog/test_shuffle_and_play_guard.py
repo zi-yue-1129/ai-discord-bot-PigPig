@@ -137,6 +137,76 @@ async def test_without_shuffle_a_finished_song_still_rejoins_the_end_of_the_queu
 
 
 @pytest.mark.asyncio
+async def test_with_autoplay_a_finished_song_does_not_play_again_before_the_recommendations(
+    cog: YTMusic, ctx: PlaybackContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def no_next(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    async def recommend(_ctx: PlaybackContext, guild_id: int, notify: bool = False) -> int:
+        for index in (2, 3):
+            await cog.queue_manager.add_to_queue(guild_id, make_song(index))
+        return 2
+
+    monkeypatch.setattr(cog, "play_next", no_next)
+    monkeypatch.setattr(cog, "_trigger_autoplay", recommend)
+    cog.queue_manager.set_play_mode(GUILD_ID, PlayMode.LOOP_QUEUE)
+    song = make_song(1)
+    cog.state_manager.update_state(GUILD_ID, current_song=song, autoplay=True)
+
+    await cog._handle_after_play(ctx, song)
+
+    assert _titles(cog) == ["song 2", "song 3", "song 1"]
+
+
+@pytest.mark.asyncio
+async def test_after_a_skip_in_loop_queue_with_autoplay_the_next_song_is_a_recommendation(
+    cog: YTMusic, ctx: PlaybackContext, voice_client: FakeVoiceClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    played: List[str] = []
+
+    async def play(_ctx: PlaybackContext, song: dict, _voice_client: Any) -> None:
+        played.append(song["title"])
+
+    async def recommend(_ctx: PlaybackContext, guild_id: int, notify: bool = False) -> int:
+        for index in (2, 3):
+            await cog.queue_manager.add_to_queue(guild_id, make_song(index) | {"stream_url": "https://stream"})
+        return 2
+
+    monkeypatch.setattr(cog, "_play_song", play)
+    monkeypatch.setattr(cog, "_trigger_autoplay", recommend)
+    cog.queue_manager.set_play_mode(GUILD_ID, PlayMode.LOOP_QUEUE)
+    song = make_song(1) | {"stream_url": "https://stream"}
+    cog.state_manager.update_state(GUILD_ID, current_song=song, autoplay=True, force_next=True)
+
+    await cog._handle_after_play(ctx, song)
+
+    assert played == ["song 2"]
+    assert _titles(cog) == ["song 3", "song 1"]
+
+
+@pytest.mark.asyncio
+async def test_a_finished_song_stays_in_the_loop_when_the_recommendations_fail(
+    cog: YTMusic, ctx: PlaybackContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def no_next(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    async def fail(*args: Any, **kwargs: Any) -> int:
+        raise RuntimeError("recommender is down")
+
+    monkeypatch.setattr(cog, "play_next", no_next)
+    monkeypatch.setattr(cog, "_trigger_autoplay", fail)
+    cog.queue_manager.set_play_mode(GUILD_ID, PlayMode.LOOP_QUEUE)
+    song = make_song(1)
+    cog.state_manager.update_state(GUILD_ID, current_song=song, autoplay=True)
+
+    await cog._handle_after_play(ctx, song)
+
+    assert _titles(cog) == ["song 1"]
+
+
+@pytest.mark.asyncio
 async def test_when_the_round_ends_every_song_comes_back_once_in_a_new_order(
     cog: YTMusic, ctx: PlaybackContext
 ) -> None:

@@ -5,6 +5,7 @@ from ..context import PlaybackContext
 from .progress import ProgressDisplay
 from cogs.language_manager import LanguageManager
 from ..queue_manager import PlayMode
+from ..filters import FILTER_NAMES, get_preset
 from addons.logging import get_logger
 
 log = get_logger(source=__name__, server_id="system")
@@ -12,6 +13,37 @@ log = get_logger(source=__name__, server_id="system")
 
 # Value of the placeholder option shown while the queue is empty (the menu is disabled then).
 _EMPTY_QUEUE_VALUE = "__empty__"
+# Seconds the rewind and fast-forward buttons jump.
+SEEK_STEP_SECONDS = 10
+# Fewest seconds between two edits of the player message made for a new lyrics line (Discord
+# rate-limits message edits, and lines never need to change faster than this).
+LYRICS_EDIT_GAP_SECONDS = 1.0
+_MODE_EMOJIS = {"no_loop": "➡️", "loop_queue": "🔁", "loop_single": "🔂"}
+
+
+class QueueSongActions(discord.ui.View):
+    """What to do with the queued song picked in the player's queue menu (shown only to the picker)."""
+
+    def __init__(self, video_id: str, callback, translate) -> None:
+        super().__init__(timeout=120)
+        self.video_id = video_id
+        self._callback = callback
+        for action, custom_id, emoji, style in (
+            ("play_next", "queue_play_next", "⏭️", discord.ButtonStyle.primary),
+            ("remove", "queue_remove", "🗑️", discord.ButtonStyle.danger),
+        ):
+            button = discord.ui.Button(label=translate("controls", f"{custom_id}_action"), emoji=emoji, style=style,
+                                       custom_id=custom_id)
+            button.callback = self._make_callback(action)
+            self.add_item(button)
+
+    def _make_callback(self, action: str):
+        async def run(interaction: discord.Interaction) -> None:
+            await self._callback(interaction, action, self.video_id)
+            self.stop()
+            if not interaction.response.is_done():
+                await interaction.response.edit_message(content="✅", view=None)
+        return run
 
 
 def set_queue_field(embed: discord.Embed, name: str, text: str) -> None:
@@ -47,9 +79,11 @@ class MusicControlView(discord.ui.View):
     def __init__(self, ctx: PlaybackContext, *,
                 song_info: dict,  # Add song_info
                 previous_callback, toggle_playback_callback, skip_callback, stop_callback,
-                toggle_mode_callback, toggle_shuffle_callback, show_queue_callback, toggle_autoplay_callback,
+                toggle_shuffle_callback, show_queue_callback, toggle_autoplay_callback,
                 get_queue_manager, get_state_manager, get_voice_client, get_lang_manager,
-                get_queue_text=None, get_queue_options=None, queue_select_callback=None):
+                get_queue_text=None, get_queue_options=None, queue_select_callback=None,
+                set_mode_callback=None, set_filter_callback=None, seek_callback=None,
+                toggle_lyrics_callback=None, refresh_lyrics=None, lyrics_line_changed=None):
         super().__init__(timeout=None)
         self.guild = ctx.guild
         self.message = None
@@ -65,7 +99,14 @@ class MusicControlView(discord.ui.View):
         self.toggle_playback_callback = toggle_playback_callback
         self.skip_callback = skip_callback
         self.stop_callback = stop_callback
-        self.toggle_mode_callback = toggle_mode_callback
+        self.set_mode_callback = set_mode_callback
+        self.set_filter_callback = set_filter_callback
+        self.seek_callback = seek_callback
+        self.toggle_lyrics_callback = toggle_lyrics_callback
+        # Updates the synced lyrics field of ``current_embed``; returns whether it is shown.
+        self.refresh_lyrics = refresh_lyrics
+        # Tells whether the sung line differs from the one drawn; ``None`` when lyrics are off.
+        self.lyrics_line_changed = lyrics_line_changed
         self.toggle_shuffle_callback = toggle_shuffle_callback
         self.show_queue_callback = show_queue_callback
         self.toggle_autoplay_callback = toggle_autoplay_callback
@@ -80,20 +121,19 @@ class MusicControlView(discord.ui.View):
         self.queue_select_callback = queue_select_callback
         self._queue_menus: list = []
         if get_queue_options and queue_select_callback:
-            self._queue_menus = [
-                self._add_queue_menu("queue_play_next", "play_next", row=2),
-                self._add_queue_menu("queue_remove", "remove", row=3),
-            ]
+            self._queue_menus = [self._add_queue_menu("queue_song", row=2)]
             self.refresh_queue_menus()
+        self._mode_menu = self._add_mode_menu(row=3) if set_mode_callback else None
+        self._filter_menu = self._add_filter_menu(row=4) if set_filter_callback else None
+        self.refresh_setting_menus()
 
         asyncio.create_task(self.update_button_state(update_message=False))
 
-    def _add_queue_menu(self, custom_id: str, action: str, *, row: int) -> discord.ui.Select:
-        """Adds a menu that applies ``action`` to the queued song the user picks.
+    def _add_queue_menu(self, custom_id: str, *, row: int) -> discord.ui.Select:
+        """Adds the queue menu: the picked song gets a private message to play it next or remove it.
 
         Args:
             custom_id: The menu's ID (its placeholder text is ``<custom_id>_placeholder``).
-            action: ``"play_next"`` or ``"remove"``, passed to the cog's callback.
             row: The row under the buttons.
 
         Returns:
@@ -107,13 +147,58 @@ class MusicControlView(discord.ui.View):
         )
 
         async def choose(interaction: discord.Interaction) -> None:
-            await self.queue_select_callback(interaction, action, menu.values[0])
+            video_id = menu.values[0]
+            label = next((option.label for option in menu.options if option.value == video_id), video_id)
+            actions = QueueSongActions(video_id, self.queue_select_callback, self._translate_music)
+            await interaction.response.send_message(f"🎵 {label}", view=actions, ephemeral=True)
+
+        menu.callback = choose
+        self.add_item(menu)
+        return menu
+
+    def _add_mode_menu(self, *, row: int) -> discord.ui.Select:
+        """Adds the loop mode menu (the current mode is pre-selected)."""
+        menu = discord.ui.Select(custom_id="play_mode", options=[
+            discord.SelectOption(label=self._get_mode_name(mode.value), value=mode.value, emoji=_MODE_EMOJIS[mode.value])
+            for mode in PlayMode
+        ], row=row)
+
+        async def choose(interaction: discord.Interaction) -> None:
+            await self.set_mode_callback(interaction, menu.values[0])
             if not interaction.response.is_done():
                 await interaction.response.defer()
 
         menu.callback = choose
         self.add_item(menu)
         return menu
+
+    def _add_filter_menu(self, *, row: int) -> discord.ui.Select:
+        """Adds the audio effect menu (the current effect is pre-selected)."""
+        menu = discord.ui.Select(custom_id="audio_filter", options=[
+            discord.SelectOption(label=self._translate_music("filters", name), value=name, emoji=get_preset(name).emoji)
+            for name in FILTER_NAMES
+        ], row=row)
+
+        async def choose(interaction: discord.Interaction) -> None:
+            await self.set_filter_callback(interaction, menu.values[0])
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+
+        menu.callback = choose
+        self.add_item(menu)
+        return menu
+
+    def refresh_setting_menus(self) -> None:
+        """Marks the current loop mode and effect in their menus."""
+        guild_id = self.guild.id
+        if self._mode_menu is not None:
+            current = self.get_queue_manager().get_play_mode(guild_id).value
+            for option in self._mode_menu.options:
+                option.default = option.value == current
+        if self._filter_menu is not None:
+            current = self.get_state_manager().get_state(guild_id).audio_filter
+            for option in self._filter_menu.options:
+                option.default = option.value == current
 
     def refresh_queue_menus(self) -> None:
         """Lists the current queue in both menus (disabled while the queue is empty)."""
@@ -198,6 +283,7 @@ class MusicControlView(discord.ui.View):
         queue_manager = self.get_queue_manager()
 
         self.refresh_queue_menus()
+        self.refresh_setting_menus()
 
         # Update button states
         for child in self.children:
@@ -211,15 +297,14 @@ class MusicControlView(discord.ui.View):
                     else:
                         child.emoji = discord.PartialEmoji.from_str('⏯️')
 
-                # Loop mode button
-                elif child.custom_id == "toggle_mode":
-                    mode_emojis = {
-                        "no_loop": '➡️',
-                        "loop_queue": '🔁',
-                        "loop_single": '🔂'
-                    }
-                    current_mode = queue_manager.get_play_mode(guild_id).value
-                    child.emoji = discord.PartialEmoji.from_str(mode_emojis[current_mode])
+                # Lyrics button: lit while the synced lyrics are shown
+                elif child.custom_id == "toggle_lyrics":
+                    show_lyrics = self.get_state_manager().get_state(guild_id).show_lyrics
+                    child.style = discord.ButtonStyle.green if show_lyrics else discord.ButtonStyle.gray
+                    child.disabled = self.toggle_lyrics_callback is None
+
+                elif child.custom_id in ("seek_back", "seek_forward"):
+                    child.disabled = self.seek_callback is None or bool(self.song_info.get('is_live'))
 
                 # Shuffle button
                 elif child.custom_id == "toggle_shuffle":
@@ -314,7 +399,8 @@ class MusicControlView(discord.ui.View):
                         await self.update_button_state()
                         break
 
-                    self.current_position += 1
+                    position = getattr(self.get_state_manager().get_state(self.guild.id), "position", None)
+                    self.current_position = int(position) if isinstance(position, (int, float)) and position else self.current_position + 1
                     if self.current_position > duration:
                         await self.update_button_state()
                         break
@@ -332,13 +418,23 @@ class MusicControlView(discord.ui.View):
                             log.error(f"刷新訊息失敗: {e}")
                             break
 
-                    # Update progress bar every update_interval seconds
-                    if current_time - last_update >= update_interval:
+                    # Update progress bar every update_interval seconds (more often while synced lyrics show)
+                    lyrics_shown = self.get_state_manager().get_state(self.guild.id).show_lyrics
+                    interval = 2 if lyrics_shown else update_interval
+                    # A new sung line is drawn as soon as it starts, not at the next timer tick.
+                    line_changed = (
+                        lyrics_shown and self.lyrics_line_changed is not None
+                        and current_time - last_update >= LYRICS_EDIT_GAP_SECONDS
+                        and self.lyrics_line_changed(self)
+                    )
+                    if current_time - last_update >= interval or line_changed:
                         if self.current_embed and self.message:
                             try:
                                 progress_bar = ProgressDisplay.create_progress_bar(self.current_position, duration)
                                 progress_field_name = self._translate_music("player", "progress")
                                 await self.refresh_queue_field()
+                                if self.refresh_lyrics is not None:
+                                    self.refresh_lyrics(self)
                                 # Find the progress field by name to avoid hardcoded index
                                 for idx, field in enumerate(self.current_embed.fields):
                                     if field.name == progress_field_name or field.name == "🎵 播放進度":
@@ -364,7 +460,8 @@ class MusicControlView(discord.ui.View):
                                 else:
                                     log.error(f"更新進度條位置失敗: {e}")
 
-                    await asyncio.sleep(1)
+                    # Check twice a second while synced lyrics show so a line change is not missed by long.
+                    await asyncio.sleep(0.5 if lyrics_shown else 1)
             finally:
                 self._is_updating = False
                 if hasattr(self, 'update_task'):
@@ -414,51 +511,68 @@ class MusicControlView(discord.ui.View):
         if new_message:
             self.message = new_message
 
-    @discord.ui.button(emoji='⏮️', style=discord.ButtonStyle.gray, custom_id="previous")
+    @discord.ui.button(emoji='⏮️', style=discord.ButtonStyle.gray, custom_id="previous", row=0)
     async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.previous_callback(interaction)
         if not interaction.response.is_done():
             await interaction.response.defer()
 
-    @discord.ui.button(emoji='⏯️', style=discord.ButtonStyle.gray, custom_id="toggle_playback")
+    @discord.ui.button(emoji='⏯️', style=discord.ButtonStyle.gray, custom_id="toggle_playback", row=0)
     async def toggle_playback(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.toggle_playback_callback(interaction)
         if not interaction.response.is_done():
             await interaction.response.defer()
 
-    @discord.ui.button(emoji='⏭️', style=discord.ButtonStyle.gray, custom_id="skip")
+    @discord.ui.button(emoji='⏭️', style=discord.ButtonStyle.gray, custom_id="skip", row=0)
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not interaction.response.is_done():
             await interaction.response.defer()
         await self.skip_callback(interaction)
 
-    @discord.ui.button(emoji='⏹️', style=discord.ButtonStyle.red, custom_id="stop")
+    @discord.ui.button(emoji='⏹️', style=discord.ButtonStyle.red, custom_id="stop", row=0)
     async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.stop_callback(interaction)
         if not interaction.response.is_done():
             await interaction.response.defer()
 
-    @discord.ui.button(emoji='🔄', style=discord.ButtonStyle.gray, custom_id="toggle_mode")
-    async def toggle_mode(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """切換播放模式"""
-        await self.toggle_mode_callback(interaction)
+    @discord.ui.button(emoji='🎤', style=discord.ButtonStyle.gray, custom_id="toggle_lyrics", row=0)
+    async def toggle_lyrics(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Shows or hides the synced lyrics on the player."""
+        if self.toggle_lyrics_callback is not None:
+            await self.toggle_lyrics_callback(interaction)
         if not interaction.response.is_done():
             await interaction.response.defer()
 
-    @discord.ui.button(emoji='🔀', style=discord.ButtonStyle.gray, custom_id="toggle_shuffle")
+    @discord.ui.button(emoji='🔀', style=discord.ButtonStyle.gray, custom_id="toggle_shuffle", row=1)
     async def toggle_shuffle(self, interaction: discord.Interaction, button: discord.ui.Button):
         """切換隨機播放"""
         await self.toggle_shuffle_callback(interaction)
         if not interaction.response.is_done():
             await interaction.response.defer()
 
-    @discord.ui.button(emoji='📜', style=discord.ButtonStyle.gray, custom_id="show_queue")
+    @discord.ui.button(emoji='📜', style=discord.ButtonStyle.gray, custom_id="show_queue", row=1)
     async def show_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.show_queue_callback(interaction)
         if not interaction.response.is_done():
             await interaction.response.defer()
 
-    @discord.ui.button(emoji='🎶', style=discord.ButtonStyle.gray, custom_id="toggle_autoplay")
+    @discord.ui.button(emoji='🎶', style=discord.ButtonStyle.gray, custom_id="toggle_autoplay", row=1)
     async def toggle_autoplay(self, interaction: discord.Interaction, button: discord.ui.Button):
         """切換自動播放"""
         await self.toggle_autoplay_callback(interaction)
+
+    @discord.ui.button(emoji='⏪', style=discord.ButtonStyle.gray, custom_id="seek_back", row=1)
+    async def seek_back(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Rewinds the song."""
+        if self.seek_callback is not None:
+            await self.seek_callback(interaction, -SEEK_STEP_SECONDS)
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+
+    @discord.ui.button(emoji='⏩', style=discord.ButtonStyle.gray, custom_id="seek_forward", row=1)
+    async def seek_forward(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Fast-forwards the song."""
+        if self.seek_callback is not None:
+            await self.seek_callback(interaction, SEEK_STEP_SECONDS)
+        if not interaction.response.is_done():
+            await interaction.response.defer()

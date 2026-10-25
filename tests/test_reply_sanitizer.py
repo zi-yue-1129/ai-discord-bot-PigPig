@@ -120,3 +120,9 @@ def test_gemma_channel_markers_are_removed() -> None:
 
 def test_gemma_channel_markers_are_removed_without_reply_markers() -> None:
     assert sanitize_reply("<|channel>thought\nplan the answer<channel|>哈囉") == "哈囉"
+
+
+def test_an_echoed_speaker_label_with_a_display_name_or_bot_marker_is_removed() -> None:
+    for label in ("BOT 小藍", "愛麗絲 (alice)", "BOT 小藍 (xiaolan)"):
+        raw = f"[{label} | UserID:12 | MessageID:34] <som> 好喔 <eom>"
+        assert sanitize_reply(raw) == "好喔", label

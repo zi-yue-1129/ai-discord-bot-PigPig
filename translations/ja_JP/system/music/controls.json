@@ -22,9 +22,15 @@
     },
     "not_in_channel": "音楽を操作するには、ボットと同じボイスチャンネルに参加している必要があります",
     "no_songs": "❌ 再生できる曲がありません！",
-    "queue_play_next_placeholder": "⏭️ 次に再生する曲を選ぶ",
-    "queue_remove_placeholder": "🗑️ キューから削除する曲を選ぶ",
     "queue_select_empty": "キューは空です",
     "queue_played_next": "{user} が「{title}」を次に再生します",
-    "queue_removed": "{user} が「{title}」をキューから削除しました"
+    "queue_removed": "{user} が「{title}」をキューから削除しました",
+    "queue_song_placeholder": "📜 キューの曲を選択…",
+    "queue_play_next_action": "次に再生",
+    "queue_remove_action": "キューから削除",
+    "replayed": "{user} が最初から再生しました",
+    "rewound": "{user} が {seconds} 秒巻き戻しました（{position}）",
+    "forwarded": "{user} が {seconds} 秒早送りしました（{position}）",
+    "skip_voted": "{user} がスキップに投票しました（{votes}/{required}）",
+    "filter_changed": "{user} がエフェクトを {effect} にしました"
 }

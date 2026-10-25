@@ -8,6 +8,7 @@ channel-level system prompts, and basic message reply functionality.
 """
 
 import asyncio
+import bisect
 from addons.logging import get_logger
 import time
 from typing import Any, List, Optional, Union, Tuple, AsyncIterator, Iterator
@@ -17,6 +18,7 @@ import opencc
 
 from function import func
 from llm.utils.reply_sanitizer import sanitize_reply
+from llm.utils.repetition_guard import MAX_REPLY_CHARS, RepetitionGuard
 
 
 # Constants
@@ -30,6 +32,8 @@ _ALLOWED_MENTIONS = discord.AllowedMentions(
 _UPDATE_INTERVAL = 0.5  # Update message rate limit
 _HARD_LIMIT = 2000  # Hard limit for Discord message length
 _MAX_RETRIES = 3  # Maximum number of retry attempts
+_CUT_NOTICE = '…'  # Appended to a reply that was cut short
+_STREAM_CLOSE_TIMEOUT = 5.0  # Seconds to wait for a cut model stream to close
 
 
 # Logger
@@ -205,6 +209,23 @@ def _get_processing_message(
             f'LanguageManager.translate failed, using default {message_type} message'
         )
         return default_messages.get(message_type, '處理中...')
+
+
+async def _close_model_stream(streamer: AsyncIterator) -> None:
+    """Closes a model stream that is no longer read so the server stops generating.
+
+    Args:
+        streamer: The token stream; plain iterators without ``aclose`` are left alone.
+    """
+    close = getattr(streamer, 'aclose', None)
+    if close is None:
+        return
+    try:
+        await asyncio.wait_for(close(), timeout=_STREAM_CLOSE_TIMEOUT)
+    except Exception:
+        # The reply has already been cut and is sent as is; a stream that will not close
+        # must not lose it, and the surrounding model timeout still ends the generation.
+        _logger.error('Failed to close the model stream after cutting a runaway reply', exc_info=True)
 
 
 async def _process_token_stream(
@@ -489,6 +510,29 @@ async def _process_token_stream(
 
         return display_str
 
+    # Safety gate against a model that never stops: a loop of repeated text or a reply far
+    # longer than any chat message is cut, and the model stream is closed.
+    guard = RepetitionGuard()
+    raw_marks: List[int] = []  # len(message_result) after each text token
+    shown_marks: List[int] = []  # len(display_content) after the same token
+    output_cut = False
+
+    def cut_output_after(raw_keep: int) -> None:
+        """Drops everything the model produced after ``raw_keep`` raw characters.
+
+        The cut falls on the end of the token that contains ``raw_keep``, so the text
+        already shown in Discord is trimmed by whole tokens.
+        """
+        nonlocal message_result, display_content, pending_content, current_block
+        mark = min(bisect.bisect_left(raw_marks, raw_keep), len(raw_marks) - 1)
+        excess = len(display_content) - shown_marks[mark]
+        message_result = message_result[:raw_marks[mark]]
+        display_content = display_content[:shown_marks[mark]]
+        from_pending = min(excess, len(pending_content))
+        pending_content = pending_content[:len(pending_content) - from_pending]
+        from_block = min(excess - from_pending, len(current_block))
+        current_block = current_block[:len(current_block) - from_block]
+
     try:
         # Wrap the async iterator with inactivity timeout
         async def _stream_with_timeout(it, timeout):
@@ -498,8 +542,9 @@ async def _process_token_stream(
                     yield await asyncio.wait_for(it.__anext__(), timeout=timeout)
                 except StopAsyncIteration:
                     break
-        
-        async for token in _stream_with_timeout(streamer, inactivity_timeout):
+
+        timed_stream = _stream_with_timeout(streamer, inactivity_timeout)
+        async for token in timed_stream:
             # The token is actually (token, metadata) if it was from streamer
             # Depending on how the iterator is structured. 
             # Looking at previous code, it seems the streamer yields (token, metadata)
@@ -538,11 +583,32 @@ async def _process_token_stream(
                 
                 # Extract display content (filtered for Discord)
                 display_str = extract_display_content(token_str)
-                
+
                 if display_str:
                     display_content += display_str
                     pending_content += display_str
-                    
+                raw_marks.append(len(message_result))
+                shown_marks.append(len(display_content))
+
+                # Safety gate: stop reading a model that loops or never ends.
+                loop = guard.feed(token_str)
+                if loop is not None:
+                    _logger.warning(
+                        f'Model output is a loop of {loop.period} character(s); cutting the reply '
+                        f'after {loop.keep_length} characters'
+                    )
+                    cut_output_after(loop.keep_length)
+                    output_cut = True
+                    break
+                if len(display_content) > MAX_REPLY_CHARS:
+                    _logger.warning(
+                        f'Model reply exceeds {MAX_REPLY_CHARS} characters; cutting it'
+                    )
+                    cut_output_after(raw_marks[-2] if len(raw_marks) > 1 else 0)
+                    output_cut = True
+                    break
+
+                if display_str:
                     # Update message if enough time has passed
                     if await should_update():
                         await update_message()
@@ -558,6 +624,15 @@ async def _process_token_stream(
             if hasattr(token_obj, "tool_call_chunks") and token_obj.tool_call_chunks:
                 tool_call_chunks.extend(token_obj.tool_call_chunks)
         
+        if output_cut:
+            await timed_stream.aclose()
+            await _close_model_stream(streamer)
+            if display_content.strip():
+                display_content += _CUT_NOTICE
+                pending_content += _CUT_NOTICE
+            if '<som>' in message_result and '<eom>' not in message_result:
+                message_result += '<eom>'
+
         # Execute any captured tool calls
         if tool_call_chunks:
             await _execute_tool_calls(tool_call_chunks)

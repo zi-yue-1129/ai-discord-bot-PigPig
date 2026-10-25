@@ -20,6 +20,7 @@
         "refreshed_ui": "音乐控制界面已更新。",
         "search_results_title": "搜索结果",
         "select_song": "请选择要播放的歌曲。",
-        "song_added": "歌曲已加入队列。"
+        "song_added": "歌曲已加入队列。",
+        "queue_finished_staying": "队列播放完毕（24/7 模式，会留在语音频道）。"
     }
 }

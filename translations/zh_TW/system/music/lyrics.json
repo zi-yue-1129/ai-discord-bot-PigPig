@@ -1,0 +1,8 @@
+{
+    "loading": "正在尋找歌詞…",
+    "not_found": "找不到這首歌的歌詞。",
+    "not_synced": "這首歌的歌詞沒有時間軸，用 /music lyrics 查看完整歌詞。",
+    "disabled": "歌詞功能未開啟。",
+    "source": "歌詞來源：LRCLIB",
+    "show_on_player": "在播放面板同步顯示"
+}

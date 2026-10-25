@@ -1,0 +1,7 @@
+{
+    "description": "エフェクトを適用（nightcore、8D、カラオケ…）",
+    "responses": {
+        "applied": "エフェクトを適用しました：{effect}",
+        "cleared": "エフェクトをオフにしました"
+    }
+}

@@ -114,7 +114,7 @@ async def test_the_cog_restores_the_taste_after_a_restart(
     async def idle() -> None:
         return None
 
-    monkeypatch.setattr(cog.audio_manager, "create_audio_source", lambda song, volume=1.0, start_offset=0.0: "source")
+    monkeypatch.setattr(cog.audio_manager, "create_audio_source", lambda song, volume=1.0, start_offset=0.0, **kwargs: "source")
     monkeypatch.setattr(cog.ui_manager, "update_player_ui", fake_ui, raising=False)
     monkeypatch.setattr(cog, "_player_loop", lambda ctx, song, start_offset=0.0: idle())
     song = make_song(1) | {"author": "Eve - Topic", "added_by": REQUESTER_ID}

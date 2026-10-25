@@ -1,0 +1,7 @@
+{
+    "title": "點歌頻道",
+    "description": "在這個頻道輸入歌名、YouTube／SoundCloud 連結或 Spotify 單曲連結就能點歌。\n請先加入語音頻道，你的訊息會自動刪除，讓頻道保持乾淨。",
+    "footer": "想和豬豬聊天請到其他頻道",
+    "queued": "{user} 點了「{title}」（第 {position} 首）",
+    "playlist_queued": "{user} 加入了 {count} 首歌"
+}

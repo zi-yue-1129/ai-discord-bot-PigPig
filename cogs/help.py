@@ -102,6 +102,12 @@ class HelpCog(commands.Cog):
                     "description",
                     default=cmd.description or self._translate(guild_id, "general", "no_description", default="無描述")
                 )
+                if isinstance(cmd, app_commands.Group):
+                    # A group (e.g. /music) is listed with its subcommands, which are what users type.
+                    command_lines.append(f"`/{command_name}`: {command_desc}")
+                    for sub in cmd.commands:
+                        command_lines.append(f"　`/{command_name} {sub.name}`: {sub.description}")
+                    continue
                 command_lines.append(f"`/{command_name}`: {command_desc}")
 
             if not command_lines:

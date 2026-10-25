@@ -46,3 +46,39 @@ def shorten(text: str, max_width: int) -> str:
         kept.append(char)
         used += width
     return "".join(kept).rstrip() + _ELLIPSIS
+
+
+def format_clock(seconds: float) -> str:
+    """Formats a song position as ``M:SS`` (``H:MM:SS`` from one hour on).
+
+    Args:
+        seconds: Seconds; negative values count as zero.
+
+    Returns:
+        The formatted time.
+    """
+    total = max(0, int(seconds))
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
+
+
+def parse_clock(text: str) -> float:
+    """Reads a time typed by a user: ``90``, ``1:30`` or ``1:02:03``.
+
+    Args:
+        text: The typed time.
+
+    Returns:
+        The time in seconds.
+
+    Raises:
+        ValueError: When the text is not a time.
+    """
+    parts = text.strip().split(":")
+    if not 1 <= len(parts) <= 3 or any(not part.strip().isdigit() for part in parts):
+        raise ValueError(f"Not a time: {text!r}")
+    seconds = 0
+    for part in parts:
+        seconds = seconds * 60 + int(part)
+    return float(seconds)

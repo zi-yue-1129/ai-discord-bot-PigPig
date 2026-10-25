@@ -23,6 +23,7 @@ from music_cog.helpers import (
 from cogs.music import YTMusic
 from cogs.music_lib.context import PlaybackContext
 from cogs.music_lib.state_manager import StateManager
+from cogs.music_lib.music_store import MusicStore
 from cogs.music_lib.taste_store import TasteStore
 from cogs.music_lib.ui_manager import UIManager
 
@@ -76,6 +77,7 @@ def cog(
     music.lang_manager = FakeLangManager()
     # Never touch the real data/music/taste.db from a test.
     music._taste_store = TasteStore(tmp_path / "taste.db")
+    music.store = MusicStore(tmp_path / "music.db")
     return music
 
 

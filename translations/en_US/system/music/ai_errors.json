@@ -13,5 +13,21 @@
     "invalid_position": "There is no song at that position in the queue.",
     "playback_not_started": "The song was queued but playback did not start.",
     "already_playing": "That song is already playing, so it was not queued again.",
-    "not_in_queue": "That song is no longer in the queue."
+    "not_in_queue": "That song is no longer in the queue.",
+    "dj_only": "Only DJs can do that on this server.",
+    "not_your_song": "Only DJs can remove songs someone else requested.",
+    "cannot_seek_live": "A live stream cannot be rewound or fast-forwarded.",
+    "invalid_seek": "That is past the end of the song.",
+    "invalid_filter": "There is no such effect.",
+    "no_history": "No song has been played yet.",
+    "nothing_to_import": "There are no songs to play.",
+    "playlist_not_found": "There is no playlist with that name.",
+    "playlist_exists": "A playlist with that name already exists.",
+    "playlist_too_many": "You have reached the playlist limit.",
+    "playlist_full": "The playlist is full.",
+    "playlist_invalid_name": "Playlist names must be 1 to 50 characters long.",
+    "playlist_invalid_position": "There is no song at that position in the playlist.",
+    "playlist_no_permission": "Only server managers and DJs can change server playlists.",
+    "playlist_invalid_recipient": "You cannot share a playlist with yourself or a bot.",
+    "playlist_empty": "That playlist is empty."
 }

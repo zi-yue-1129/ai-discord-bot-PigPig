@@ -218,6 +218,33 @@ class QueueManager:
         queue._queue.appendleft(song)
         return song
 
+    def move_item(self, guild_id: int, source: int, target: int) -> Optional[Dict[str, Any]]:
+        """Moves the queued song at one zero-based index to another.
+
+        Returns:
+            The moved song, or ``None`` if either index is outside the queue.
+        """
+        queue = self.guild_queues.get(guild_id)
+        if queue is None or not (0 <= source < len(queue._queue) and 0 <= target < len(queue._queue)):
+            return None
+        song = queue._queue[source]
+        del queue._queue[source]
+        queue._queue.insert(target, song)
+        return song
+
+    def swap_items(self, guild_id: int, first: int, second: int) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
+        """Swaps two queued songs by zero-based index.
+
+        Returns:
+            The two songs (in their old order), or ``None`` if an index is outside the queue.
+        """
+        queue = self.guild_queues.get(guild_id)
+        if queue is None or not (0 <= first < len(queue._queue) and 0 <= second < len(queue._queue)):
+            return None
+        items = queue._queue
+        items[first], items[second] = items[second], items[first]
+        return items[second], items[first]
+
     def is_queue_empty(self, guild_id: int) -> bool:
         """Check if the queue is empty."""
         q = self.guild_queues.get(guild_id)

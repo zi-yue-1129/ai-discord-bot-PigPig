@@ -172,6 +172,8 @@ class LLMConfig:
         # Ollama server URL (defaults to localhost:11434)
         self.ollama_url: Optional[str] = self.data.get("ollama_url", "http://localhost:11434")
         self.llm_call_timeout: float = float(self.data.get("llm_call_timeout", 60))
+        # Most tokens one chat model call may generate (reasoning included); 0 means no cap.
+        self.max_output_tokens: int = int(self.data.get("max_output_tokens", 8192))
         self.reasoning_optimization_prompt: str = self.data.get(
             "reasoning_optimization_prompt", 
             "\n\n[CRITICAL SYSTEM RULE]: Think efficiently and use minimal reasoning. Strict limit: keep any internal reasoning or <think> process extremely brief (under 3 sentences). Output final results and call tools immediately without extensive reflection."
@@ -281,6 +283,39 @@ class SourcesSettings:
         object.__setattr__(self, "allowed_hosts", tuple(str(host).lower() for host in self.allowed_hosts))
 
 
+@dataclass(frozen=True)
+class LibrarySettings:
+    """Guild music settings and saved playlists (``library:`` block of music.yaml).
+
+    Attributes:
+        database_path: SQLite file keeping each guild's music settings and the saved playlists.
+        max_playlists: How many playlists one user (or one server) may keep.
+        max_playlist_tracks: How many songs one playlist may hold.
+    """
+
+    database_path: str = "data/music/music.db"
+    max_playlists: int = 25
+    max_playlist_tracks: int = 200
+
+
+@dataclass(frozen=True)
+class LyricsSettings:
+    """Song lyrics (``lyrics:`` block of music.yaml).
+
+    Attributes:
+        enabled: Whether ``/music lyrics`` and the lyrics button look lyrics up.
+        api_url: Base URL of the LRCLIB API (free, no key needed).
+        timeout_seconds: How long to wait for the lyrics service.
+        offset_seconds: Shifts the synced lyrics on the player. Negative values show every line
+            later (use when the lines appear before they are sung), positive values earlier.
+    """
+
+    enabled: bool = True
+    api_url: str = "https://lrclib.net/api"
+    timeout_seconds: int = 10
+    offset_seconds: float = 0.0
+
+
 class MusicConfig:
     """Configuration object mapped from config/music.yaml"""
 
@@ -295,6 +330,8 @@ class MusicConfig:
         self.streaming: StreamingSettings = StreamingSettings(**(data.get("streaming") or {}))
         self.autoplay: AutoplaySettings = AutoplaySettings(**(data.get("autoplay") or {}))
         self.sources: SourcesSettings = SourcesSettings(**(data.get("sources") or {}))
+        self.library: LibrarySettings = LibrarySettings(**(data.get("library") or {}))
+        self.lyrics: LyricsSettings = LyricsSettings(**(data.get("lyrics") or {}))
 
 class PromptConfig:
     """Configuration object mapped from config/prompt/*.yaml"""

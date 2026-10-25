@@ -264,7 +264,7 @@ Available tools are automatically discovered from:
 - **internet_search**: Web search capabilities
 - **math**: Mathematical calculations
 - **reminder**: User reminders
-- **tools_overview**: Tool discovery
+- **bot_guide**: Lets the bot explain its own commands and abilities (see [Self-knowledge](self_knowledge.md))
 - **user_data**: User memory management
 
 ## Error Handling

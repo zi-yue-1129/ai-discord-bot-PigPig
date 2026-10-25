@@ -13,3 +13,6 @@ The library is composed of the following managers:
 *   **[Audio Manager](./audio_manager.md):** Handles the creation of audio sources for Discord.
 *   **[YouTube Manager](./youtube.md):** Interfaces with YouTube for searching and downloading.
 *   **[UI Manager](./ui_manager.md):** Creates and manages the interactive player interface.
+
+The commands, player controls and server settings added on top of the player (seek, effects, lyrics,
+playlists, DJ role, 24/7, request channel) are described in [Music Commands & Settings](../music_commands.md).

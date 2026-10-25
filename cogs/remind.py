@@ -47,6 +47,13 @@ class ReminderCog(commands.Cog):
     RETRY_DELAY_SECONDS = 60
     MAX_SLEEP_SECONDS = 30
 
+    # Read by llm.self_knowledge so the bot can explain reminders when asked.
+    GUIDE_NOTES = (
+        "When a reminder is due the bot writes it in its own words from the recent chat and mentions only the "
+        "person it is for. Reminders survive restarts. In chat the bot can also set, list and cancel a "
+        f"member's reminders when asked. Each member can have at most {MAX_PENDING_PER_USER} pending reminders."
+    )
+
     def __init__(self, bot):
         self.bot = bot
         self.lang_manager: Optional[LanguageManager] = None

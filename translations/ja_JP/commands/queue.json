@@ -1,0 +1,9 @@
+{
+    "description": "キュー：並べ替え・エクスポート・インポート",
+    "responses": {
+        "moved": "「{title}」を {position} 番目に移動しました",
+        "swapped": "「{first}」と「{second}」を入れ替えました",
+        "exported": "{count} 曲をエクスポートしました",
+        "imported": "{count} 曲をインポートしました"
+    }
+}

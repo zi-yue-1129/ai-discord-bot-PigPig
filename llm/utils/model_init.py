@@ -116,8 +116,28 @@ class ModelStatsCallback(AsyncCallbackHandler):
             log.error("Failed to record LLM call statistics for %s", self.model_name, exc_info=True)
 
 
+def _output_limit_options(model_name: str) -> dict[str, Any]:
+    """Return the provider option that caps how many tokens one call may generate.
+
+    Args:
+        model_name: Provider-qualified identifier, such as ``vllm:gemma4-26b``.
+
+    Returns:
+        The constructor option for the configured cap, or an empty dict when the cap is
+        disabled or the provider's option name is not known.
+    """
+    cap = llm_config.max_output_tokens
+    if cap <= 0:
+        return {}
+    if model_name.startswith("google_genai:"):
+        return {"max_output_tokens": cap}
+    if model_name.startswith(("vllm:", "openai:", "anthropic:")):
+        return {"max_tokens": cap}
+    return {}
+
+
 def create_model_instance(
-    model_name: str, *, guild_id: str = "0", **kwargs: Any,
+    model_name: str, *, guild_id: str = "0", limit_output: bool = False, **kwargs: Any,
 ) -> BaseChatModel:
     """Create a chat model with statistics attached to its invocation lifecycle.
 
@@ -131,11 +151,17 @@ def create_model_instance(
         model_name: Provider-qualified identifier, such as ``vllm:gemma4:26b``.
         guild_id: Guild context, or ``0`` when no guild applies. Per-invocation
             ``metadata.guild_id`` overrides this value for shared instances.
+        limit_output: Cap the tokens one call may generate at the configured
+            ``max_output_tokens``, so a model stuck in a loop is stopped by the server.
+            An explicit cap in ``kwargs`` takes precedence.
         **kwargs: Options forwarded to the provider constructor.
 
     Returns:
         A chat model with usage-statistics instrumentation.
     """
+    if limit_output:
+        for option, value in _output_limit_options(model_name).items():
+            kwargs.setdefault(option, value)
     if model_name.startswith("vllm:"):
         provider_options: dict[str, Any] = {
             "base_url": f"{llm_config.vllm_url}/v1",

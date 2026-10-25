@@ -26,6 +26,26 @@ class PlayerState:
     auto_paused: bool = False
     # Monotonic time the current song started (used to tell a quick skip from a late one).
     song_started_at: float = 0.0
+    # Seconds of the current song played so far (song time: a sped-up filter advances it faster).
+    position: float = 0.0
+    # Where the current song was requested; reused when it restarts (seek, filter change).
+    playback_ctx: Optional[Any] = None
+    # The active audio filter preset (see filters.py); kept for the following songs.
+    audio_filter: str = "off"
+    # Songs that finished or were skipped, oldest first; the previous button walks back through them.
+    history: list = field(default_factory=list)
+    # Set by the previous button: the song being left is not added to the history.
+    going_back: bool = False
+    # IDs of the listeners who voted to skip the current song.
+    skip_votes: set = field(default_factory=set)
+    # Whether the synced lyrics are shown on the player interface (the lyrics button is a switch).
+    show_lyrics: bool = False
+    # Lyrics of the current song: ``(video_id, Lyrics or None)`` once looked up.
+    lyrics: Optional[tuple] = None
+    # Index of the synced lyrics line the player shows now (-2 while none was drawn yet).
+    lyrics_line: int = -2
+    # Whether this voice session already applied the server's default volume.
+    session_started: bool = False
 
 
 class StateManager:

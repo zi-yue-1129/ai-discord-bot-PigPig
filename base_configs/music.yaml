@@ -59,3 +59,16 @@ sources:
   allowed_hosts: ["youtube.com", "youtu.be", "soundcloud.com"]   # links to other hosts are only used as search text
   spotify: true                      # turn Spotify track links into a YouTube search for "artist title"
   spotify_timeout_seconds: 10        # how long to wait for the Spotify page
+
+# Server music settings (DJ role, 24/7, request channel ...) and saved playlists. Every key is optional.
+library:
+  database_path: "data/music/music.db"   # SQLite file for the server settings and the playlists
+  max_playlists: 25                  # playlists one user (or one server) may keep
+  max_playlist_tracks: 200           # songs one playlist may hold
+
+# Song lyrics from LRCLIB (free, no API key). Every key is optional.
+lyrics:
+  enabled: true                      # false hides /music lyrics and the lyrics button
+  api_url: "https://lrclib.net/api"
+  timeout_seconds: 10
+  offset_seconds: 0.0                # shifts the synced lines: negative = later (lines appear too early), positive = earlier
