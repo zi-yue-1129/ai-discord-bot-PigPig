@@ -29,17 +29,18 @@ Creates a new reminder with flexible time scheduling.
 **Parameters**:
 - `message` (string, required): The reminder message
 - `time` (string, required): When to remind (supports natural language)
-- `repeat` (string, optional): Recurrence pattern (daily, weekly, monthly, none)
+- `user` (user, optional): Who to remind (defaults to you)
+- `repeat` (choice, optional): `none` (once), `daily` or `weekly`. The first reminder is at `time`; later ones keep the same time of day. A repeating reminder that cannot be delivered skips to its next time instead of stopping.
 
 **Time Format Examples**:
 - Absolute: "2024-01-01 14:30", "in 2 hours", "next monday at 3pm"
 - Relative: "5 minutes", "2 hours 30 minutes", "tomorrow"
-- Natural: "every day at 9am", "weekly on friday at 6pm"
+- Natural: "tomorrow at 9am", "next friday at 6pm"
 
 **Usage Examples**:
 ```
 /remind message:"Team meeting" time:"tomorrow at 2pm"
-/remind message:"Take medicine" time:"every day at 8am" repeat:"daily"
+/remind message:"Take medicine" time:"tomorrow at 8am" repeat:"daily"
 /remind message:"Weekly report" time:"next monday 9am" repeat:"weekly"
 ```
 

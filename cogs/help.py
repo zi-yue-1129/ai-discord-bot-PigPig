@@ -58,9 +58,25 @@ class HelpCog(commands.Cog):
             color=discord.Color.blue()
         )
 
+    def _build_talk_embed(self, guild_id: str) -> discord.Embed:
+        """The page on what the bot does when you just talk to it (its AI tools have no slash command)."""
+        embed = self._create_embed_page(
+            self._translate(guild_id, "commands", "help", "talk_title", default="💬 Just talk to me"),
+            self._translate(
+                guild_id, "commands", "help", "talk_description",
+                default="Mention me or reply to me, and ask in your own words. For example:",
+            ),
+        )
+        embed.add_field(
+            name="\u200b",
+            value=self._translate(guild_id, "commands", "help", "talk_examples", default="")[:1024] or "\u200b",
+            inline=False,
+        )
+        return embed
+
     def _build_help_embeds(self, guild_id: str, title: str, description: str) -> List[discord.Embed]:
         """Construct one or more embeds while respecting Discord limits."""
-        embeds: List[discord.Embed] = []
+        embeds: List[discord.Embed] = [self._build_talk_embed(guild_id)]
         current_embed = self._create_embed_page(title, description)
 
         for cog_name, cog in self.bot.cogs.items():

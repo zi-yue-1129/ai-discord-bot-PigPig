@@ -1,7 +1,7 @@
 {
     "responses": {
         "received": "リマインダーを受信しました",
-        "confirm_setup": "リマインダーの設定を確認",
+        "confirm_setup": "✅ リマインダーを設定しました：{duration}後に {user} へ「{message}」",
         "future_time_required": "将来の時間が必要です",
         "invalid_format": "無効な形式",
         "reminder_message": "リマインダー: {message}",
@@ -17,6 +17,16 @@
     },
     "time_units": {
         "seconds": "秒",
-        "unit_key": "時間単位"
+        "unit_key": "時間単位",
+        "years": "年",
+        "months": "か月",
+        "weeks": "週間",
+        "days": "日",
+        "hours": "時間",
+        "minutes": "分"
+    },
+    "repeat": {
+        "daily": "（毎日繰り返し）",
+        "weekly": "（毎週繰り返し）"
     }
 }

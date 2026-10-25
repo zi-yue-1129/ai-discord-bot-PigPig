@@ -46,9 +46,9 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
             raise RuntimeError("LanguageManager cog is not loaded; cannot translate story text")
         return language_manager.translate(str(guild_id), *path, **kwargs)
 
-    story = app_commands.Group(name="story", description="與故事模式相關的指令")
+    story = app_commands.Group(name="story", description="Story mode commands")
 
-    @story.command(name="menu", description="🎭 開啟故事管理選單")
+    @story.command(name="menu", description="🎭 Open the story menu")
     async def story_menu(self, interaction: discord.Interaction):
         """
         故事管理主命令
@@ -76,7 +76,7 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
             else:
                 await interaction.response.send_message(error_message, ephemeral=True)
 
-    @story.command(name="intervene", description="🎬 對故事走向進行干預")
+    @story.command(name="intervene", description="🎬 Steer where the story goes")
     async def intervene(self, interaction: discord.Interaction):
         """
         Allows a user to intervene in the story with OOC instructions for the director.

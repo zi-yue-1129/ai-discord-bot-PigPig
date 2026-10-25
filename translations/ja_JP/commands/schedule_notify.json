@@ -1,0 +1,7 @@
+{
+    "notice": "⏰ {user} {minutes} 分後に予定があります：{time} {description}",
+    "responses": {
+        "enabled": "予定リマインダーをオンにしました。各予定の {minutes} 分前にこのチャンネルでお知らせします。",
+        "disabled": "予定リマインダーをオフにしました。"
+    }
+}

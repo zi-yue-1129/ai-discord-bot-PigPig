@@ -72,7 +72,7 @@ class ReminderTools:
 
         @tool
         async def set_reminder(
-            time_str: str, message: str, user_id: Optional[int] = None
+            time_str: str, message: str, user_id: Optional[int] = None, repeat: str = "none"
         ) -> str:
             """Sets a reminder for a user at a specified time.
 
@@ -88,6 +88,9 @@ class ReminderTools:
                 message: The reminder message content to be sent.
                 user_id: Optional Discord user ID to remind. If not provided,
                     the reminder will be set for the message author.
+                repeat: "none" for a one-time reminder, "daily" to repeat every day,
+                    or "weekly" to repeat every week at the same time. The first
+                    reminder is at time_str.
 
             Returns:
                 A success message with reminder details if scheduled successfully,
@@ -162,6 +165,7 @@ class ReminderTools:
                     guild_id=guild_id,
                     interaction=None,
                     creator=getattr(message_obj, "author", None),
+                    repeat=repeat,
                 )
                 
                 logger.info("Reminder scheduled", extra={"result": result})

@@ -7,7 +7,7 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, List, Union
+from typing import Iterator, List, Optional, Union
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS reminders (
@@ -20,13 +20,28 @@ CREATE TABLE IF NOT EXISTS reminders (
     created_at REAL NOT NULL,
     due_at REAL NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'pending'
+    status TEXT NOT NULL DEFAULT 'pending',
+    repeat TEXT NOT NULL DEFAULT 'none',
+    anchor_at REAL
 );
 CREATE INDEX IF NOT EXISTS idx_reminders_pending ON reminders (status, due_at);
 """
 
-_COLUMNS = "id, guild_id, channel_id, creator_id, target_id, message, created_at, due_at, attempts"
+_COLUMNS = "id, guild_id, channel_id, creator_id, target_id, message, created_at, due_at, attempts, repeat, anchor_at"
 _FINAL_STATUSES = ("delivered", "failed", "cancelled")
+
+# How far apart a repeating reminder's occurrences are.
+REPEAT_INTERVALS = {"daily": 24 * 3600, "weekly": 7 * 24 * 3600}
+REPEAT_CHOICES = ("none",) + tuple(REPEAT_INTERVALS)
+
+
+def next_occurrence(due_at: float, repeat: str, now: float) -> float | None:
+    """The first occurrence of a repeating reminder after ``now``, or None when it does not repeat."""
+    interval = REPEAT_INTERVALS.get(repeat)
+    if interval is None:
+        return None
+    missed = max(int((now - due_at) // interval) + 1, 1)
+    return due_at + missed * interval
 
 
 @dataclass(frozen=True)
@@ -43,6 +58,8 @@ class Reminder:
         created_at: Unix time it was set.
         due_at: Unix time it is due.
         attempts: Failed delivery attempts so far.
+        repeat: ``"none"``, ``"daily"`` or ``"weekly"``.
+        anchor_at: The first due time; a repeating reminder recurs from it even after a retry moved ``due_at``.
     """
 
     id: int
@@ -54,6 +71,8 @@ class Reminder:
     created_at: float
     due_at: float
     attempts: int
+    repeat: str = "none"
+    anchor_at: Optional[float] = None
 
 
 class ReminderStore:
@@ -86,6 +105,12 @@ class ReminderStore:
             try:
                 if not self._ready:
                     connection.executescript(_SCHEMA)
+                    columns = {row[1] for row in connection.execute("PRAGMA table_info(reminders)")}
+                    # Databases made before repeating reminders existed.
+                    if "repeat" not in columns:
+                        connection.execute("ALTER TABLE reminders ADD COLUMN repeat TEXT NOT NULL DEFAULT 'none'")
+                    if "anchor_at" not in columns:
+                        connection.execute("ALTER TABLE reminders ADD COLUMN anchor_at REAL")
                     self._ready = True
                 with connection:
                     yield connection
@@ -94,14 +119,16 @@ class ReminderStore:
 
     def add(
         self, *, guild_id: str, channel_id: int, creator_id: int, target_id: int, message: str,
-        created_at: float, due_at: float,
+        created_at: float, due_at: float, repeat: str = "none",
     ) -> int:
         """Stores a new pending reminder and returns its ID."""
+        if repeat not in REPEAT_CHOICES:
+            raise ValueError(f"Unknown reminder repeat: {repeat}")
         with self._session() as connection:
             cursor = connection.execute(
-                "INSERT INTO reminders (guild_id, channel_id, creator_id, target_id, message, created_at, due_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (guild_id, channel_id, creator_id, target_id, message, created_at, due_at),
+                "INSERT INTO reminders (guild_id, channel_id, creator_id, target_id, message, created_at, due_at, repeat, anchor_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (guild_id, channel_id, creator_id, target_id, message, created_at, due_at, repeat, due_at),
             )
             return int(cursor.lastrowid)
 
@@ -160,3 +187,10 @@ class ReminderStore:
                 "UPDATE reminders SET due_at = ?, attempts = attempts + 1 WHERE id = ?", (until, reminder_id)
             )
             return int(connection.execute("SELECT attempts FROM reminders WHERE id = ?", (reminder_id,)).fetchone()[0])
+
+    def reschedule(self, reminder_id: int, due_at: float) -> None:
+        """Moves a repeating reminder to its next occurrence and clears its failed attempts."""
+        with self._session() as connection:
+            connection.execute(
+                "UPDATE reminders SET due_at = ?, attempts = 0 WHERE id = ? AND status = 'pending'", (due_at, reminder_id)
+            )

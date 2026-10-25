@@ -4,5 +4,8 @@
     "help_description": "Detailed list of available commands and instructions.",
     "help_title": "Bot Help Center",
     "no_commands": "No commands are available right now.",
-    "error_message": "Something went wrong while building the help list. Please try again later."
+    "error_message": "Something went wrong while building the help list. Please try again later.",
+    "talk_title": "💬 Just talk to me",
+    "talk_description": "Mention me or reply to me, and ask in your own words. For example:",
+    "talk_examples": "• \"Remind me to hand in the report at 8am tomorrow, every day\"\n• \"Draw a shiba wearing sunglasses\"\n• \"Play Bohemian Rhapsody\"\n• \"Any good ramen nearby?\"\n• \"Expand (3x+2)^2\"\n• \"Look up today's news\"\n• \"Show my message stats\"\n• \"Remember that I like being called Piggy\"\n• \"What was this channel just talking about?\""
 }

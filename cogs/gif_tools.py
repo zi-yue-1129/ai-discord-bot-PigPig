@@ -110,7 +110,7 @@ class GifTools(commands.Cog):
             self.logger.error(search_error_log, exc_info=True)
             return []
 
-    @app_commands.command(name="search_gif", description="搜尋 GIF")
+    @app_commands.command(name="search_gif", description="Search for a GIF")
     async def search_gif_command(self, interaction: discord.Interaction, query: str):
         """Discord 指令: 搜尋 GIF。"""
         if not self.lang_manager:

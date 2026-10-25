@@ -47,6 +47,7 @@ import traceback
 import update
 from addons.command_errors import describe_command_error
 from addons.watchdog import start_loop_watchdog
+from addons.rate_limiter import RateLimiter, format_wait
 from function import func, ROOT_DIR
 import json
 import asyncio
@@ -104,6 +105,11 @@ class PigPig(commands.Bot):
         self.state_manager = StateManager()
         self.ui_manager = UIManager(self)
 
+        # Per-user limits on AI chat and image generation, set by the bot owner in base.yaml.
+        self.rate_limiter = RateLimiter.from_config(
+            getattr(base_config, "rate_limits", None),
+            owner_id=getattr(tokens, "bot_owner_id", 0),
+        )
 
         # Statistics Subsystem
         from dashboard.services.stats_collector import StatsCollector
@@ -297,7 +303,18 @@ class PigPig(commands.Bot):
                     if ref_msg and ref_msg.author.id == self.user.id:
                         is_reply_to_bot = True
 
-                if is_allowed and (self.user.id in message.raw_mentions and not message.mention_everyone or auto_response_enabled or is_reply_to_bot):
+                is_mentioned = self.user.id in message.raw_mentions and not message.mention_everyone
+                wants_reply = is_mentioned or is_reply_to_bot or (
+                    auto_response_enabled and await channel_manager.should_auto_respond(message, guild_id)
+                )
+                if is_allowed and wants_reply:
+                    retry_after = self.rate_limiter.hit("chat", message.author.id)
+                    if retry_after:
+                        # Unprompted auto-replies are skipped quietly; a direct ask gets told why.
+                        if is_mentioned or is_reply_to_bot:
+                            await self._tell_rate_limited(message, "chat", retry_after)
+                        return
+
                     # Check if this is the first guild message after a version update.
                     _announce = False
                     if hasattr(self, "version_storage"):
@@ -311,6 +328,7 @@ class PigPig(commands.Bot):
                         self, message_edit, message, bound_log,
                         announce_new_version=_announce,
                     )
+                    channel_manager.record_bot_reply(message.channel.id, message.author.id)
 
                     # Mark guild as having seen this version only after a successful reply.
                     if _announce and hasattr(self, "version_storage"):
@@ -320,6 +338,22 @@ class PigPig(commands.Bot):
         except Exception as e:
             await func.report_error(e, f"on_message: {e}")
             
+    async def _tell_rate_limited(self, message: discord.Message, bucket: str, retry_after: float) -> None:
+        """Says once per window that the user hit their usage limit; later attempts only get a ⏳ reaction."""
+        try:
+            if self.rate_limiter.should_notify(bucket, message.author.id, retry_after):
+                lang_manager = self.get_cog("LanguageManager")
+                wait = format_wait(retry_after)
+                text = (
+                    lang_manager.translate(str(message.guild.id), "errors", "rate_limited", retry_after=wait)
+                    if lang_manager else f"⏳ You're going a bit fast. Try again in {wait}s."
+                )
+                await message.reply(text, mention_author=False, delete_after=min(retry_after, 60))
+            else:
+                await message.add_reaction("⏳")
+        except discord.HTTPException:
+            pass
+
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
         """Handle edited Discord messages.
         
@@ -385,6 +419,10 @@ class PigPig(commands.Bot):
                                 is_reply_to_bot = True
 
                         if is_allowed and (self.user.id in after.raw_mentions and not after.mention_everyone or auto_response_enabled or is_reply_to_bot):
+                            retry_after = self.rate_limiter.hit("chat", after.author.id)
+                            if retry_after:
+                                await self._tell_rate_limited(after, "chat", retry_after)
+                                return
                             message_edit = await after.reply("...")
                             await self.orchestrator.handle_message(self,message_edit, after, logger)
                             
@@ -504,6 +542,10 @@ class PigPig(commands.Bot):
                 logger.error(f"Failed to send slash command error message: {send_e}")
 
         self.tree.on_error = on_tree_error
+
+        # Show slash command descriptions and choices in each user's client language.
+        from addons.command_translator import CommandTranslator
+        await self.tree.set_translator(CommandTranslator(os.path.join(ROOT_DIR, "translations")))
 
         await self.tree.sync()
 
