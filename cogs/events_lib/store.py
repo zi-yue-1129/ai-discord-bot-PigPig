@@ -38,7 +38,12 @@ CREATE TABLE IF NOT EXISTS event_signups (
     status TEXT NOT NULL,
     joined_at REAL NOT NULL,
     seq INTEGER NOT NULL,
-    reminded INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (event_id, user_id)
+);
+-- Who got the reminder, kept per event (not per sign-up), so leaving and rejoining does not reset it.
+CREATE TABLE IF NOT EXISTS event_reminded (
+    event_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
     PRIMARY KEY (event_id, user_id)
 );
 """
@@ -92,6 +97,10 @@ class EventStore:
         self._connection = sqlite3.connect(self.path, check_same_thread=False)
         with self._session() as db:
             db.executescript(_SCHEMA)
+            # Columns added after the first version of the table.
+            columns = {row[1] for row in db.execute("PRAGMA table_info(events)")}
+            if "next_try_at" not in columns:
+                db.execute("ALTER TABLE events ADD COLUMN next_try_at REAL")
 
     @contextmanager
     def _session(self) -> Iterator[sqlite3.Connection]:
@@ -135,6 +144,7 @@ class EventStore:
         """Removes an event whose message could not be posted."""
         with self._session() as db:
             db.execute("DELETE FROM event_signups WHERE event_id = ?", (event_id,))
+            db.execute("DELETE FROM event_reminded WHERE event_id = ?", (event_id,))
             db.execute("DELETE FROM events WHERE id = ?", (event_id,))
 
     def _select(self, where: str, parameters: tuple) -> List[Event]:
@@ -217,18 +227,24 @@ class EventStore:
             )
 
     def mark_users_reminded(self, event_id: int, user_ids: List[int]) -> None:
-        """Records that these people got the reminder, so a retry does not mention them again."""
+        """Records that these people got (or are being sent) the reminder, so it never repeats for them."""
         with self._session() as db:
             db.executemany(
-                "UPDATE event_signups SET reminded = 1 WHERE event_id = ? AND user_id = ?",
+                "INSERT OR IGNORE INTO event_reminded (event_id, user_id) VALUES (?, ?)",
+                [(event_id, user_id) for user_id in user_ids],
+            )
+
+    def unmark_users_reminded(self, event_id: int, user_ids: List[int]) -> None:
+        """Takes back :meth:`mark_users_reminded` after the message could not be sent."""
+        with self._session() as db:
+            db.executemany(
+                "DELETE FROM event_reminded WHERE event_id = ? AND user_id = ?",
                 [(event_id, user_id) for user_id in user_ids],
             )
 
     def reminded_users(self, event_id: int) -> List[int]:
         with self._session() as db:
-            rows = db.execute(
-                "SELECT user_id FROM event_signups WHERE event_id = ? AND reminded = 1", (event_id,)
-            ).fetchall()
+            rows = db.execute("SELECT user_id FROM event_reminded WHERE event_id = ?", (event_id,)).fetchall()
         return [row[0] for row in rows]
 
     def leave(self, event_id: int, user_id: int) -> bool:

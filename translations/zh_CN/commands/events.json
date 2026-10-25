@@ -29,6 +29,7 @@
         "not_yours": "只有发起人或有“管理活动”权限的人可以取消。",
         "cancelled": "已取消“{title}”。",
         "reminder": "⏰ “{title}”{when}开始！",
-        "reminder_now": "⏰ “{title}”已经开始了！"
+        "reminder_now": "⏰ “{title}”已经开始了！",
+        "untitled_event": "活动 #{id}（[查看]({link})）"
     }
 }

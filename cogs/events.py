@@ -21,6 +21,8 @@ from discord.ext import commands
 from addons.logging import get_logger
 from function import func
 
+from addons.visibility import audience_can_read, can_read
+
 from .events_lib.store import CANCELLED, GOING, MAYBE, OPEN, Event, EventStore, Roster
 from .language_manager import LanguageManager
 
@@ -192,18 +194,20 @@ class EventsCog(commands.Cog):
         message_id = interaction.message.id if interaction.message else None
         event = self.store.by_message(message_id) if message_id else None
         guild_id = interaction.guild_id
-        if event is None or event.status == CANCELLED:
-            await interaction.response.send_message(self._t(guild_id, "event_gone"), ephemeral=True)
-            return
-        if event.starts_at <= self._now():
-            await interaction.response.send_message(self._t(guild_id, "event_started"), ephemeral=True)
+        # Acknowledge at once: waiting for the lock (e.g. behind a reminder) must not outlast Discord's 3 seconds.
+        await interaction.response.defer()
+        if event is None:
+            await interaction.followup.send(self._t(guild_id, "event_gone"), ephemeral=True)
             return
         user_id = interaction.user.id
         async with self._lock(event.id):
-            # Read again under the lock: a cancel may have finished while this press waited.
+            # Checked under the lock: a cancel may have finished, or the start passed, while this press waited.
             event = self.store.get(event.id)
             if event is None or event.status == CANCELLED:
-                await interaction.response.send_message(self._t(guild_id, "event_gone"), ephemeral=True)
+                await interaction.followup.send(self._t(guild_id, "event_gone"), ephemeral=True)
+                return
+            if event.starts_at <= self._now():
+                await interaction.followup.send(self._t(guild_id, "event_started"), ephemeral=True)
                 return
             before = self.store.roster(event)
             if status is None:
@@ -213,9 +217,7 @@ class EventsCog(commands.Cog):
                 changed = True
             after = self.store.roster(event)
             if changed:
-                await interaction.response.edit_message(embed=self.render(event, after), view=self._localised_view(guild_id))
-            else:
-                await interaction.response.defer()
+                await interaction.edit_original_response(embed=self.render(event, after), view=self._localised_view(guild_id))
         await interaction.followup.send(self._answer_text(guild_id, user_id, status, after), ephemeral=True)
         promoted = [user for user in after.going if user in before.waiting]
         if promoted:
@@ -230,9 +232,17 @@ class EventsCog(commands.Cog):
             return self._t(guild_id, "you_are_maybe")
         return self._t(guild_id, "you_left")
 
+    def _shown_title(self, event: Event, channel: Any) -> str:
+        """The event's title for a new post in ``channel``, or a link to the event when some people
+        who see the channel may not read its history (the title is in an older message)."""
+        if audience_can_read(channel):
+            return event.title
+        link = f"https://discord.com/channels/{event.guild_id}/{event.channel_id}/{event.message_id}"
+        return self._t(event.guild_id, "untitled_event", id=event.id, link=link)
+
     async def _announce_promotion(self, channel: Any, event: Event, user_ids: List[int]) -> None:
         """Tells the people who moved up from the waiting list (and pings only them)."""
-        text = self._t(event.guild_id, "promoted", title=event.title)
+        text = self._t(event.guild_id, "promoted", title=self._shown_title(event, channel))
         try:
             for chunk in mention_chunks(text, user_ids):
                 await channel.send(
@@ -329,24 +339,18 @@ class EventsCog(commands.Cog):
 
     @staticmethod
     def _can_see(interaction: discord.Interaction, event: Event) -> bool:
-        """Whether the member may see the event's channel: never for a private thread, whose
-        permissions are inherited from its parent although only its members can read it."""
+        """Whether the member may read the event's channel (see ``addons.visibility``)."""
         guild = interaction.guild
         channel = guild.get_channel_or_thread(event.channel_id) if guild is not None else None
-        if channel is None or getattr(channel, "type", None) == discord.ChannelType.private_thread:
-            return False
-        try:
-            permissions = channel.permissions_for(interaction.user)
-        except (AttributeError, TypeError, discord.ClientException):
-            return False  # e.g. a thread whose parent is not cached: left out, never leaked
-        return bool(permissions.view_channel and permissions.read_message_history)
+        return can_read(channel, interaction.user)
 
     @event.command(name="cancel", description="Cancel an event you created")
     @app_commands.describe(event_id="The event number (shown under the event)")
     async def cancel(self, interaction: discord.Interaction, event_id: int) -> None:
         guild_id = interaction.guild_id
         event = self.store.get(event_id)
-        if event is None or event.guild_id != guild_id or event.status == CANCELLED:
+        # An event in a channel the member cannot read is "not found", so its title never shows.
+        if event is None or event.guild_id != guild_id or event.status == CANCELLED or not self._can_see(interaction, event):
             await interaction.response.send_message(self._t(guild_id, "not_found"), ephemeral=True)
             return
         permissions = getattr(interaction, "permissions", None)
@@ -385,7 +389,7 @@ class EventsCog(commands.Cog):
         """Mentions everyone going; marks the event reminded only once every message was sent.
 
         Each message records whom it mentioned, so a retry after a failure (or a restart) mentions
-        only the people still waiting for their reminder.
+        only the people still waiting for their reminder, even if someone left and joined again.
         """
         async with self._lock(event.id):
             # Read again under the lock: the event may have been cancelled since the due query.
@@ -403,16 +407,19 @@ class EventsCog(commands.Cog):
                 self._fail(event, now)
                 return
             key = "reminder" if event.starts_at > now else "reminder_now"
-            prefix = self._t(event.guild_id, key, title=event.title, when=f"<t:{int(event.starts_at)}:R>")
+            prefix = self._t(event.guild_id, key, title=self._shown_title(event, channel), when=f"<t:{int(event.starts_at)}:R>")
             for users in mention_groups(prefix, going):
                 mentions = discord.AllowedMentions(everyone=False, roles=False, users=[discord.Object(u) for u in users])
+                # Recorded before sending and taken back on failure: a crash in between can at worst
+                # miss these mentions, never repeat them.
+                self.store.mark_users_reminded(event.id, users)
                 try:
                     await channel.send(mention_chunks(prefix, users)[0], allowed_mentions=mentions)
                 except discord.HTTPException:
+                    self.store.unmark_users_reminded(event.id, users)
                     self.logger.warning(f"events: reminder for event {event.id} failed", exc_info=True)
                     self._fail(event, now)
                     return
-                self.store.mark_users_reminded(event.id, users)
             self.store.mark_reminded(event.id)
 
     def _fail(self, event: Event, now: float) -> None:

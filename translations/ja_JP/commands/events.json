@@ -29,6 +29,7 @@
         "not_yours": "中止できるのは主催者か「イベントの管理」権限を持つ人だけです。",
         "cancelled": "「{title}」を中止しました。",
         "reminder": "⏰ 「{title}」は{when}に始まります！",
-        "reminder_now": "⏰ 「{title}」が始まりました！"
+        "reminder_now": "⏰ 「{title}」が始まりました！",
+        "untitled_event": "イベント #{id}（[表示]({link})）"
     }
 }

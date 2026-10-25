@@ -66,6 +66,7 @@ class FakeInteraction:
         self.guild_id = GUILD_ID
         self.channel_id = channel_id
         self.channel = FakeChannel(channel_id)
+        self.guild = SimpleNamespace(get_channel_or_thread=lambda cid: self.channel if cid == self.channel.id else None)
         self.message = message
         self.permissions = permissions or SimpleNamespace(manage_events=False)
         self.id = 99
@@ -107,11 +108,16 @@ class FakeChannel:
         self.attempts = 0
         self.sent: List[tuple] = []
         self.history_messages: List[Any] = []
-        self.history_readers: Optional[set] = None  # None: everyone may read the history
+        self.history_readers: Optional[set] = None  # None: everyone who sees it may read the history
+        self.viewer_ids: Optional[set] = None  # None: every member sees the channel
+        self.type = discord.ChannelType.text
+        self.guild = SimpleNamespace(members=[SimpleNamespace(id=i) for i in range(1, 10)])
 
     def permissions_for(self, who: Any) -> Any:
-        allowed = self.history_readers is None or getattr(who, "id", None) in self.history_readers
-        return SimpleNamespace(view_channel=True, read_message_history=allowed)
+        who_id = getattr(who, "id", None)
+        sees = self.viewer_ids is None or who_id in self.viewer_ids
+        reads = sees and (self.history_readers is None or who_id in self.history_readers)
+        return SimpleNamespace(view_channel=sees, read_message_history=reads, manage_threads=False)
 
     async def send(self, content: Any = None, **kwargs: Any) -> Any:
         self.attempts += 1
@@ -319,12 +325,12 @@ async def test_buttons_refuse_cancelled_and_started_events(store: EventStore) ->
     store.cancel(event.id)
     interaction = FakeInteraction(user_id=3, message=SimpleNamespace(id=event.message_id))
     await cog.answer(interaction, GOING)
-    assert interaction.sent[0][0] == "event_gone|"
+    assert interaction.followups[0]["content"] == "event_gone|"
 
     started = _event(store, starts_in=-10)
     interaction = FakeInteraction(user_id=3, message=SimpleNamespace(id=started.message_id))
     await cog.answer(interaction, GOING)
-    assert interaction.sent[0][0] == "event_started|"
+    assert interaction.followups[0]["content"] == "event_started|"
     assert store.roster(started).going == []
 
 
@@ -663,7 +669,8 @@ async def test_the_event_list_hides_events_in_private_threads(store: EventStore)
 
     thread = SimpleNamespace(
         type=discord.ChannelType.private_thread,
-        permissions_for=lambda member: SimpleNamespace(view_channel=True, read_message_history=True),  # inherited
+        permissions_for=lambda member: SimpleNamespace(view_channel=True, read_message_history=True, manage_threads=False),  # inherited
+        members=[], owner_id=1,
     )
     interaction = FakeInteraction(user_id=3)
     interaction.guild = SimpleNamespace(get_channel_or_thread=lambda channel_id: thread)
@@ -686,7 +693,7 @@ async def test_a_press_queued_behind_a_cancel_does_not_sign_up(store: EventStore
         store.cancel(event.id)
     await press
 
-    assert interaction.sent[0][0] == "event_gone|" and interaction.edits == []
+    assert interaction.followups[0]["content"] == "event_gone|" and interaction.edits == []
     assert store.roster(store.get(event.id)).going == []
 
 
@@ -821,3 +828,166 @@ def test_the_recap_input_stays_within_its_budget() -> None:
     text = captured[0]
     assert len(text) <= story_recap_writer.MAX_INPUT_CHARS + 100
     assert "Latest messages:" in text and text.rstrip(">").endswith("x")  # the newest lines are kept
+
+
+def _private_thread() -> Any:
+    """A private thread under a readable parent, with only member 1 in it."""
+    return SimpleNamespace(
+        id=600, type=discord.ChannelType.private_thread, members=[SimpleNamespace(id=1)], owner_id=1,
+        permissions_for=lambda member: SimpleNamespace(view_channel=True, read_message_history=True, manage_threads=False),
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_event_manager_who_cannot_see_the_thread_cannot_cancel_or_learn_its_title(store: EventStore) -> None:
+    cog = _events_cog(store, FakeChannel())
+    hidden_id = store.add(GUILD_ID, 600, 1, "秘密聚會", NOW + 3600, 0, 15, NOW)
+    store.set_message(hidden_id, 6000)
+    thread = _private_thread()
+
+    manager = FakeInteraction(user_id=9, permissions=SimpleNamespace(manage_events=True))
+    manager.guild = SimpleNamespace(get_channel_or_thread=lambda cid: thread)
+    await EventsCog.cancel.callback(cog, manager, hidden_id)
+
+    assert manager.sent[0][0] == "not_found|" and store.get(hidden_id).status == OPEN
+
+    host = FakeInteraction(user_id=1)
+    host.guild = SimpleNamespace(get_channel_or_thread=lambda cid: thread)
+    await EventsCog.cancel.callback(cog, host, hidden_id)
+    assert store.get(hidden_id).status == CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_reminders_and_promotions_leave_the_title_out_where_viewers_cannot_read_the_history(store: EventStore) -> None:
+    channel = FakeChannel()
+    channel.history_readers = {1, 2, 3}  # members 4–9 see new messages only
+    cog = _events_cog(store, channel)
+    event = _event(store, capacity=1)
+    store.sign_up(event.id, 1, GOING, NOW)
+    store.sign_up(event.id, 2, GOING, NOW)
+
+    await cog._remind(store.get(event.id), NOW + 3000)
+    content, _ = channel.sent[-1]
+    assert "Valorant" not in content and f"untitled_event|id={event.id}" in content
+
+    leaving = FakeInteraction(user_id=1, message=SimpleNamespace(id=event.message_id))
+    leaving.channel = channel
+    await cog.answer(leaving, None)
+    content, _ = channel.sent[-1]
+    assert "<@2>" in content and "Valorant" not in content
+
+    channel.history_readers = None
+    await cog._announce_promotion(channel, store.get(event.id), [2])
+    assert "title=Valorant 五排" in channel.sent[-1][0]
+
+
+@pytest.mark.asyncio
+async def test_a_recap_is_shown_only_to_the_requester_when_a_role_cannot_read_the_history(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_write(*args: Any) -> str:
+        return "recap"
+
+    monkeypatch.setitem(StoryManagerCog._recap_text.__globals__, "write_recap", fake_write)
+    cog = _story_cog(_instance(), orchestrator=object())
+    interaction = FakeInteraction(user_id=5)
+    interaction.channel.history_readers = {1, 2, 3, 4, 5}  # a role denies history to 6–9
+
+    await StoryManagerCog.recap.callback(cog, interaction)
+
+    assert interaction.deferred == {"ephemeral": True}
+    assert interaction.followups[0]["ephemeral"] is True and interaction.followups[0]["embed"].description == "recap"
+
+    public = FakeInteraction(user_id=5)
+    await StoryManagerCog.recap.callback(cog, public)
+    assert public.deferred == {"ephemeral": False}
+
+
+@pytest.mark.asyncio
+async def test_the_daily_recap_runs_in_a_role_restricted_story_channel(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_write(*args: Any) -> str:
+        return "recap"
+
+    monkeypatch.setitem(StoryManagerCog._recap_text.__globals__, "write_recap", fake_write)
+    cog = _story_cog(_instance(), orchestrator=object())
+    channel = FakeChannel()
+    channel.viewer_ids = {1, 5, 6}  # @everyone cannot see it; the Players role can, with history
+    message = SimpleNamespace(guild=SimpleNamespace(id=GUILD_ID), channel=channel, author=SimpleNamespace(id=5))
+    cog.recap_store.set_active_day(500, "2026-10-25")
+    cog._today = lambda: "2026-10-26"
+
+    await cog.maybe_post_daily_recap(message)
+
+    assert channel.sent[0][1]["embed"].description == "recap"
+
+
+def test_a_database_from_an_earlier_schema_still_opens_and_reminds(tmp_path: Any) -> None:
+    import sqlite3
+
+    path = tmp_path / "events.db"
+    old = sqlite3.connect(path)
+    old.executescript(
+        """
+        CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL, channel_id INTEGER NOT NULL,
+            message_id INTEGER, creator_id INTEGER NOT NULL, title TEXT NOT NULL, starts_at REAL NOT NULL,
+            capacity INTEGER NOT NULL DEFAULT 0, remind_minutes INTEGER NOT NULL DEFAULT 15,
+            status TEXT NOT NULL DEFAULT 'open', attempts INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL);
+        CREATE TABLE event_signups (event_id INTEGER NOT NULL, user_id INTEGER NOT NULL, status TEXT NOT NULL,
+            joined_at REAL NOT NULL, seq INTEGER NOT NULL, PRIMARY KEY (event_id, user_id));
+        """
+    )
+    old.close()
+
+    store = EventStore(path)
+    event = _event(store)
+    store.sign_up(event.id, 1, GOING, NOW)
+    store.mark_users_reminded(event.id, [1])
+
+    assert store.reminded_users(event.id) == [1]
+    assert [e.id for e in store.due_reminders(NOW + 3000)] == [event.id]
+
+
+@pytest.mark.asyncio
+async def test_leaving_and_rejoining_between_reminder_messages_does_not_repeat_the_mention(store: EventStore) -> None:
+    channel = FakeChannel(fail_on=2)
+    cog = _events_cog(store, channel)
+    event = _event(store)
+    users = list(range(10**17, 10**17 + 100))
+    for user in users:
+        store.sign_up(event.id, user, GOING, NOW)
+
+    await cog._remind(store.get(event.id), NOW + 3000)
+    first = users[0]
+    store.leave(event.id, first)
+    store.sign_up(event.id, first, GOING, NOW)
+    await cog._remind(store.get(event.id), NOW + 3100)
+
+    assert sum(content.count(f"<@{first}>") for content, _ in channel.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_press_is_acknowledged_before_waiting_behind_a_slow_reminder(store: EventStore) -> None:
+    cog = _events_cog(store, FakeChannel())
+    event = _event(store)
+    interaction = FakeInteraction(user_id=3, message=SimpleNamespace(id=event.message_id))
+
+    async with cog._lock(event.id):  # e.g. a reminder in the middle of a slow send
+        press = asyncio.create_task(cog.answer(interaction, GOING))
+        await asyncio.sleep(0)
+        assert interaction.deferred == {}  # acknowledged while still waiting
+    await press
+    assert store.roster(store.get(event.id)).going == [3]
+
+
+@pytest.mark.asyncio
+async def test_a_join_queued_across_the_start_time_is_refused(store: EventStore) -> None:
+    cog = _events_cog(store, FakeChannel())
+    event = _event(store, starts_in=5)
+    interaction = FakeInteraction(user_id=3, message=SimpleNamespace(id=event.message_id))
+
+    async with cog._lock(event.id):
+        press = asyncio.create_task(cog.answer(interaction, GOING))
+        await asyncio.sleep(0)
+        cog._now = lambda: NOW + 10  # the start passes while the press waits
+    await press
+
+    assert interaction.followups[0]["content"] == "event_started|"
+    assert store.roster(store.get(event.id)).going == []

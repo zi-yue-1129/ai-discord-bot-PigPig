@@ -8,6 +8,7 @@ from discord.ext import commands
 from discord import app_commands
 from addons.logging import get_logger
 from addons.rate_limiter import format_wait
+from addons.visibility import audience_can_read, can_read
 from typing import Any, Dict, List, Optional
 
 from llm.game_writer import QuotaExhausted
@@ -227,16 +228,20 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
         if instance is None:
             await interaction.response.send_message(self._t(guild_id, "story", "addons", "no_story"), ephemeral=True)
             return
-        # The recap retells the channel's history, so it is only for members who may read it.
-        if not _reads_history(interaction.channel, interaction.user):
+        # The recap retells the channel's history, so it is only for members who may read it, and
+        # it is posted for the channel only when everyone who sees the channel may read the history.
+        if not can_read(interaction.channel, interaction.user):
             await interaction.response.send_message(self._t(guild_id, "story", "addons", "recap_no_history"), ephemeral=True)
             return
-        await interaction.response.defer()
+        private = not audience_can_read(interaction.channel)
+        await interaction.response.defer(ephemeral=private)
         text = await self._recap_text(interaction.channel, instance, interaction.user.id)
         if not text:
-            await interaction.followup.send(self._t(guild_id, "story", "addons", "recap_empty"))
+            await interaction.followup.send(self._t(guild_id, "story", "addons", "recap_empty"), ephemeral=private)
             return
-        await interaction.followup.send(embed=self._recap_embed(guild_id, text), allowed_mentions=discord.AllowedMentions.none())
+        await interaction.followup.send(
+            embed=self._recap_embed(guild_id, text), ephemeral=private, allowed_mentions=discord.AllowedMentions.none()
+        )
 
     async def maybe_post_daily_recap(self, message: discord.Message) -> None:
         """Before the first story message of a new day, posts a recap of the day the story last moved on."""
@@ -251,8 +256,8 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
             if last_day == today:
                 return
             try:
-                # Posted for the whole channel: skipped where members may see new messages but not the history.
-                if last_day is not None and _reads_history(message.channel, message.guild.default_role):
+                # Posted for the whole channel: skipped where anyone who sees new messages may not read the history.
+                if last_day is not None and audience_can_read(message.channel):
                     text = await self._recap_text(message.channel, instance, message.author.id, before=message)
                     if text:
                         await message.channel.send(
@@ -399,15 +404,6 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
                 except:
                     # 最後的備用方案
                     await message.channel.send(self._t(guild_id, "story", "menu", "story_process_error"))
-
-
-def _reads_history(channel: Any, who: Any) -> bool:
-    """Whether ``who`` (a member or role) may see ``channel`` and read its message history."""
-    try:
-        permissions = channel.permissions_for(who)
-    except (AttributeError, TypeError, discord.ClientException):
-        return False
-    return bool(permissions.view_channel and permissions.read_message_history)
 
 
 def card_prompt(character: Any) -> str:

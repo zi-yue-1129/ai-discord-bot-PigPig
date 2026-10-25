@@ -1610,9 +1610,9 @@ Rolls dice in any channel: `d20`, `2d6+3`, `4d6-1`, `d8+d6+2` (up to 100 dice, 1
 
 ### `/story recap` and the daily recap
 
-`/story recap` posts a "previously on…" of the channel's story: the model writes it from the story's last saved summaries and the latest 40 messages (at most 6000 characters in all: summaries up to half, the newest messages the rest). It counts as one use of the chat quota of whoever asked (fallback models included); without quota or a working model, the latest saved summary is shown instead. Only members who can read the channel's message history can ask for it.
+`/story recap` posts a "previously on…" of the channel's story: the model writes it from the story's last saved summaries and the latest 40 messages (at most 6000 characters in all: summaries up to half, the newest messages the rest). It counts as one use of the chat quota of whoever asked (fallback models included); without quota or a working model, the latest saved summary is shown instead. Only members who can read the channel's message history can ask for it, and it is posted for the channel only when everyone who can see the channel can read its history (checked member by member, so role overwrites count); otherwise only the requester sees it.
 
-The bot also posts this recap by itself before the first story message of a new day, when the story moved on on an earlier day. It is skipped in channels where `@everyone` can see new messages but not the history. The day the story last moved on is kept per channel in `data/story_recaps.db`. Two messages at once post one recap. The model call is charged to the member whose message started the day; a recap that fails is not tried again that day, and the story goes on without it.
+The bot also posts this recap by itself before the first story message of a new day, when the story moved on on an earlier day. It is skipped when someone who can see the channel may not read its history (role-restricted story channels where every viewer can read the history get it as usual). The day the story last moved on is kept per channel in `data/story_recaps.db`. Two messages at once post one recap. The model call is charged to the member whose message started the day; a recap that fails is not tried again that day, and the story goes on without it.
 
 ### `/story card character`
 

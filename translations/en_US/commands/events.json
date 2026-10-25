@@ -29,6 +29,7 @@
         "not_yours": "Only the host or someone who can manage events can cancel it.",
         "cancelled": "Cancelled \"{title}\".",
         "reminder": "⏰ \"{title}\" starts {when}!",
-        "reminder_now": "⏰ \"{title}\" has started!"
+        "reminder_now": "⏰ \"{title}\" has started!",
+        "untitled_event": "event #{id} ([open]({link}))"
     }
 }
