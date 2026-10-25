@@ -12,7 +12,7 @@ import sqlite3
 import asyncio
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Sequence, Set
 
 from .connection import DatabaseConnection
 from function import func
@@ -56,6 +56,8 @@ _DISCORD_EMOJI_RE = re.compile(r"<a?:\w+:\d+>")
 
 # Maximum number of words to keep in top_words to prevent unbounded growth
 _MAX_TOP_WORDS = 200
+# Longer "words" are spam (one long run of letters), not something people say.
+MAX_WORD_CHARS = 20
 
 # config-table key: first log day (UTC, YYYYMMDD) whose messages were counted live
 _LIVE_SINCE_KEY = "stats.live_since"
@@ -80,6 +82,9 @@ class StatsStorage:
         """
         self.db = db
         self.logger = logger
+        # Reaction changes are written one at a time, in the order the events arrived: a quick
+        # add then remove must not run its removal first (it would find nothing to take off).
+        self._reaction_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # user_stats CRUD
@@ -295,11 +300,11 @@ class StatsStorage:
             return [(row["user_id"], row["value"]) for row in rows]
 
     # ------------------------------------------------------------------
-    # guild_weekly_terms / message_reactions
+    # channel_weekly_terms / message_reactions
     # ------------------------------------------------------------------
 
     async def get_weekly_terms(
-        self, guild_id: str, week: str, kind: str, limit: int = 10
+        self, guild_id: str, week: str, kind: str, limit: int = 10, channel_ids: Optional[Sequence[str]] = None
     ) -> List[tuple[str, int]]:
         """Returns a guild's most used words or emojis in one week.
 
@@ -308,20 +313,28 @@ class StatsStorage:
             week: The week's Monday as ``YYYY-MM-DD`` (see ``week_start``).
             kind: ``"word"`` or ``"emoji"``.
             limit: How many terms to return.
+            channel_ids: Only count these channels (e.g. the public ones); None counts every channel.
 
         Returns:
             ``(term, count)`` pairs, most used first.
         """
-        return await asyncio.to_thread(self._get_weekly_terms_sync, guild_id, week, kind, limit)
+        return await asyncio.to_thread(self._get_weekly_terms_sync, guild_id, week, kind, limit, channel_ids)
 
-    def _get_weekly_terms_sync(self, guild_id: str, week: str, kind: str, limit: int) -> List[tuple[str, int]]:
+    def _get_weekly_terms_sync(
+        self, guild_id: str, week: str, kind: str, limit: int, channel_ids: Optional[Sequence[str]]
+    ) -> List[tuple[str, int]]:
+        if channel_ids is not None and not channel_ids:
+            return []
+        query = "SELECT term, SUM(count) AS total FROM channel_weekly_terms WHERE guild_id = ? AND week_start = ? AND kind = ?"
+        params: List[Any] = [guild_id, week, kind]
+        if channel_ids is not None:
+            ids = [str(channel_id) for channel_id in channel_ids]
+            query += f" AND channel_id IN ({', '.join('?' * len(ids))})"
+            params += ids
+        query += " GROUP BY term ORDER BY total DESC, term LIMIT ?"
         with self.db.get_connection() as conn:
-            rows = conn.execute(
-                "SELECT term, count FROM guild_weekly_terms WHERE guild_id = ? AND week_start = ? AND kind = ? "
-                "ORDER BY count DESC, term LIMIT ?",
-                (guild_id, week, kind, limit),
-            ).fetchall()
-            return [(row["term"], row["count"]) for row in rows]
+            rows = conn.execute(query, (*params, limit)).fetchall()
+            return [(row["term"], row["total"]) for row in rows]
 
     async def record_reaction(
         self,
@@ -347,9 +360,10 @@ class StatsStorage:
                 as their reaction was never counted.
         """
         try:
-            await asyncio.to_thread(
-                self._record_reaction_sync, message_id, guild_id, channel_id, author_id, created_at, delta, reactor_id
-            )
+            async with self._reaction_lock:
+                await asyncio.to_thread(
+                    self._record_reaction_sync, message_id, guild_id, channel_id, author_id, created_at, delta, reactor_id
+                )
         except Exception as e:
             await func.report_error(e, f"record_reaction failed (message={message_id})")
 
@@ -450,9 +464,13 @@ class StatsStorage:
 
     def _prune_activity_history_sync(self, now: datetime) -> None:
         oldest_week = (now - timedelta(days=WEEKLY_TERMS_KEEP_DAYS)).strftime("%Y-%m-%d")
+        # Weeks before last week are no longer recapped: terms used only once there are noise
+        # (and spam of many distinct words), so only the repeated ones are kept.
+        settled_week = week_start(now - timedelta(days=7))
         oldest_reaction = now.timestamp() - REACTIONS_KEEP_DAYS * 86400
         with self.db.get_connection() as conn:
-            conn.execute("DELETE FROM guild_weekly_terms WHERE week_start < ?", (oldest_week,))
+            conn.execute("DELETE FROM channel_weekly_terms WHERE week_start < ?", (oldest_week,))
+            conn.execute("DELETE FROM channel_weekly_terms WHERE week_start < ? AND count <= 1", (settled_week,))
             conn.execute("DELETE FROM message_reactions WHERE created_at < ?", (oldest_reaction,))
             conn.commit()
 
@@ -490,19 +508,20 @@ def week_start(moment: datetime) -> str:
         moment: A datetime, already in the time zone the week is counted in.
 
     Returns:
-        The week's key in ``guild_weekly_terms``.
+        The week's key in ``channel_weekly_terms``.
     """
     return (moment.date() - timedelta(days=moment.weekday())).isoformat()
 
 
 def _add_weekly_terms(
-    conn: sqlite3.Connection, guild_id: str, week: str, emojis: List[str], words: List[str]
+    conn: sqlite3.Connection, guild_id: str, channel_id: str, week: str, emojis: List[str], words: List[str]
 ) -> None:
-    """Adds one message's emojis and words to its guild's counts for the week (without committing).
+    """Adds one message's emojis and words to its channel's counts for the week (without committing).
 
     Args:
         conn: Open connection to the procedural database.
         guild_id: Guild the message was sent in.
+        channel_id: Channel the message was sent in.
         week: The week's key (see ``week_start``).
         emojis: Emojis in the message.
         words: Segmented words in the message.
@@ -513,10 +532,10 @@ def _add_weekly_terms(
         return
     conn.executemany(
         """
-        INSERT INTO guild_weekly_terms (guild_id, week_start, kind, term, count) VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(guild_id, week_start, kind, term) DO UPDATE SET count = count + excluded.count
+        INSERT INTO channel_weekly_terms (guild_id, channel_id, week_start, kind, term, count) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(guild_id, week_start, kind, term, channel_id) DO UPDATE SET count = count + excluded.count
         """,
-        [(guild_id, week, kind, term, n) for kind, term, n in counts],
+        [(guild_id, str(channel_id), week, kind, term, n) for kind, term, n in counts],
     )
 
 
@@ -546,7 +565,7 @@ def _apply_message(
     today_str = local_time.strftime("%Y-%m-%d")
     emojis = _extract_emojis(message_content)
     words = _segment_words(message_content)
-    _add_weekly_terms(conn, guild_id, week_start(local_time), emojis, words)
+    _add_weekly_terms(conn, guild_id, channel_id, week_start(local_time), emojis, words)
 
     existing = conn.execute(
         "SELECT * FROM user_stats WHERE user_id = ? AND guild_id = ?",
@@ -658,8 +677,8 @@ def _extract_emojis(text: str) -> List[str]:
 def _segment_words(text: str) -> List[str]:
     """Segment text using jieba and filter stop-words / noise.
 
-    Returns a list of meaningful words (length >= 2, not pure digits,
-    not in the stop-word set).
+    Returns a list of meaningful words (2 to ``MAX_WORD_CHARS`` characters,
+    not pure digits, not in the stop-word set).
     """
     if not text:
         return []
@@ -678,7 +697,7 @@ def _segment_words(text: str) -> List[str]:
     words: List[str] = []
     for word in jieba.cut(cleaned):
         w = word.strip().lower()
-        if len(w) < 2:
+        if len(w) < 2 or len(w) > MAX_WORD_CHARS:
             continue
         if w.isdigit():
             continue
