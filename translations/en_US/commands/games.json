@@ -25,6 +25,7 @@
         "chain_no_homophones": "(Same-pronunciation matching isn't installed on this bot, so only the exact character counts.)",
         "chain_first": "First word: **{word}**",
         "chain_bot_move": "Nobody? Then I'll go: **{word}**",
+        "chain_out_of_quota": "The host's chat limit is used up, so I can't keep playing. The chain ends here.",
         "chain_over_title": "🔗 Word chain over",
         "chain_over": "{count} words were played. The last word was **{last}**.",
         "chain_words": "The chain",

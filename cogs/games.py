@@ -20,7 +20,7 @@ from discord.ext import commands
 
 from addons.logging import get_logger
 from function import func
-from llm.game_writer import write_chain_word, write_question
+from llm.game_writer import Charge, QuotaExhausted, write_chain_word, write_question
 
 from .community import COMMUNITY_DB_PATH
 from .community_lib.store import CommunityStore
@@ -127,10 +127,10 @@ class GamesCog(commands.Cog):
         return store if hasattr(store, "sample_memories") else None
 
     # ------------------------------------------------------------ running games
-    def _busy(self, interaction: discord.Interaction, uses_model: bool = True) -> Optional[str]:
+    def _busy(self, interaction: discord.Interaction) -> Optional[str]:
         """Why a game cannot start here (the text to tell the host), or None.
 
-        Games that call the model count as one chat use of the host's quota.
+        The host's chat quota is not touched here: each model call the game makes is charged instead.
         """
         guild_id, channel = interaction.guild_id, interaction.channel
         if channel.id in self.limits.running:
@@ -142,19 +142,17 @@ class GamesCog(commands.Cog):
         if requests is not None and requests.is_request_channel(channel):
             # Every message there is taken as a song request, so no answer would reach the game.
             return self._t(guild_id, "request_channel")
-        limiter = getattr(self.bot, "rate_limiter", None)
-        if uses_model and limiter is not None:
-            retry_after = limiter.hit("chat", interaction.user.id)
-            if retry_after:
-                return self._t(guild_id, "rate_limited", seconds=max(1, round(retry_after)))
         return None
 
-    def _charge(self, host_id: Optional[int]) -> bool:
-        """Counts one model call against the host's chat quota; False when the quota is used up."""
+    def _charge(self, host_id: Optional[int]) -> Optional[Charge]:
+        """Charges each model attempt (fallback models included) to the host's chat quota."""
         limiter = getattr(self.bot, "rate_limiter", None)
         if limiter is None or host_id is None:
-            return True
-        return not limiter.hit("chat", host_id)
+            return None
+        return lambda: limiter.hit("chat", host_id)
+
+    def _quota_text(self, guild_id: int, error: QuotaExhausted) -> str:
+        return self._t(guild_id, "rate_limited", seconds=max(1, round(error.retry_after)))
 
     def _claim(self, interaction: discord.Interaction) -> None:
         self.limits.running.add(interaction.channel.id)
@@ -183,6 +181,9 @@ class GamesCog(commands.Cog):
         Only memories from channels everyone can read (or from ``here``, the channel the quiz is
         played in) are used, so a quiz never reveals what was said in a restricted channel.
         Every model call counts against ``host_id``'s chat quota; writing stops once it is used up.
+
+        Raises:
+            QuotaExhausted: The quota ran out before any question was written.
         """
         store, orchestrator = self._memory_store(), getattr(self.bot, "orchestrator", None)
         if store is None or orchestrator is None:
@@ -199,23 +200,29 @@ class GamesCog(commands.Cog):
         ]
         random.shuffle(candidates)
 
-        out_of_quota = False
+        charge = self._charge(host_id)
+        out_of_quota: Optional[QuotaExhausted] = None
 
         async def one(memory: Any) -> Optional[QuizQuestion]:
             nonlocal out_of_quota
-            if out_of_quota or not self._charge(host_id):
-                out_of_quota = True
+            if out_of_quota is not None:
                 return None
-            async with self.limits.model_slots:
-                reply = await write_question(orchestrator, str(guild.id), memory.content)
+            try:
+                async with self.limits.model_slots:
+                    reply = await write_question(orchestrator, str(guild.id), memory.content, charge)
+            except QuotaExhausted as error:
+                out_of_quota = error
+                return None
             return parse_question(reply, memory.content, memory.metadata or {}) if reply else None
 
         questions: List[QuizQuestion] = []
-        while candidates and len(questions) < count and not out_of_quota:
+        while candidates and len(questions) < count and out_of_quota is None:
             batch, candidates = candidates[: count - len(questions)], candidates[count - len(questions):]
             for question in await asyncio.gather(*(one(m) for m in batch)):
                 if question is not None and len(questions) < count:
                     questions.append(question)
+        if not questions and out_of_quota is not None:
+            raise out_of_quota
         return questions
 
     @staticmethod
@@ -358,6 +365,8 @@ class GamesCog(commands.Cog):
                 await channel.send(self._t(guild.id, "no_memories"))
                 return
             await self.run_quiz(channel, guild, questions)
+        except QuotaExhausted as error:
+            await channel.send(self._quota_text(guild.id, error))
         except Exception as error:
             self.logger.error("games: the quiz failed", exc_info=True)
             await func.report_error(error, "games: quiz")
@@ -402,17 +411,24 @@ class GamesCog(commands.Cog):
     async def bot_word(self, guild: discord.Guild, chain: WordChain, host_id: Optional[int] = None) -> Optional[str]:
         """The bot's next word, checked against the rules; None when the model has none.
 
-        The model call counts against the host's chat quota; the bot skips its move once that is used up.
+        Raises:
+            QuotaExhausted: The host's chat quota is used up (each model attempt is charged).
         """
         orchestrator = getattr(self.bot, "orchestrator", None)
-        if orchestrator is None or not self._charge(host_id):
+        if orchestrator is None:
             return None
         start = f"the character {last_char(chain.last_word)}"
         if chain.homophones:
             start += " (or any character with the same pinyin, tones ignored)"
         async with self.limits.model_slots:
             reply = await write_chain_word(
-                orchestrator, str(guild.id), self._language(guild.id), start, chain.words[-30:], MAX_CJK_LENGTH
+                orchestrator,
+                str(guild.id),
+                self._language(guild.id),
+                start,
+                chain.words[-30:],
+                MAX_CJK_LENGTH,
+                self._charge(host_id),
             )
         word = normalise_word((reply or "").splitlines()[0].strip(" \"'「」『』。.!！") if reply else "")
         if word is None or chain.problem(word, BOT_PLAYER) is not None:
@@ -441,7 +457,11 @@ class GamesCog(commands.Cog):
                     continue
                 if chain.last_player != BOT_PLAYER:
                     seen = len(chain.words)
-                    word = await self.bot_word(guild, chain, host_id)
+                    try:
+                        word = await self.bot_word(guild, chain, host_id)
+                    except QuotaExhausted:
+                        await channel.send(self._t(guild.id, "chain_out_of_quota"), allowed_mentions=quiet)
+                        break
                     if len(chain.words) != seen:
                         continue  # someone played while the bot was thinking
                     if word is not None and chain.play(word, BOT_PLAYER) is None:
@@ -558,6 +578,8 @@ class GamesCog(commands.Cog):
         # Music may have started (and been paused) while the stream was looked up; play() would replace it.
         if voice_client.is_playing() or voice_client.is_paused():
             raise discord.ClientException("Music is playing")
+        if not voice_client.is_connected():
+            raise discord.ClientException("Not connected to voice")
         voice_client.play(source)
         self._guesses[channel.id] = guess_round
         try:
@@ -659,13 +681,15 @@ class GamesCog(commands.Cog):
         pool = self.song_pool(music, guild.id) if problem is None else []
         if problem is None and len(pool) < MIN_SONGS:
             problem = "song_not_enough"
-        text = self._t(guild.id, problem, count=MIN_SONGS) if problem else self._busy(interaction, uses_model=False)
+        text = self._t(guild.id, problem, count=MIN_SONGS) if problem else self._busy(interaction)
         if text:
             await interaction.response.send_message(text, ephemeral=True)
             return
         self._claim(interaction)
         self.limits.song_guilds.add(guild.id)
         joined = False
+        # The music player's idle timer would disconnect the borrowed connection mid-game.
+        timer_paused = voice_client is not None and await self._pause_disconnect_timer(music, guild.id)
         try:
             await interaction.response.send_message(
                 self._t(guild.id, "song_preparing", user=interaction.user.mention, rounds=rounds, channel=voice.channel.mention)
@@ -684,19 +708,36 @@ class GamesCog(commands.Cog):
             except discord.HTTPException:
                 pass
         finally:
-            await self._finish_song_game(interaction, voice_client, music, joined)
+            await self._finish_song_game(interaction, voice_client, music, joined, timer_paused)
 
-    async def _finish_song_game(self, interaction: discord.Interaction, voice_client: Any, music: Any, joined: bool) -> None:
+    @staticmethod
+    async def _pause_disconnect_timer(music: Any, guild_id: int) -> bool:
+        """Cancels the music player's pending idle disconnect; True when there was one."""
+        timers = getattr(music, "disconnect_timers", {})
+        timer = timers.get(guild_id)
+        if timer is None or timer.done():
+            return False
+        await music._cancel_disconnect_timer(guild_id)
+        return True
+
+    async def _finish_song_game(
+        self, interaction: discord.Interaction, voice_client: Any, music: Any, joined: bool, restart_timer: bool = False
+    ) -> None:
         """Hands the voice channel back, then frees the server for another song game (not before)."""
         guild = interaction.guild
         try:
-            await self._hand_back_voice(guild, interaction.channel, voice_client, music, joined, interaction.user)
+            await self._hand_back_voice(
+                guild, interaction.channel, voice_client, music, joined, interaction.user, restart_timer
+            )
         finally:
             self._release(interaction)
             self.limits.song_guilds.discard(guild.id)
 
-    async def _hand_back_voice(self, guild: Any, channel: Any, voice_client: Any, music: Any, joined: bool, user: Any) -> None:
-        """After the game: start songs queued with /play meanwhile, or leave a channel joined only for the game."""
+    async def _hand_back_voice(
+        self, guild: Any, channel: Any, voice_client: Any, music: Any, joined: bool, user: Any, restart_timer: bool = False
+    ) -> None:
+        """After the game: start songs queued with /play meanwhile, leave a channel joined only for the
+        game, or restart the music player's idle timer that the game paused."""
         if voice_client is None or voice_client.is_playing() or voice_client.is_paused():
             return
         try:
@@ -704,6 +745,10 @@ class GamesCog(commands.Cog):
                 await music.play_next(PlaybackContext(guild=guild, channel=channel, user=user))
             elif joined:
                 await voice_client.disconnect()
+            elif restart_timer:
+                from .music import QUEUE_END_DISCONNECT_SECONDS
+
+                await music._start_disconnect_timer(guild.id, QUEUE_END_DISCONNECT_SECONDS)
         except Exception:
             self.logger.warning("games: could not hand the voice channel back to the music player", exc_info=True)
 

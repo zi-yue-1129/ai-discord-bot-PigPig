@@ -7,7 +7,7 @@ word really continues the chain) is left to ``cogs.games_lib``.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, List, Optional, Sequence
+from typing import Any, Callable, List, Optional, Sequence
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -31,6 +31,19 @@ _RULES = (
 )
 
 
+# Called before each model attempt (fallbacks included); returns the seconds to wait when the
+# player's quota is used up, else 0.
+Charge = Callable[[], float]
+
+
+class QuotaExhausted(Exception):
+    """The player whose game this is has no chat quota left."""
+
+    def __init__(self, retry_after: float) -> None:
+        super().__init__(f"chat quota used up, retry after {retry_after:.0f}s")
+        self.retry_after = retry_after
+
+
 _CHAIN_RULES = (
     "You are playing a word chain game in {language}. Reply with one common word only (no "
     "punctuation, no explanation) that starts with {start}, is not one of the used words, and "
@@ -38,32 +51,56 @@ _CHAIN_RULES = (
 )
 
 
-async def write_question(orchestrator: Any, guild_id: str, memory_text: str) -> Optional[str]:
-    """Returns the model's raw reply for one question, or None when no model answered."""
+async def write_question(
+    orchestrator: Any, guild_id: str, memory_text: str, charge: Optional[Charge] = None
+) -> Optional[str]:
+    """Returns the model's raw reply for one question, or None when no model answered.
+
+    Raises:
+        QuotaExhausted: ``charge`` refused a model attempt.
+    """
     prompt = [SystemMessage(content=_RULES), HumanMessage(content=f"Memory:\n<<<{memory_text}>>>")]
-    return await _ask(orchestrator, guild_id, prompt, "Quiz")
+    return await _ask(orchestrator, guild_id, prompt, "Quiz", charge)
 
 
 async def write_chain_word(
-    orchestrator: Any, guild_id: str, language: str, start: str, used: Sequence[str], max_length: int
+    orchestrator: Any,
+    guild_id: str,
+    language: str,
+    start: str,
+    used: Sequence[str],
+    max_length: int,
+    charge: Optional[Charge] = None,
 ) -> Optional[str]:
     """Returns the model's raw reply for the bot's next word chain move, or None when no model answered.
 
     Args:
         start: How the word must start, e.g. ``"the character 果 (or one read guo)"``.
         used: Words already played (the most recent ones are enough).
+        charge: Counts each model attempt against the player's quota.
+
+    Raises:
+        QuotaExhausted: ``charge`` refused a model attempt.
     """
     rules = _CHAIN_RULES.format(language=language, start=start, max_length=max_length)
     prompt = [SystemMessage(content=rules), HumanMessage(content="Used words: " + "、".join(used))]
-    return await _ask(orchestrator, guild_id, prompt, "Word chain")
+    return await _ask(orchestrator, guild_id, prompt, "Word chain", charge)
 
 
-async def _ask(orchestrator: Any, guild_id: str, prompt: List[Any], purpose: str) -> Optional[str]:
-    """Tries the message models in the configured order (respecting the circuit breaker)."""
+async def _ask(
+    orchestrator: Any, guild_id: str, prompt: List[Any], purpose: str, charge: Optional[Charge] = None
+) -> Optional[str]:
+    """Tries the message models in the configured order (respecting the circuit breaker).
+
+    Every attempt, fallbacks included, is charged first.
+    """
     breaker = get_model_circuit_breaker()
     for model_name in orchestrator.model_manager.get_model_priority_list("message_model"):
         if not breaker.is_available(model_name):
             continue
+        retry_after = charge() if charge is not None else 0
+        if retry_after:
+            raise QuotaExhausted(retry_after)
         try:
             model = create_model_instance(model_name, guild_id=guild_id, max_retries=0)
             reply = await asyncio.wait_for(model.ainvoke(prompt), timeout=MODEL_TIMEOUT_SECONDS)

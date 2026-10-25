@@ -25,6 +25,7 @@
         "chain_no_homophones": "（這個機器人沒有安裝同音判斷，只算同一個字。）",
         "chain_first": "第一個詞：**{word}**",
         "chain_bot_move": "沒人接嗎？那我來：**{word}**",
+        "chain_out_of_quota": "主持人的聊天次數用完了，我沒辦法再接，接龍就到這裡結束。",
         "chain_over_title": "🔗 接龍結束",
         "chain_over": "這局一共接了 {count} 個詞，最後一個是 **{last}**。",
         "chain_words": "這局的接龍",

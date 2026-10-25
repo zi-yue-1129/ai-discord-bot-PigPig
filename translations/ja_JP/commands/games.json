@@ -25,6 +25,7 @@
         "chain_no_homophones": "（このボットには同音判定が入っていないため、同じ文字のみ有効です。）",
         "chain_first": "最初の言葉：**{word}**",
         "chain_bot_move": "だれもいない？じゃあ私が：**{word}**",
+        "chain_out_of_quota": "ホストのチャット利用上限に達したため、私はもう続けられません。しりとりはここで終了です。",
         "chain_over_title": "🔗 しりとり終了",
         "chain_over": "全部で {count} 個の言葉がつながりました。最後は **{last}** でした。",
         "chain_words": "今回のしりとり",

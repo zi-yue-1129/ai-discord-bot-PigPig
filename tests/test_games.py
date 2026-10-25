@@ -120,8 +120,12 @@ class FakeChannel:
         self.id = 500
         self.picks = picks
         self.sent: List[FakeMessage] = []
+        self.sent_text: List[str] = []
 
     async def send(self, content: Any = None, embed: Any = None, view: Any = None, allowed_mentions: Any = None) -> FakeMessage:
+        if content is not None:
+            self.sent_text.append(content)
+            return FakeMessage(None, None)
         message = FakeMessage(embed, view)
         if view is not None:
             for user_id, pick in self.picks.items():
@@ -192,7 +196,7 @@ def cog(store: CommunityStore) -> GamesCog:
 async def test_questions_come_from_usable_memories_only(cog: GamesCog, monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list = []
 
-    async def fake_write(orchestrator: Any, guild_id: str, memory_text: str) -> str:
+    async def fake_write(orchestrator: Any, guild_id: str, memory_text: str, charge: Any = None) -> str:
         seen.append(memory_text)
         return _reply()
 
@@ -303,7 +307,9 @@ async def test_a_word_chain_takes_moves_lets_the_bot_step_in_and_records_points(
 
     asked: list = []
 
-    async def fake_word(orchestrator: Any, guild_id: str, language: str, start: str, used: Any, max_length: int) -> str:
+    async def fake_word(
+        orchestrator: Any, guild_id: str, language: str, start: str, used: Any, max_length: int, charge: Any = None
+    ) -> str:
         asked.append(start)
         return "「汁液」"
 
@@ -399,6 +405,9 @@ class FakeVoiceClient:
     def is_paused(self) -> bool:
         return getattr(self, "paused", False)
 
+    def is_connected(self) -> bool:
+        return not self.disconnected
+
     async def disconnect(self) -> None:
         self.disconnected = True
 
@@ -490,7 +499,7 @@ async def test_question_writing_is_bounded_across_the_bot(cog: GamesCog, monkeyp
 
     in_flight, peak = 0, 0
 
-    async def slow_write(orchestrator: Any, guild_id: str, memory_text: str) -> str:
+    async def slow_write(orchestrator: Any, guild_id: str, memory_text: str, charge: Any = None) -> str:
         nonlocal in_flight, peak
         in_flight += 1
         peak = max(peak, in_flight)
@@ -520,17 +529,15 @@ def test_a_player_hosts_one_game_at_a_time(cog: GamesCog) -> None:
     assert cog._busy(_interaction(10, 501)) is None
 
 
-def test_games_respect_the_chat_quota_and_stay_out_of_the_request_channel(cog: GamesCog) -> None:
+def test_games_stay_out_of_the_request_channel_and_admission_spends_no_quota(cog: GamesCog) -> None:
     hits: list = []
-    cog.bot.rate_limiter = SimpleNamespace(hit=lambda bucket, user_id: hits.append((bucket, user_id)) or (12.4 if user_id == 13 else 0))
+    cog.bot.rate_limiter = SimpleNamespace(hit=lambda bucket, user_id: hits.append(user_id) or 0)
     requests = SimpleNamespace(is_request_channel=lambda channel: channel.id == 777)
     cog.bot.get_cog = lambda name: SimpleNamespace(requests=requests) if name == "YTMusic" else None
 
-    assert cog._busy(_interaction(13, 500)) == "rate_limited|seconds=12"
     assert cog._busy(_interaction(14, 777)) == "request_channel|"
-    assert cog._busy(_interaction(14, 500, )) is None
-    assert cog._busy(_interaction(13, 500), uses_model=False) is None  # guess the song calls no model
-    assert hits == [("chat", 13), ("chat", 14)]
+    assert cog._busy(_interaction(14, 500)) is None
+    assert hits == []  # only model calls are charged
 
 
 @pytest.mark.asyncio
@@ -656,42 +663,141 @@ async def test_queued_music_ends_the_song_game(cog: GamesCog) -> None:
 # ------------------------------------------------------------------ third review follow-ups
 
 
-class OneCallLimiter:
-    """Allows one chat request per user, like a strict hourly limit."""
+# ------------------------------------------------------------------ quota with the real limiter and model loop
 
-    def __init__(self) -> None:
-        self.hits: list = []
+from addons.rate_limiter import LimitRule, RateLimiter  # noqa: E402
+from llm import game_writer  # noqa: E402
+from llm.game_writer import QuotaExhausted  # noqa: E402
 
-    def hit(self, bucket: str, user_id: int) -> float:
-        self.hits.append(user_id)
-        return 0 if self.hits.count(user_id) == 1 else 3600.0
+
+class FakeModels:
+    """The model fallback list: ``failing`` models raise, the next one answers ``reply``."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, failing: int, reply: str) -> None:
+        self.names = [f"bad{i}" for i in range(failing)] + ["good"]
+        self.calls: list = []
+        self.reply = reply
+        globals_ = game_writer._ask.__globals__
+        breaker = SimpleNamespace(is_available=lambda name: True, record_failure=lambda name, error: None)
+        monkeypatch.setitem(globals_, "get_model_circuit_breaker", lambda: breaker)
+        monkeypatch.setitem(globals_, "create_model_instance", self._create)
+        self.orchestrator = SimpleNamespace(model_manager=SimpleNamespace(get_model_priority_list=lambda kind: self.names))
+
+    def _create(self, name: str, **kwargs: Any) -> Any:
+        async def ainvoke(prompt: Any) -> Any:
+            self.calls.append(name)
+            if name != "good":
+                raise RuntimeError("model down")
+            return SimpleNamespace(content=self.reply)
+
+        return SimpleNamespace(ainvoke=ainvoke)
+
+
+def _limiter(allowed: int) -> RateLimiter:
+    return RateLimiter({"chat": LimitRule(max_requests=allowed, per_seconds=3600)})
 
 
 @pytest.mark.asyncio
-async def test_every_quiz_and_chain_model_call_counts_against_the_hosts_quota(
-    cog: GamesCog, monkeypatch: pytest.MonkeyPatch
+async def test_each_fallback_model_attempt_is_charged(monkeypatch: pytest.MonkeyPatch) -> None:
+    models = FakeModels(monkeypatch, failing=2, reply="果汁")
+    limiter = _limiter(2)
+
+    with pytest.raises(QuotaExhausted):
+        await game_writer.write_chain_word(
+            models.orchestrator, "42", "Chinese", "果", [], 8, charge=lambda: limiter.hit("chat", 10)
+        )
+
+    assert models.calls == ["bad0", "bad1"]  # the third attempt was refused
+
+
+class QuizResponse:
+    def __init__(self) -> None:
+        self.sent: list = []
+
+    async def send_message(self, text: str, **kwargs: Any) -> None:
+        self.sent.append(text)
+
+
+def _quiz_interaction(channel: Any) -> Any:
+    return SimpleNamespace(
+        guild=FakeGuild(),
+        guild_id=GUILD_ID,
+        channel=channel,
+        user=SimpleNamespace(id=10, mention="<@10>"),
+        response=QuizResponse(),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remaining, expected", [(1, "question"), (0, "rate_limited")])
+async def test_a_quiz_started_with_little_quota_left(
+    cog: GamesCog, monkeypatch: pytest.MonkeyPatch, remaining: int, expected: str
 ) -> None:
-    calls: list = []
+    models = FakeModels(monkeypatch, failing=0, reply=_reply())
+    cog.bot.orchestrator = models.orchestrator
+    cog.bot.rate_limiter = _limiter(1)
+    if remaining == 0:
+        cog.bot.rate_limiter.hit("chat", 10)
+    cog.answer_seconds = cog.pause_seconds = 0
+    channel = FakeChannel({})
 
-    async def fake_write(orchestrator: Any, guild_id: str, memory_text: str) -> str:
-        calls.append(memory_text)
-        return _reply()
+    await GamesCog.quiz.callback(cog, _quiz_interaction(channel), rounds=3)
 
-    async def fake_word(*args: Any) -> str:
-        calls.append("word")
-        return "果汁"
+    if expected == "question":
+        # One question is written with the one request left; the quiz plays it instead of giving up.
+        assert len(models.calls) == 1
+        assert channel.sent[0].embed.title == "question_title|number=1|total=1"
+    else:
+        assert models.calls == []
+        assert channel.sent_text == ["rate_limited|seconds=3600"]
 
-    monkeypatch.setitem(GamesCog.make_questions.__globals__, "write_question", fake_write)
-    monkeypatch.setitem(GamesCog.bot_word.__globals__, "write_chain_word", fake_word)
-    cog.bot.rate_limiter = OneCallLimiter()
-    cog.bot.vector_manager.store.memories = [_memory(MEMORY + str(i)) for i in range(30)]
 
-    questions = await cog.make_questions(FakeGuild(), 10, host_id=10)
+@pytest.mark.asyncio
+async def test_running_out_of_quota_ends_a_word_chain(cog: GamesCog, monkeypatch: pytest.MonkeyPatch) -> None:
+    models = FakeModels(monkeypatch, failing=0, reply="汁液")
+    cog.bot.orchestrator = models.orchestrator
+    cog.bot.rate_limiter = _limiter(1)
+    cog.bot.rate_limiter.hit("chat", 10)
+    cog.chain_idle_seconds = 0.1
+    channel = ChainChannel()
+    game = asyncio.create_task(cog.run_chain(channel, SimpleNamespace(id=GUILD_ID), WordChain("蘋果"), host_id=10))
+    await asyncio.sleep(0)
+    assert await cog.handle_message(ChainMessage(channel, 11, "果汁")) is True
 
-    assert len(questions) == 1 and len(calls) == 1  # the other nine calls were refused
-    assert await cog.bot_word(SimpleNamespace(id=GUILD_ID), WordChain("蘋果"), host_id=10) is None
-    assert len(calls) == 1
-    assert await cog.bot_word(SimpleNamespace(id=GUILD_ID), WordChain("蘋果"), host_id=11) == "果汁"
+    chain = await asyncio.wait_for(game, 2)
+
+    assert models.calls == [] and chain.words == ["蘋果", "果汁"]
+    assert channel.sent[1] == "chain_out_of_quota|"
+    assert await cog.handle_message(ChainMessage(channel, 12, "汁液")) is False  # no longer listening
+
+
+@pytest.mark.asyncio
+async def test_the_music_idle_timer_is_paused_while_a_song_game_borrows_the_connection(cog: GamesCog) -> None:
+    music = FakeMusic({})
+    timer = asyncio.create_task(asyncio.sleep(60))
+    music.disconnect_timers = {GUILD_ID: timer}
+    started: list = []
+
+    async def cancel(guild_id: int) -> None:
+        music.disconnect_timers.pop(guild_id).cancel()
+
+    async def start(guild_id: int, delay: float) -> None:
+        started.append((guild_id, delay))
+
+    music._cancel_disconnect_timer, music._start_disconnect_timer = cancel, start
+
+    assert await GamesCog._pause_disconnect_timer(music, GUILD_ID) is True
+    await asyncio.sleep(0)
+    assert timer.cancelled()
+    assert await GamesCog._pause_disconnect_timer(music, GUILD_ID) is False
+
+    voice = FakeVoiceClient()
+    await cog._hand_back_voice(SimpleNamespace(id=GUILD_ID), ChainChannel(), voice, music, False, None, restart_timer=True)
+    assert started == [(GUILD_ID, 10)]
+
+    voice.disconnected = True
+    with pytest.raises(discord.ClientException):
+        await cog.play_round(ChainChannel(), SimpleNamespace(id=GUILD_ID), voice, music, {"title": TITLE_EN, "video_id": "a"})
 
 
 @pytest.mark.asyncio
