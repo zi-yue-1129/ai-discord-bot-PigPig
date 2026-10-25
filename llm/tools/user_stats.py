@@ -132,9 +132,19 @@ class UserStatsTools:
             effective_id = user_id or str(message.author.id)
             guild_id = str(message.guild.id)
 
+            # The reply is posted in the channel for everyone to see.
+            if _is_hidden(runtime, message.guild.id, effective_id):
+                if effective_id == str(message.author.id):
+                    return (
+                        "This user hid their stats with /leaderboard optout, so they are not shown in chat. "
+                        "Tell them they can still see their own stats privately with /profile."
+                    )
+                return "This member chose to hide their stats (/leaderboard optout). Do not share or guess them."
+
             stats = await storage.get_user_stats(effective_id, guild_id)
             if not stats:
                 return f"No stats found for user {effective_id} in this server."
+            stats = public_stats(message.guild, stats)
 
             display_name = f"User {effective_id}"
             avatar_url = None
@@ -192,6 +202,44 @@ class UserStatsTools:
         return [
             StructuredTool.from_function(coroutine=get_user_stats, metadata=_info_meta),
         ]
+
+
+def _is_hidden(runtime: Any, guild_id: int, user_id: str) -> bool:
+    """Whether the member hid themselves from rankings and stats (``/leaderboard optout``)."""
+    bot = getattr(runtime, "bot", None)
+    cog = bot.get_cog("LeaderboardCog") if bot is not None else None
+    store = getattr(cog, "store", None)
+    if store is None:
+        return False
+    try:
+        return bool(store.is_opted_out(int(guild_id), int(user_id)))
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_public(guild: Any, channel: Any) -> bool:
+    """Whether every member (the @everyone role) can see ``channel`` and read its history."""
+    try:
+        permissions = channel.permissions_for(guild.default_role)
+    except (AttributeError, TypeError):
+        return False
+    return bool(permissions.view_channel and permissions.read_message_history)
+
+
+def public_stats(guild: Any, stats: Dict[str, Any]) -> Dict[str, Any]:
+    """The part of a member's all-time stats that may be shown to anyone in the server.
+
+    The all-time word and emoji counts (and so the word cloud) do not record which channel
+    they came from, so they are left out; channels are only listed when everyone can read them.
+    """
+    public = {str(c.id) for c in getattr(guild, "channels", []) if _is_public(guild, c)}
+    channels = stats.get("top_channels") or {}
+    return {
+        **stats,
+        "top_words": {},
+        "top_emojis": {},
+        "top_channels": {channel: count for channel, count in channels.items() if str(channel) in public},
+    }
 
 
 # ======================================================================
