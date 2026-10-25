@@ -129,6 +129,8 @@ class LeaderboardCog(commands.Cog):
         if kind == "streak":
             storage = self._stats_storage()
             rows = await storage.get_guild_rankings(str(guild.id), "streak") if storage else None
+        elif kind == "games":
+            rows = self.store.game_points(guild.id, self._period_start(guild.id, period))
         elif period == "all":
             storage = self._stats_storage()
             rows = await storage.get_guild_rankings(str(guild.id), "total") if storage else None
@@ -136,11 +138,17 @@ class LeaderboardCog(commands.Cog):
             collector = getattr(self.bot, "stats_collector", None)
             if collector is None:
                 return None
-            local = self._local_now(guild.id)
-            start = local.replace(hour=0, minute=0, second=0, microsecond=0)
-            start = start - timedelta(days=start.weekday()) if period == "week" else start.replace(day=1)
-            rows = await collector.message_counts_by_user(str(guild.id), start.timestamp(), self._now() + 1)
+            rows = await collector.message_counts_by_user(str(guild.id), self._period_start(guild.id, period), self._now() + 1)
         return None if rows is None else self._ranked_members(guild, rows)
+
+    def _period_start(self, guild_id: int, period: str) -> float:
+        """UNIX time the period began: local Monday 00:00, the 1st of the month, or 0 for all time."""
+        if period == "all":
+            return 0.0
+        local = self._local_now(guild_id)
+        start = local.replace(hour=0, minute=0, second=0, microsecond=0)
+        start = start - timedelta(days=start.weekday()) if period == "week" else start.replace(day=1)
+        return start.timestamp()
 
     # ------------------------------------------------------------ achievements
     @commands.Cog.listener()
@@ -208,7 +216,7 @@ class LeaderboardCog(commands.Cog):
 
     # ------------------------------------------------------------ commands
     @leaderboard.command(name="top", description="Show who talks the most on this server")
-    @app_commands.describe(period="Which messages to count", kind="Rank by messages or by daily streak")
+    @app_commands.describe(period="Which messages to count", kind="Rank by messages, daily streak or game points")
     @app_commands.choices(
         period=[
             app_commands.Choice(name="This week", value="week"),
@@ -218,6 +226,7 @@ class LeaderboardCog(commands.Cog):
         kind=[
             app_commands.Choice(name="Messages", value="messages"),
             app_commands.Choice(name="Daily streak", value="streak"),
+            app_commands.Choice(name="Game points", value="games"),
         ],
     )
     async def top(self, interaction: discord.Interaction, period: str = "week", kind: str = "messages") -> None:
@@ -233,8 +242,12 @@ class LeaderboardCog(commands.Cog):
         )
 
     def leaderboard_text(self, guild_id: int, ranked: List[Tuple[Any, int]], kind: str, period: str, viewer_id: int) -> str:
-        title = self._r(guild_id, "title_streak" if kind == "streak" else f"title_{period}")
-        unit = "value_streak" if kind == "streak" else "value_messages"
+        if kind == "streak":
+            title, unit = self._r(guild_id, "title_streak"), "value_streak"
+        elif kind == "games":
+            title, unit = self._r(guild_id, f"title_games_{period}"), "value_points"
+        else:
+            title, unit = self._r(guild_id, f"title_{period}"), "value_messages"
         if not ranked:
             return title + "\n" + self._r(guild_id, "empty")
         lines = [title]

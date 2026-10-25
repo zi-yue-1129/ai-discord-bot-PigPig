@@ -138,6 +138,7 @@ nav:
     - Other Features:
       - Community (Welcome & Birthdays): cogs/community.md
       - Leaderboards & Achievements: cogs/leaderboard.md
+      - Games (Server Quiz): cogs/games.md
       - Reminders: cogs/remind.md
       - Summarizer: cogs/summarizer.md
       - Story Management: cogs/story_manager.md

@@ -10,7 +10,7 @@ Rankings only list people who are still in the server; bots and hidden members a
 
 | Command | What it does |
 |---|---|
-| `/leaderboard top [period] [kind]` | Top 10 by messages this week (default), this month or all time, or by current daily streak. Shows your own place when you are outside the top 10 |
+| `/leaderboard top [period] [kind]` | Top 10 by messages this week (default), this month or all time, by current daily streak, or by game points (see [Games](games.md)). Shows your own place when you are outside the top 10 |
 | `/leaderboard optout hide` | `True` hides you from leaderboards, weekly recaps and achievement announcements; `False` shows you again |
 | `/profile [user]` | Activity card (messages, active hours, public channels), all-time rank and badges |
 | `/achievements [user]` | Every achievement, unlocked (with the date) or locked, and what it takes |

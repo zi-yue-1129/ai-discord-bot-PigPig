@@ -219,5 +219,16 @@
     "Local weekday to post it (default Sunday)": "投稿する曜日（既定は日曜）",
     "Local hour (0-23) to post it (default 20)": "投稿する時刻（0-23、既定は 20）",
     "Preview this week's recap so far (only you see it)": "今週ここまでのまとめをプレビュー（自分にだけ表示）",
-    "Percent of unprompted replies that are just an emoji reaction (0 turns it off)": "自発的な返信のうち絵文字リアクションだけにする割合（0 でオフ）"
+    "Percent of unprompted replies that are just an emoji reaction (0 turns it off)": "自発的な返信のうち絵文字リアクションだけにする割合（0 でオフ）",
+    "Rank by messages, daily streak or game points": "メッセージ数・連続発言日数・ゲームポイントで順位付け",
+    "Game points": "ゲームポイント",
+    "Play a game with the server": "サーバーのみんなでゲーム",
+    "A quiz about things that happened on this server": "このサーバーで起きたことのクイズ",
+    "How many questions (3-10)": "問題数（3-10）",
+    "Only use memories from the last this many days": "直近この日数の記憶だけを使う",
+    "Only use memories from this channel": "このチャンネルの記憶だけを使う",
+    "Word chain: start each word with the last character of the one before": "しりとり：前の言葉の最後の文字から始める",
+    "Also accept a character with the same pronunciation (Chinese)": "同じ読みの漢字も可（中国語）",
+    "Guess the song from a short clip of what this server listened to": "このサーバーで聴いた曲の一部を流して曲名を当てる",
+    "How many songs (3-10)": "曲数（3-10）"
 }

@@ -26,7 +26,11 @@
         "needs_gap_days": "{value} 日沈黙したあとに発言する",
         "needs_night_ratio": "発言の {value} を 0 時から 5 時に送る",
         "needs_membership_days": "初めての発言から {value} 日たつ",
-        "profile_titles": "称号：{titles}"
+        "profile_titles": "称号：{titles}",
+        "title_games_week": "🎮 **今週のゲームポイント**",
+        "title_games_month": "🎮 **今月のゲームポイント**",
+        "title_games_all": "🎮 **通算ゲームポイント**",
+        "value_points": "{count} ポイント"
     },
     "achievements": {
         "msg_100": "おしゃべりさん",

@@ -459,6 +459,22 @@ def test_achievement_modes_are_in_settings() -> None:
     assert GuildSettings(guild_id=1).achievement_mode == "off"
 
 
+@pytest.mark.asyncio
+async def test_game_points_have_their_own_leaderboard(cog: LeaderboardCog, guild: FakeGuild, store: CommunityStore) -> None:
+    guild.add(10)
+    guild.add(11)
+    store.add_game_scores(GUILD_ID, "quiz", {10: 300, 11: 900}, NOW.timestamp())
+    store.add_game_scores(GUILD_ID, "quiz", {10: 5000}, (NOW - timedelta(days=30)).timestamp())
+
+    week = await cog.rankings(guild, "games", "week")
+    everything = await cog.rankings(guild, "games", "all")
+
+    assert [(member.id, value) for member, value in week] == [(11, 900), (10, 300)]
+    assert [(member.id, value) for member, value in everything] == [(10, 5300), (11, 900)]
+    lines = cog.leaderboard_text(GUILD_ID, week, "games", "week", viewer_id=10).splitlines()
+    assert lines[:2] == ["title_games_week|", "🥇 **user11** — value_points|count=900"]
+
+
 class FakeResponse:
     def __init__(self) -> None:
         self.sent: List[tuple] = []

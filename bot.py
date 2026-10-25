@@ -281,6 +281,11 @@ class PigPig(commands.Bot):
             music_cog = self.get_cog('YTMusic')
             if music_cog is not None and await music_cog.requests.handle(message):
                 return
+
+            # A word played in a running word chain is a game move, not a chat message.
+            games_cog = self.get_cog('GamesCog')
+            if games_cog is not None and await games_cog.handle_message(message):
+                return
             
             # Delegate message processing to MessageHandler
             # Check if message should be handled by bot (e.g., @mention or in specific channel)

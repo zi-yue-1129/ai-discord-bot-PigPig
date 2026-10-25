@@ -26,7 +26,11 @@
         "needs_gap_days": "沉默 {value} 天後再次發言",
         "needs_night_ratio": "{value} 的訊息在凌晨 0 到 5 點發送",
         "needs_membership_days": "第一次發言滿 {value} 天",
-        "profile_titles": "稱號：{titles}"
+        "profile_titles": "稱號：{titles}",
+        "title_games_week": "🎮 **本週遊戲積分**",
+        "title_games_month": "🎮 **本月遊戲積分**",
+        "title_games_all": "🎮 **歷來遊戲積分**",
+        "value_points": "{count} 分"
     },
     "achievements": {
         "msg_100": "話匣子",
