@@ -82,7 +82,7 @@ def _relevant_manager(tmp_path: Path, monkeypatch, verdicts: list) -> tuple[Chan
 
     asked: list = []
 
-    async def fake_judge(orchestrator, bot, message, keywords):
+    async def fake_judge(orchestrator, bot, message, keywords, history_messages=8):
         asked.append((message.content, list(keywords)))
         return verdicts.pop(0) if verdicts else False
 
@@ -148,3 +148,26 @@ def test_only_a_yes_counts_as_yes() -> None:
 
     assert parse_answer("YES") and parse_answer(" yes.") and parse_answer("**Yes**")
     assert not parse_answer("NO") and not parse_answer("") and not parse_answer("Maybe yes")
+
+
+def test_tuning_comes_from_base_yaml_with_safe_defaults() -> None:
+    from cogs.channel_manager import AutoResponseTuning
+
+    assert AutoResponseTuning.from_config(None) == AutoResponseTuning()
+    tuned = AutoResponseTuning.from_config({"relevance_cooldown_seconds": 60, "relevance_min_chars": "10",
+                                           "relevance_history_messages": 0, "conversation_window_seconds": "x"})
+    assert tuned.relevance_cooldown_seconds == 60 and tuned.relevance_min_chars == 10
+    assert tuned.relevance_history_messages == 1  # the model always sees at least one earlier message
+    assert tuned.conversation_window_seconds == 180
+
+
+@pytest.mark.asyncio
+async def test_the_owner_tuning_is_used(tmp_path: Path, monkeypatch) -> None:
+    from cogs.channel_manager import AutoResponseTuning
+
+    manager, asked = _relevant_manager(tmp_path, monkeypatch, [False, False])
+    manager.tuning = AutoResponseTuning(relevance_cooldown_seconds=0, relevance_min_chars=1)
+
+    await manager.should_auto_respond(_message("ok"), "1")
+    await manager.should_auto_respond(_message("hm"), "1")
+    assert len(asked) == 2

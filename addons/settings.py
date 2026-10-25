@@ -66,6 +66,8 @@ class BaseConfig:
         self.version: str = data.get("version", "")
         # Per-user usage limits (see addons/rate_limiter.py); empty means the defaults apply.
         self.rate_limits: dict = data.get("rate_limits", {}) or {}
+        # Tuning for unprompted replies (see AutoResponseTuning in cogs/channel_manager.py).
+        self.auto_response: dict = data.get("auto_response", {}) or {}
 
         # Dashboard web interface settings
         self.dashboard: dict = data.get("dashboard", {

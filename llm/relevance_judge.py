@@ -19,7 +19,7 @@ from llm.utils.model_init import create_model_instance
 
 logger = get_logger(server_id="Bot", source=__name__)
 
-HISTORY_MESSAGES = 8
+DEFAULT_HISTORY_MESSAGES = 8
 HISTORY_MAX_CHARS = 1500
 MODEL_TIMEOUT_SECONDS = 10
 
@@ -48,7 +48,10 @@ def parse_answer(text: str) -> bool:
     return text.strip().strip("*`'\". ").upper().startswith("YES")
 
 
-async def judge_relevance(orchestrator: Any, bot: Any, message: discord.Message, keywords: Sequence[str]) -> bool:
+async def judge_relevance(
+    orchestrator: Any, bot: Any, message: discord.Message, keywords: Sequence[str],
+    history_messages: int = DEFAULT_HISTORY_MESSAGES,
+) -> bool:
     """Asks the first available small model whether to reply; any failure means "no".
 
     Args:
@@ -56,15 +59,16 @@ async def judge_relevance(orchestrator: Any, bot: Any, message: discord.Message,
         bot: The bot.
         message: The new message.
         keywords: The channel's topics, if the admin set any.
+        history_messages: How many earlier messages the model reads.
 
     Returns:
         Whether the bot should reply.
     """
     try:
-        history_messages = [m async for m in message.channel.history(limit=HISTORY_MESSAGES, before=message)]
+        earlier = [m async for m in message.channel.history(limit=history_messages, before=message)]
     except discord.HTTPException:
-        history_messages = []
-    history = format_history([message, *history_messages], bot_id=bot.user.id, max_chars=HISTORY_MAX_CHARS)
+        earlier = []
+    history = format_history([message, *earlier], bot_id=bot.user.id, max_chars=HISTORY_MAX_CHARS)
     if not history:
         return False
 

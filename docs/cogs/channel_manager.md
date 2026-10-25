@@ -79,7 +79,8 @@ of the keywords, or comes from someone it answered in the last 3 minutes. If non
 (the first available `message_model`) reads the last 8 messages and answers YES or NO
 (`llm/relevance_judge.py`); the keywords are given to it as the channel's topics. To bound the cost, the model is
 asked at most once every 15 seconds per channel and never for messages under 4 characters, and a model failure
-means no reply. Unprompted replies count toward the
+means no reply. The bot owner can change these numbers (and the 3-minute window and the 8 messages) under
+`auto_response` in `base.yaml`. Unprompted replies count toward the
 per-user chat limit in `base.yaml` (`rate_limits`); a user who is over it is skipped quietly.
 
 **Permissions**: Administrator only

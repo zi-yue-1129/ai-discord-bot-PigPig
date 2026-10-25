@@ -18,6 +18,13 @@ rate_limits:
   image:               # image generation, from /generate_image or from the AI
     max_requests: 20
     per_seconds: 86400
+
+# Unprompted replies in /auto_response channels.
+auto_response:
+  conversation_window_seconds: 180  # after replying to someone, keep answering them this long (relevant mode)
+  relevance_cooldown_seconds: 15    # relevant mode: ask the model at most once per channel this often
+  relevance_min_chars: 4            # relevant mode: shorter messages are never sent to the model
+  relevance_history_messages: 8     # relevant mode: how many earlier messages the model reads
 logging:
   # Console output settings
   console:

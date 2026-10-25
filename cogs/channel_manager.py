@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 import copy
 import json
+from dataclasses import dataclass
 import os
 import random
 import time
@@ -12,6 +13,7 @@ from typing import Optional, Dict, List, Any, Tuple, Union
 from .language_manager import LanguageManager
 from llm.relevance_judge import judge_relevance
 from addons.tokens import tokens
+from addons.settings import base_config
 from function import func
 import asyncio
 
@@ -21,13 +23,38 @@ log = get_logger(server_id="Bot", source=__name__)
 # Auto-response modes for a channel whose auto-response is on.
 AUTO_RESPONSE_MODES = ("all", "chance", "relevant")
 DEFAULT_AUTO_RESPONSE_CHANCE = 20
-# How long the bot counts as "in a conversation" with someone after replying to them.
-CONVERSATION_WINDOW_SECONDS = 180
-# In "relevant" mode, a channel's messages are judged by the model at most this often,
-# so a busy channel does not cost one model call per message.
-RELEVANCE_JUDGE_COOLDOWN_SECONDS = 15
-# Messages shorter than this (after trimming) are never sent to the model.
-RELEVANCE_MIN_CHARS = 4
+
+
+@dataclass(frozen=True)
+class AutoResponseTuning:
+    """Owner-set tuning for unprompted replies (``auto_response`` in base.yaml)."""
+
+    # How long the bot counts as "in a conversation" with someone after replying to them.
+    conversation_window_seconds: float = 180
+    # In "relevant" mode, a channel's messages are judged by the model at most this often,
+    # so a busy channel does not cost one model call per message.
+    relevance_cooldown_seconds: float = 15
+    # Messages shorter than this (after trimming) are never sent to the model.
+    relevance_min_chars: int = 4
+    # How many recent messages the model reads.
+    relevance_history_messages: int = 8
+
+    @classmethod
+    def from_config(cls, config: Optional[Dict[str, Any]]) -> "AutoResponseTuning":
+        config = config or {}
+        defaults = cls()
+        values = {}
+        for field_name in ("conversation_window_seconds", "relevance_cooldown_seconds",
+                           "relevance_min_chars", "relevance_history_messages"):
+            default = getattr(defaults, field_name)
+            try:
+                value = type(default)(config.get(field_name, default))
+            except (TypeError, ValueError):
+                log.warning(f"auto_response.{field_name} in base.yaml is not a number; using {default}")
+                value = default
+            values[field_name] = max(value, 0)
+        values["relevance_history_messages"] = max(values["relevance_history_messages"], 1)
+        return cls(**values)
 
 
 def get_auto_response_settings(config: Dict[str, Any], channel_id: str) -> Dict[str, Any]:
@@ -90,6 +117,7 @@ class ChannelManager(commands.Cog):
         self._last_reply_at: Dict[Tuple[int, int], float] = {}
         # channel_id -> when the model last judged a message there ("relevant" mode).
         self._last_judged_at: Dict[int, float] = {}
+        self.tuning = AutoResponseTuning.from_config(getattr(base_config, "auto_response", None))
         os.makedirs(self.data_dir, exist_ok=True)
 
     async def cog_load(self):
@@ -414,7 +442,7 @@ class ChannelManager(commands.Cog):
         now = time.monotonic()
         self._last_reply_at[(int(channel_id), int(user_id))] = now
         if len(self._last_reply_at) > 5000:
-            cutoff = now - CONVERSATION_WINDOW_SECONDS
+            cutoff = now - self.tuning.conversation_window_seconds
             self._last_reply_at = {k: t for k, t in self._last_reply_at.items() if t >= cutoff}
 
     async def should_auto_respond(self, message: discord.Message, guild_id: str) -> bool:
@@ -422,28 +450,31 @@ class ChannelManager(commands.Cog):
 
         In "relevant" mode the cheap rules come first; when none matches, a small model reads
         the recent conversation and decides (at most once per channel every
-        ``RELEVANCE_JUDGE_COOLDOWN_SECONDS``).
+        ``relevance_cooldown_seconds``; see ``AutoResponseTuning``).
         """
         settings = get_auto_response_settings(self.load_config(guild_id), str(message.channel.id))
         if settings["mode"] == "off":
             return False
         now = time.monotonic()
         last = self._last_reply_at.get((message.channel.id, message.author.id))
-        in_conversation = last is not None and now - last < CONVERSATION_WINDOW_SECONDS
+        in_conversation = last is not None and now - last < self.tuning.conversation_window_seconds
         me = message.guild.me if message.guild else None
         bot_names = [getattr(self.bot.user, "name", ""), getattr(me, "display_name", "")]
         if decide_auto_response(settings, message.content, bot_names, in_conversation):
             return True
-        if settings["mode"] != "relevant" or len((message.content or "").strip()) < RELEVANCE_MIN_CHARS:
+        if settings["mode"] != "relevant" or len((message.content or "").strip()) < self.tuning.relevance_min_chars:
             return False
-        if now - self._last_judged_at.get(message.channel.id, float("-inf")) < RELEVANCE_JUDGE_COOLDOWN_SECONDS:
+        if now - self._last_judged_at.get(message.channel.id, float("-inf")) < self.tuning.relevance_cooldown_seconds:
             return False
         orchestrator = getattr(self.bot, "orchestrator", None)
         if orchestrator is None:
             return False
         self._last_judged_at[message.channel.id] = now
         try:
-            return await judge_relevance(orchestrator, self.bot, message, settings["keywords"])
+            return await judge_relevance(
+                orchestrator, self.bot, message, settings["keywords"],
+                history_messages=self.tuning.relevance_history_messages,
+            )
         except Exception as e:
             await func.report_error(e, "auto-response relevance check")
             return False
