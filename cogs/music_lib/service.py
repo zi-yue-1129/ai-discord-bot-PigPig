@@ -528,8 +528,10 @@ class MusicService:
         )
 
     def _record_quick_skip(self, guild_id: int, state: Any) -> None:
-        """Counts a skipped recommendation against its author when it was skipped right away."""
+        """Logs the skip, and counts a recommendation skipped right away against its author."""
         song = state.current_song
+        if song and song.get("play_event_id") is not None:
+            self._cog._taste_store.mark_play_skipped(song["play_event_id"], self._cog._clock() - state.song_started_at)
         if not song or song.get("added_by") != self._cog.bot.user.id or not song.get("author"):
             return
         played = self._cog._clock() - state.song_started_at

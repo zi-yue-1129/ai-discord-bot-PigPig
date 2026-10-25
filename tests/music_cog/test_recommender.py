@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import sqlite3
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -447,6 +448,34 @@ async def test_skipping_late_or_skipping_a_request_is_no_complaint_about_the_aut
     await _skip_after(cog, ctx, voice_client, make_song(5) | {"author": "Ado", "added_by": REQUESTER_ID}, seconds=5)
 
     assert cog.taste_for(GUILD_ID).skipped["ado"] == 0
+
+
+@pytest.mark.asyncio
+async def test_played_songs_are_logged_with_their_requester_for_the_charts(
+    cog: YTMusic, ctx: PlaybackContext, voice_client: FakeVoiceClient, wired_player: None
+) -> None:
+    await cog._play_song(ctx, make_song(1) | {"author": "Eve", "added_by": REQUESTER_ID}, voice_client)
+    await cog._play_song(ctx, make_song(2) | {"author": "Ado", "added_by": BOT_USER_ID}, voice_client)
+
+    with sqlite3.connect(cog._taste_store.path) as connection:
+        rows = connection.execute(
+            "SELECT guild_id, video_id, requester_id, autoplay, skipped FROM play_events ORDER BY id"
+        ).fetchall()
+    assert rows == [(GUILD_ID, "v1", REQUESTER_ID, 0, 0), (GUILD_ID, "v2", None, 1, 0)]
+
+
+@pytest.mark.asyncio
+async def test_a_skipped_song_is_marked_in_the_play_log(
+    cog: YTMusic, ctx: PlaybackContext, voice_client: FakeVoiceClient
+) -> None:
+    song = make_song(6) | {"author": "Eve", "added_by": REQUESTER_ID}
+    song["play_event_id"] = cog._taste_store.add_play_event(GUILD_ID, "v6", "song 6", REQUESTER_ID, autoplay=False)
+
+    await _skip_after(cog, ctx, voice_client, song, seconds=42)
+
+    assert cog._taste_store.top_played(GUILD_ID, 0, 10**12) == [("v6", "song 6", 1, 1)]
+    with sqlite3.connect(cog._taste_store.path) as connection:
+        assert connection.execute("SELECT listened_seconds FROM play_events").fetchone() == (42,)
 
 
 @pytest.mark.asyncio
