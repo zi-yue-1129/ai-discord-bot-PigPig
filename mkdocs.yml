@@ -136,6 +136,7 @@ nav:
       - User Data: cogs/userdata.md
       - Performance Monitoring: cogs/performance.md
     - Other Features:
+      - Community (Welcome & Birthdays): cogs/community.md
       - Reminders: cogs/remind.md
       - Summarizer: cogs/summarizer.md
       - Story Management: cogs/story_manager.md

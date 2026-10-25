@@ -1,13 +1,14 @@
-"""SQLite persistence for the per-guild autoplay taste memory."""
+"""SQLite persistence for the per-guild autoplay taste memory and the log of played songs."""
 
 from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, List, Tuple, Union
+from typing import Iterator, List, Optional, Tuple, Union
 
 from addons.logging import get_logger
 
@@ -27,11 +28,26 @@ CREATE TABLE IF NOT EXISTS taste_author (
     skipped INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (guild_id, author)
 );
+CREATE TABLE IF NOT EXISTS play_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id INTEGER NOT NULL,
+    video_id TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    requester_id INTEGER,
+    autoplay INTEGER NOT NULL DEFAULT 0,
+    played_at REAL NOT NULL,
+    skipped INTEGER NOT NULL DEFAULT 0,
+    listened_seconds REAL
+);
+CREATE INDEX IF NOT EXISTS idx_play_events_guild_time ON play_events (guild_id, played_at);
 """
+
+# Played songs older than this are deleted (they only feed weekly and monthly charts).
+PLAY_EVENTS_KEEP_SECONDS = 180 * 24 * 3600
 
 
 class TasteStore:
-    """Stores what each guild played, requested and skipped.
+    """Stores what each guild played, requested and skipped, and a dated log of played songs.
 
     A database problem is logged and never interrupts playback: the in-memory taste keeps
     working and only the persistence of that change is lost.
@@ -116,6 +132,71 @@ class TasteStore:
     def add_skip(self, guild_id: int, author: str) -> None:
         """Counts a quickly skipped recommendation by a (normalized) author."""
         self._bump(guild_id, author, "skipped")
+
+    def add_play_event(
+        self,
+        guild_id: int,
+        video_id: str,
+        title: str,
+        requester_id: Optional[int],
+        autoplay: bool,
+        played_at: Optional[float] = None,
+    ) -> Optional[int]:
+        """Logs that a song started playing and drops log entries past the kept period.
+
+        Args:
+            guild_id: The guild.
+            video_id: The song's video ID.
+            title: The song's title.
+            requester_id: Who queued it (``None`` when unknown).
+            autoplay: Whether autoplay picked it rather than a person.
+            played_at: When it started (UNIX time; defaults to now).
+
+        Returns:
+            The entry's ID (for ``mark_play_skipped``), or None when it could not be saved.
+        """
+        played_at = time.time() if played_at is None else played_at
+        try:
+            with self._session() as connection:
+                cursor = connection.execute(
+                    "INSERT INTO play_events (guild_id, video_id, title, requester_id, autoplay, played_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (guild_id, video_id, title, requester_id, int(autoplay), played_at),
+                )
+                connection.execute(
+                    "DELETE FROM play_events WHERE played_at < ?", (played_at - PLAY_EVENTS_KEEP_SECONDS,)
+                )
+                return cursor.lastrowid
+        except (sqlite3.Error, OSError):
+            # Charts only lose this one song; playback is unaffected.
+            log.error(f"Could not log a played song to {self.path}", exc_info=True)
+            return None
+
+    def mark_play_skipped(self, event_id: int, listened_seconds: float) -> None:
+        """Marks a logged song as skipped after ``listened_seconds`` of playback."""
+        self._write(
+            [("UPDATE play_events SET skipped = 1, listened_seconds = ? WHERE id = ?", (listened_seconds, event_id))]
+        )
+
+    def top_played(self, guild_id: int, since: float, until: float, limit: int = 10) -> List[Tuple[str, str, int, int]]:
+        """Returns a guild's most played songs in a time range.
+
+        Args:
+            guild_id: The guild.
+            since: Range start (UNIX time, inclusive).
+            until: Range end (UNIX time, exclusive).
+            limit: How many songs to return.
+
+        Returns:
+            ``(video_id, title, plays, skips)`` tuples, most played first.
+        """
+        with self._session() as connection:
+            return connection.execute(
+                "SELECT video_id, MAX(title), COUNT(*) AS plays, SUM(skipped) FROM play_events "
+                "WHERE guild_id = ? AND played_at >= ? AND played_at < ? "
+                "GROUP BY video_id ORDER BY plays DESC, MAX(played_at) DESC LIMIT ?",
+                (guild_id, since, until, limit),
+            ).fetchall()
 
     def history_row_count(self, guild_id: int) -> int:
         """Returns how many played songs are stored for a guild."""
