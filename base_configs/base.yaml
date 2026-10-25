@@ -25,6 +25,18 @@ auto_response:
   relevance_cooldown_seconds: 15    # relevant mode: ask the model at most once per channel this often
   relevance_min_chars: 4            # relevant mode: shorter messages are never sent to the model
   relevance_history_messages: 8     # relevant mode: how many earlier messages the model reads
+
+# Community features (/community). Server admins turn each one on; these are the bot owner's limits.
+community:
+  default_timezone: ""        # e.g. "Asia/Taipei"; empty uses this machine's time zone. Servers can set their own.
+  welcome:
+    max_ai_per_hour: 20       # AI-written welcomes per server per hour; after that a fixed text is used
+    burst_threshold: 5        # this many joins within burst_seconds counts as a raid:
+    burst_seconds: 60         #   welcomes are then combined into one fixed-text message
+    batch_seconds: 5          # joins this close together share one welcome message
+  birthday:
+    use_ai: true              # false: birthday and anniversary messages use the fixed text
+    max_mentions: 20          # at most this many people are named in one celebration message
 logging:
   # Console output settings
   console:

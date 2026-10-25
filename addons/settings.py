@@ -68,6 +68,8 @@ class BaseConfig:
         self.rate_limits: dict = data.get("rate_limits", {}) or {}
         # Tuning for unprompted replies (see AutoResponseTuning in cogs/channel_manager.py).
         self.auto_response: dict = data.get("auto_response", {}) or {}
+        # Limits for community features (see CommunityLimits in cogs/community_lib/limits.py).
+        self.community: dict = data.get("community", {}) or {}
 
         # Dashboard web interface settings
         self.dashboard: dict = data.get("dashboard", {
