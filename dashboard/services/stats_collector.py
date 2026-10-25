@@ -232,6 +232,16 @@ class StatsCollector:
             "accurate_total_messages": accurate_total,
         }
 
+    async def message_counts_by_user(self, guild_id: str, since: float, until: float) -> list[tuple[str, int]]:
+        """Counts each user's messages in a guild between ``since`` (inclusive) and ``until`` (exclusive), most first."""
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                "SELECT user_id, COUNT(*) AS cnt FROM message_events WHERE guild_id = ? AND timestamp >= ? AND timestamp < ? "
+                "GROUP BY user_id ORDER BY cnt DESC, user_id",
+                (guild_id, since, until),
+            )
+            return [(row[0], row[1]) for row in await cursor.fetchall()]
+
     async def _get_accurate_total(self, guild_id: Optional[str] = None) -> int:
         """Get accurate message count from procedural.db."""
         if not os.path.exists(_PROCEDURAL_DB):

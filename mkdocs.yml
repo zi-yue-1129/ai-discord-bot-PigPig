@@ -137,6 +137,7 @@ nav:
       - Performance Monitoring: cogs/performance.md
     - Other Features:
       - Community (Welcome & Birthdays): cogs/community.md
+      - Leaderboards & Achievements: cogs/leaderboard.md
       - Reminders: cogs/remind.md
       - Summarizer: cogs/summarizer.md
       - Story Management: cogs/story_manager.md

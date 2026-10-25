@@ -11,7 +11,7 @@
         "off": "オフ",
         "not_set": "未設定",
         "host_timezone": "ボットのタイムゾーン",
-        "status": "**コミュニティ設定**\nお知らせチャンネル：{announce}\nタイムゾーン：{timezone}\n新メンバー歓迎：{welcome}（チャンネル：{welcome_channel}、退出通知：{farewell}）\n誕生日：{birthday}（毎日 {hour}:00、ロール：{role}）\n参加記念日：{anniversary}",
+        "status": "**コミュニティ設定**\nお知らせチャンネル：{announce}\nタイムゾーン：{timezone}\n新メンバー歓迎：{welcome}（チャンネル：{welcome_channel}、退出通知：{farewell}）\n誕生日：{birthday}（毎日 {hour}:00、ロール：{role}）\n参加記念日：{anniversary}\n実績のお知らせ：{achievements}",
         "channel_set": "コミュニティのお知らせは {channel} に投稿されます。",
         "invalid_timezone": "`{name}` というタイムゾーンは分かりません。`Asia/Tokyo` のような名前を使ってください。",
         "timezone_set": "タイムゾーンを `{name}` に設定しました。現地は今 {time} です。",
@@ -29,6 +29,12 @@
         "birthday_none": "このサーバーでは誕生日が保存されていません。",
         "upcoming_title": "🎂 今後 30 日の誕生日：",
         "upcoming_line": "{date} {name}",
-        "upcoming_none": "今後 30 日に誕生日の人はいません。"
+        "upcoming_none": "今後 30 日に誕生日の人はいません。",
+        "achievements_off": "実績はお知らせしません。/profile と /achievements では引き続き確認できます。",
+        "achievements_reply": "実績を解除したメッセージに 🏆 を付けて短く返信します。",
+        "achievements_channel": "実績はコミュニティのお知らせチャンネルでお知らせします。",
+        "achievement_mode_off": "オフ",
+        "achievement_mode_reply": "メッセージに返信",
+        "achievement_mode_channel": "お知らせチャンネル"
     }
 }

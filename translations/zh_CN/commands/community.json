@@ -11,7 +11,7 @@
         "off": "关闭",
         "not_set": "未设置",
         "host_timezone": "机器人的时区",
-        "status": "**社区设置**\n公告频道：{announce}\n时区：{timezone}\n新成员欢迎：{welcome}（频道：{welcome_channel}，离开通知：{farewell}）\n生日祝福：{birthday}（每天 {hour}:00，身份组：{role}）\n入群周年：{anniversary}",
+        "status": "**社区设置**\n公告频道：{announce}\n时区：{timezone}\n新成员欢迎：{welcome}（频道：{welcome_channel}，离开通知：{farewell}）\n生日祝福：{birthday}（每天 {hour}:00，身份组：{role}）\n入群周年：{anniversary}\n成就公告：{achievements}",
         "channel_set": "社区公告会发在 {channel}。",
         "invalid_timezone": "我不认识 `{name}` 这个时区，请使用像 `Asia/Shanghai` 这样的名称。",
         "timezone_set": "时区已设为 `{name}`，那里现在是 {time}。",
@@ -29,6 +29,12 @@
         "birthday_none": "你在这个服务器没有保存生日。",
         "upcoming_title": "🎂 未来 30 天的生日：",
         "upcoming_line": "{date} {name}",
-        "upcoming_none": "未来 30 天没有人过生日。"
+        "upcoming_none": "未来 30 天没有人过生日。",
+        "achievements_off": "不再公告成就，成员仍可以在 /profile 和 /achievements 看到。",
+        "achievements_reply": "解锁成就时，会在那条消息加上 🏆 并简短回复。",
+        "achievements_channel": "解锁成就时，会在社区公告频道发一行公告。",
+        "achievement_mode_off": "关闭",
+        "achievement_mode_reply": "回复那条消息",
+        "achievement_mode_channel": "公告频道"
     }
 }

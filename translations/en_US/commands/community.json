@@ -11,7 +11,7 @@
         "off": "off",
         "not_set": "not set",
         "host_timezone": "the bot's time zone",
-        "status": "**Community settings**\nAnnouncement channel: {announce}\nTime zone: {timezone}\nWelcome: {welcome} (channel: {welcome_channel}, farewell: {farewell})\nBirthdays: {birthday} (at {hour}:00, role: {role})\nAnniversaries: {anniversary}",
+        "status": "**Community settings**\nAnnouncement channel: {announce}\nTime zone: {timezone}\nWelcome: {welcome} (channel: {welcome_channel}, farewell: {farewell})\nBirthdays: {birthday} (at {hour}:00, role: {role})\nAnniversaries: {anniversary}\nAchievement announcements: {achievements}",
         "channel_set": "Community announcements will be posted in {channel}.",
         "invalid_timezone": "`{name}` is not a time zone I know. Use a name like `Asia/Taipei` or `Europe/London`.",
         "timezone_set": "Time zone set to `{name}`. It is now {time} there.",
@@ -29,6 +29,12 @@
         "birthday_none": "You have no birthday saved on this server.",
         "upcoming_title": "🎂 Birthdays in the next 30 days:",
         "upcoming_line": "{date} {name}",
-        "upcoming_none": "No birthdays in the next 30 days."
+        "upcoming_none": "No birthdays in the next 30 days.",
+        "achievements_off": "Achievements are no longer announced; members still see them in /profile and /achievements.",
+        "achievements_reply": "New achievements get a 🏆 reaction and a short reply on the message that unlocked them.",
+        "achievements_channel": "New achievements are announced in the community announcement channel.",
+        "achievement_mode_off": "off",
+        "achievement_mode_reply": "reply to the message",
+        "achievement_mode_channel": "announcement channel"
     }
 }

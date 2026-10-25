@@ -1,4 +1,4 @@
-"""SQLite storage for community features: per-guild settings, birthdays and finished daily jobs."""
+"""SQLite storage for community features: per-guild settings, birthdays, daily jobs, opt-outs and achievements."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
-from typing import Any, Iterator, List, Optional, Tuple, Union
+from typing import Any, Iterator, List, Optional, Set, Tuple, Union
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS guild_settings (
@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS guild_settings (
     birthday_enabled INTEGER NOT NULL DEFAULT 0,
     birthday_hour INTEGER NOT NULL DEFAULT 9,
     birthday_role_id INTEGER,
-    anniversary_enabled INTEGER NOT NULL DEFAULT 0
+    anniversary_enabled INTEGER NOT NULL DEFAULT 0,
+    achievement_mode TEXT NOT NULL DEFAULT 'off'
 );
 CREATE TABLE IF NOT EXISTS birthdays (
     guild_id INTEGER NOT NULL,
@@ -36,6 +37,23 @@ CREATE TABLE IF NOT EXISTS job_runs (
     period TEXT NOT NULL,
     PRIMARY KEY (guild_id, job, period)
 );
+CREATE TABLE IF NOT EXISTS optouts (
+    guild_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS user_achievements (
+    guild_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    achievement_id TEXT NOT NULL,
+    unlocked_at REAL NOT NULL,
+    PRIMARY KEY (guild_id, user_id, achievement_id)
+);
+CREATE TABLE IF NOT EXISTS achievement_checked (
+    guild_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, user_id)
+);
 CREATE TABLE IF NOT EXISTS birthday_roles (
     guild_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
@@ -44,6 +62,11 @@ CREATE TABLE IF NOT EXISTS birthday_roles (
     PRIMARY KEY (guild_id, user_id, role_id)
 );
 """
+
+# Columns added after a table first shipped: (table, column, definition).
+_ADDED_COLUMNS = [
+    ("guild_settings", "achievement_mode", "TEXT NOT NULL DEFAULT 'off'"),
+]
 
 
 @dataclass(frozen=True)
@@ -62,6 +85,9 @@ class GuildSettings:
         birthday_hour: Local hour (0-23) birthday and anniversary messages are posted.
         birthday_role_id: Role given to birthday members for the day, if any.
         anniversary_enabled: Whether yearly join anniversaries are celebrated.
+        achievement_mode: How unlocked achievements are announced: ``"off"`` (only shown
+            in /profile and /achievements), ``"reply"`` (a reaction and a short reply to the
+            message that unlocked it) or ``"channel"`` (a line in the announcement channel).
     """
 
     guild_id: int
@@ -75,6 +101,7 @@ class GuildSettings:
     birthday_hour: int = 9
     birthday_role_id: Optional[int] = None
     anniversary_enabled: bool = False
+    achievement_mode: str = "off"
 
 
 _COLUMNS = [f.name for f in fields(GuildSettings)]
@@ -103,6 +130,7 @@ class CommunityStore:
             try:
                 if not self._ready:
                     connection.executescript(_SCHEMA)
+                    _add_missing_columns(connection)
                     self._ready = True
                 with connection:
                     yield connection
@@ -194,6 +222,61 @@ class CommunityStore:
             )
             return cursor.rowcount > 0
 
+    # ------------------------------------------------------------ opt-outs
+    def set_optout(self, guild_id: int, user_id: int, opted_out: bool) -> None:
+        """Hides (or shows again) a member in rankings, recaps and achievement announcements."""
+        with self._session() as connection:
+            if opted_out:
+                connection.execute("INSERT OR IGNORE INTO optouts (guild_id, user_id) VALUES (?, ?)", (guild_id, user_id))
+            else:
+                connection.execute("DELETE FROM optouts WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
+
+    def optouts(self, guild_id: int) -> Set[int]:
+        """Returns the IDs of a guild's members who opted out."""
+        with self._session() as connection:
+            return {user_id for (user_id,) in connection.execute("SELECT user_id FROM optouts WHERE guild_id = ?", (guild_id,))}
+
+    def is_opted_out(self, guild_id: int, user_id: int) -> bool:
+        return user_id in self.optouts(guild_id)
+
+    # ------------------------------------------------------------ achievements
+    def unlock(self, guild_id: int, user_id: int, achievement_ids: List[str], now: float) -> List[str]:
+        """Records achievements; returns the ones that were newly unlocked, in the given order."""
+        new: List[str] = []
+        with self._session() as connection:
+            for achievement_id in achievement_ids:
+                cursor = connection.execute(
+                    "INSERT OR IGNORE INTO user_achievements (guild_id, user_id, achievement_id, unlocked_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (guild_id, user_id, achievement_id, now),
+                )
+                if cursor.rowcount > 0:
+                    new.append(achievement_id)
+        return new
+
+    def was_checked(self, guild_id: int, user_id: int) -> bool:
+        """Whether a member's achievements were checked before (so earlier progress is already recorded)."""
+        with self._session() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM achievement_checked WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
+            ).fetchone()
+            return row is not None
+
+    def mark_checked(self, guild_id: int, user_id: int) -> None:
+        with self._session() as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO achievement_checked (guild_id, user_id) VALUES (?, ?)", (guild_id, user_id)
+            )
+
+    def achievements(self, guild_id: int, user_id: int) -> List[Tuple[str, float]]:
+        """Returns a member's ``(achievement_id, unlocked_at)`` pairs, oldest first."""
+        with self._session() as connection:
+            return connection.execute(
+                "SELECT achievement_id, unlocked_at FROM user_achievements WHERE guild_id = ? AND user_id = ? "
+                "ORDER BY unlocked_at, achievement_id",
+                (guild_id, user_id),
+            ).fetchall()
+
     # ------------------------------------------------------------ birthday roles
     def add_birthday_role(self, guild_id: int, user_id: int, role_id: int, remove_at: float) -> None:
         """Remembers to take a birthday role back at ``remove_at`` (UNIX time)."""
@@ -217,3 +300,11 @@ class CommunityStore:
                 "DELETE FROM birthday_roles WHERE guild_id = ? AND user_id = ? AND role_id = ?",
                 (guild_id, user_id, role_id),
             )
+
+
+def _add_missing_columns(connection: sqlite3.Connection) -> None:
+    """Adds columns introduced after a database was created (older files keep working)."""
+    for table, column, definition in _ADDED_COLUMNS:
+        existing = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")

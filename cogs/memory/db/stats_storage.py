@@ -121,10 +121,16 @@ class StatsStorage:
         message_content: str,
         channel_id: str,
         timestamp: str,
-    ) -> None:
-        """Insert or update cumulative stats for a single message event."""
+    ) -> Optional[Dict[str, Any]]:
+        """Insert or update cumulative stats for a single message event.
+
+        Returns:
+            The user's updated stats (as ``get_user_stats``) plus ``previous_active_at``,
+            the time of their message before this one (None for a first message); None
+            when the update failed.
+        """
         try:
-            await asyncio.to_thread(
+            return await asyncio.to_thread(
                 self._upsert_user_stats_sync,
                 user_id,
                 guild_id,
@@ -137,6 +143,7 @@ class StatsStorage:
                 e,
                 f"upsert_user_stats failed (user={user_id}, guild={guild_id})",
             )
+            return None
 
     def _upsert_user_stats_sync(
         self,
@@ -145,10 +152,13 @@ class StatsStorage:
         message_content: str,
         channel_id: str,
         timestamp: str,
-    ) -> None:
+    ) -> Dict[str, Any]:
         with self.db.get_connection() as conn:
-            _apply_message(conn, user_id, guild_id, message_content, channel_id, timestamp)
+            previous = _apply_message(conn, user_id, guild_id, message_content, channel_id, timestamp)
             conn.commit()
+        stats = self._get_user_stats_sync(user_id, guild_id) or {}
+        stats["previous_active_at"] = previous
+        return stats
 
     async def bulk_upsert_user_stats(self, records: List[Dict[str, Any]]) -> None:
         """Insert or update cumulative stats for a batch of message events."""
@@ -248,6 +258,41 @@ class StatsStorage:
             conn.commit()
             return live_since
 
+
+    async def get_guild_rankings(
+        self, guild_id: str, kind: str, today: Optional[date] = None
+    ) -> List[tuple[str, int]]:
+        """Ranks a guild's users by all-time messages or by current daily streak.
+
+        Args:
+            guild_id: The guild.
+            kind: ``"total"`` (all-time messages) or ``"streak"`` (consecutive active days,
+                counted only while the streak is alive: active today or yesterday).
+            today: The local date (defaults to today).
+
+        Returns:
+            ``(user_id, value)`` pairs, highest first; zero values are left out.
+        """
+        return await asyncio.to_thread(self._get_guild_rankings_sync, guild_id, kind, today or date.today())
+
+    def _get_guild_rankings_sync(self, guild_id: str, kind: str, today: date) -> List[tuple[str, int]]:
+        with self.db.get_connection() as conn:
+            if kind == "total":
+                rows = conn.execute(
+                    "SELECT user_id, total_messages AS value FROM user_stats WHERE guild_id = ? AND total_messages > 0 "
+                    "ORDER BY total_messages DESC, user_id",
+                    (guild_id,),
+                ).fetchall()
+            elif kind == "streak":
+                yesterday = (today - timedelta(days=1)).isoformat()
+                rows = conn.execute(
+                    "SELECT user_id, streak_days AS value FROM user_stats WHERE guild_id = ? AND streak_days > 0 "
+                    "AND streak_last_date >= ? ORDER BY streak_days DESC, user_id",
+                    (guild_id, yesterday),
+                ).fetchall()
+            else:
+                raise ValueError(f"Unknown ranking kind: {kind}")
+            return [(row["user_id"], row["value"]) for row in rows]
 
     # ------------------------------------------------------------------
     # guild_weekly_terms / message_reactions
@@ -454,7 +499,7 @@ def _apply_message(
     message_content: str,
     channel_id: str,
     timestamp: str,
-) -> None:
+) -> Optional[str]:
     """Adds one message to a user's cumulative stats row (without committing).
 
     Args:
@@ -464,6 +509,9 @@ def _apply_message(
         message_content: Message text.
         channel_id: Channel the message was sent in.
         timestamp: ISO-8601 send time.
+
+    Returns:
+        The user's ``last_active_at`` before this message (None for their first one).
     """
     local_time = _local_time(timestamp)
     hour_key = str(local_time.hour)
@@ -499,7 +547,7 @@ def _apply_message(
                 timestamp,
             ),
         )
-        return
+        return None
 
     row = dict(existing)
     active_hours = _safe_json_load(row.get("active_hours", "{}"))
@@ -547,6 +595,7 @@ def _apply_message(
             guild_id,
         ),
     )
+    return row.get("last_active_at")
 
 
 def _safe_json_load(raw: Any) -> Dict[str, int]:
