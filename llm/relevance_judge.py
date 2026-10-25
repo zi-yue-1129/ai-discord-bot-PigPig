@@ -22,6 +22,10 @@ logger = get_logger(server_id="Bot", source=__name__)
 DEFAULT_HISTORY_MESSAGES = 8
 HISTORY_MAX_CHARS = 1500
 MODEL_TIMEOUT_SECONDS = 10
+# The model list in llm.yaml (model_priorities) used for this check; when it is not
+# configured, the chat models in message_model are used instead.
+RELEVANCE_MODEL_KEY = "relevance_model"
+FALLBACK_MODEL_KEY = "message_model"
 
 _INSTRUCTION = (
     "You decide whether a Discord chat bot named {name} should join the conversation below. "
@@ -52,7 +56,7 @@ async def judge_relevance(
     orchestrator: Any, bot: Any, message: discord.Message, keywords: Sequence[str],
     history_messages: int = DEFAULT_HISTORY_MESSAGES,
 ) -> bool:
-    """Asks the first available small model whether to reply; any failure means "no".
+    """Asks the first available relevance model whether to reply; any failure means "no".
 
     Args:
         orchestrator: The bot's orchestrator (model list).
@@ -78,7 +82,9 @@ async def judge_relevance(
     guild_id = str(message.guild.id) if message.guild else "0"
 
     breaker = get_model_circuit_breaker()
-    for model_name in orchestrator.model_manager.get_model_priority_list("message_model"):
+    manager = orchestrator.model_manager
+    key = RELEVANCE_MODEL_KEY if manager.has_models(RELEVANCE_MODEL_KEY) else FALLBACK_MODEL_KEY
+    for model_name in manager.get_model_priority_list(key):
         if not breaker.is_available(model_name):
             continue
         try:

@@ -76,7 +76,7 @@ Sets how the bot replies, unprompted, to messages in a channel.
 
 In `relevant` mode the bot first checks cheap rules: the message names it (its username or server nickname) or one
 of the keywords, or comes from someone it answered in the last 3 minutes. If none matches, a small model
-(the first available `message_model`) reads the last 8 messages and answers YES or NO
+(the first available model in `relevance_model` in `llm.yaml`, or in `message_model` when that list is left out) reads the last 8 messages and answers YES or NO
 (`llm/relevance_judge.py`); the keywords are given to it as the channel's topics. To bound the cost, the model is
 asked at most once every 15 seconds per channel and never for messages under 4 characters, and a model failure
 means no reply. The bot owner can change these numbers (and the 3-minute window and the 8 messages) under

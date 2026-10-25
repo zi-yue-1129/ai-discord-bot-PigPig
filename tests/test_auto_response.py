@@ -171,3 +171,64 @@ async def test_the_owner_tuning_is_used(tmp_path: Path, monkeypatch) -> None:
     await manager.should_auto_respond(_message("ok"), "1")
     await manager.should_auto_respond(_message("hm"), "1")
     assert len(asked) == 2
+
+
+class _FakeManager:
+    def __init__(self, lists: dict) -> None:
+        self.lists = lists
+
+    def has_models(self, key: str) -> bool:
+        return bool(self.lists.get(key))
+
+    def get_model_priority_list(self, key: str) -> list:
+        return self.lists[key]
+
+
+class _History:
+    def __init__(self, messages: list) -> None:
+        self.messages = messages
+
+    def __call__(self, limit: int, before=None):
+        async def gen():
+            for m in self.messages[:limit]:
+                yield m
+        return gen()
+
+
+async def _judge_with(monkeypatch, lists: dict) -> list:
+    import llm.relevance_judge as rj
+
+    used: list = []
+
+    class _Model:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        async def ainvoke(self, prompt):
+            used.append(self.name)
+            return SimpleNamespace(content="YES")
+
+    monkeypatch.setattr(rj, "create_model_instance", lambda name, **kw: _Model(name))
+    monkeypatch.setattr(rj, "get_model_circuit_breaker",
+                        lambda: SimpleNamespace(is_available=lambda n: True, record_failure=lambda n, e: None))
+    author = SimpleNamespace(id=7, display_name="Al")
+    message = SimpleNamespace(
+        content="anyone know asyncio?", author=author,
+        channel=SimpleNamespace(history=_History([])),
+        guild=SimpleNamespace(id=1, me=SimpleNamespace(display_name="PigPig")),
+    )
+    bot = SimpleNamespace(user=SimpleNamespace(id=900, name="PigPig"))
+    assert await rj.judge_relevance(SimpleNamespace(model_manager=_FakeManager(lists)), bot, message, []) is True
+    return used
+
+
+@pytest.mark.asyncio
+async def test_the_relevance_check_uses_its_own_model_list(monkeypatch) -> None:
+    used = await _judge_with(monkeypatch, {"relevance_model": ["g:tiny"], "message_model": ["g:chat"]})
+    assert used == ["g:tiny"]
+
+
+@pytest.mark.asyncio
+async def test_without_its_own_list_it_falls_back_to_the_chat_models(monkeypatch) -> None:
+    used = await _judge_with(monkeypatch, {"message_model": ["g:chat"]})
+    assert used == ["g:chat"]
