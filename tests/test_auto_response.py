@@ -72,3 +72,79 @@ def test_the_config_is_reread_only_when_the_file_changes(tmp_path: Path) -> None
     reloaded = manager.load_config("9")
     assert reloaded["mode"] == "blacklist"
     assert reloaded["auto_response_settings"] == {}
+
+
+# ------------------------------------------------- model check in "relevant"
+
+
+def _relevant_manager(tmp_path: Path, monkeypatch, verdicts: list) -> tuple[ChannelManager, list]:
+    import cogs.channel_manager as cm
+
+    asked: list = []
+
+    async def fake_judge(orchestrator, bot, message, keywords):
+        asked.append((message.content, list(keywords)))
+        return verdicts.pop(0) if verdicts else False
+
+    monkeypatch.setattr(cm, "judge_relevance", fake_judge)
+    bot = SimpleNamespace(user=SimpleNamespace(id=900, name="PigPig"), orchestrator=object())
+    manager = ChannelManager(bot)
+    manager.data_dir = str(tmp_path)
+    config = manager._get_default_config()
+    config["auto_response"]["5"] = True
+    config["auto_response_settings"]["5"] = {"mode": "relevant", "keywords": ["音樂"]}
+    manager.save_config("1", config)
+    return manager, asked
+
+
+def _message(content: str, author: int = 7) -> SimpleNamespace:
+    return SimpleNamespace(
+        content=content,
+        channel=SimpleNamespace(id=5),
+        author=SimpleNamespace(id=author),
+        guild=SimpleNamespace(me=SimpleNamespace(display_name="小豬")),
+    )
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_the_model_decides_when_no_rule_matches(tmp_path: Path, monkeypatch) -> None:
+    manager, asked = _relevant_manager(tmp_path, monkeypatch, [True])
+
+    assert await manager.should_auto_respond(_message("有人知道 Python 的 asyncio 怎麼用嗎"), "1") is True
+    assert asked == [("有人知道 Python 的 asyncio 怎麼用嗎", ["音樂"])]
+
+
+@pytest.mark.asyncio
+async def test_rules_answer_without_asking_the_model(tmp_path: Path, monkeypatch) -> None:
+    manager, asked = _relevant_manager(tmp_path, monkeypatch, [])
+
+    assert await manager.should_auto_respond(_message("小豬你在嗎"), "1") is True
+    assert await manager.should_auto_respond(_message("推薦一些音樂"), "1") is True
+    assert asked == []
+
+
+@pytest.mark.asyncio
+async def test_the_model_is_asked_at_most_once_per_cooldown_per_channel(tmp_path: Path, monkeypatch) -> None:
+    manager, asked = _relevant_manager(tmp_path, monkeypatch, [False, True])
+
+    assert await manager.should_auto_respond(_message("今天天氣好熱喔"), "1") is False
+    assert await manager.should_auto_respond(_message("我晚餐想吃火鍋"), "1") is False
+    assert len(asked) == 1
+
+
+@pytest.mark.asyncio
+async def test_very_short_messages_are_not_sent_to_the_model(tmp_path: Path, monkeypatch) -> None:
+    manager, asked = _relevant_manager(tmp_path, monkeypatch, [True])
+
+    assert await manager.should_auto_respond(_message("ok"), "1") is False
+    assert asked == []
+
+
+def test_only_a_yes_counts_as_yes() -> None:
+    from llm.relevance_judge import parse_answer
+
+    assert parse_answer("YES") and parse_answer(" yes.") and parse_answer("**Yes**")
+    assert not parse_answer("NO") and not parse_answer("") and not parse_answer("Maybe yes")

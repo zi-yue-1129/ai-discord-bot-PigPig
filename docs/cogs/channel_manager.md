@@ -74,8 +74,12 @@ Sets how the bot replies, unprompted, to messages in a channel.
 - `chance`: For `chance`, the percent of messages that get a reply (1-100, default 20)
 - `keywords`: For `relevant`, extra comma-separated words that count as relevant
 
-In `relevant` mode the bot replies when a message names it (its username or server nickname) or one of the
-keywords, and keeps replying for 3 minutes to someone it has just answered. Unprompted replies count toward the
+In `relevant` mode the bot first checks cheap rules: the message names it (its username or server nickname) or one
+of the keywords, or comes from someone it answered in the last 3 minutes. If none matches, a small model
+(the first available `message_model`) reads the last 8 messages and answers YES or NO
+(`llm/relevance_judge.py`); the keywords are given to it as the channel's topics. To bound the cost, the model is
+asked at most once every 15 seconds per channel and never for messages under 4 characters, and a model failure
+means no reply. Unprompted replies count toward the
 per-user chat limit in `base.yaml` (`rate_limits`); a user who is over it is skipped quietly.
 
 **Permissions**: Administrator only

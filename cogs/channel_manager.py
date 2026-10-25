@@ -10,6 +10,7 @@ from addons.logging import get_logger
 from datetime import datetime
 from typing import Optional, Dict, List, Any, Tuple, Union
 from .language_manager import LanguageManager
+from llm.relevance_judge import judge_relevance
 from addons.tokens import tokens
 from function import func
 import asyncio
@@ -22,6 +23,11 @@ AUTO_RESPONSE_MODES = ("all", "chance", "relevant")
 DEFAULT_AUTO_RESPONSE_CHANCE = 20
 # How long the bot counts as "in a conversation" with someone after replying to them.
 CONVERSATION_WINDOW_SECONDS = 180
+# In "relevant" mode, a channel's messages are judged by the model at most this often,
+# so a busy channel does not cost one model call per message.
+RELEVANCE_JUDGE_COOLDOWN_SECONDS = 15
+# Messages shorter than this (after trimming) are never sent to the model.
+RELEVANCE_MIN_CHARS = 4
 
 
 def get_auto_response_settings(config: Dict[str, Any], channel_id: str) -> Dict[str, Any]:
@@ -52,7 +58,8 @@ def decide_auto_response(
     - all: every message.
     - chance: each message with probability ``chance`` percent.
     - relevant: messages that name the bot or one of the channel's keywords,
-      or that come from someone the bot was just talking with.
+      or that come from someone the bot was just talking with. Anything else in
+      this mode is left to the model (see ``ChannelManager.should_auto_respond``).
     """
     mode = settings.get("mode", "off")
     if mode == "all":
@@ -81,6 +88,8 @@ class ChannelManager(commands.Cog):
         self._config_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
         # (channel_id, user_id) -> when the bot last replied to that user there.
         self._last_reply_at: Dict[Tuple[int, int], float] = {}
+        # channel_id -> when the model last judged a message there ("relevant" mode).
+        self._last_judged_at: Dict[int, float] = {}
         os.makedirs(self.data_dir, exist_ok=True)
 
     async def cog_load(self):
@@ -408,16 +417,36 @@ class ChannelManager(commands.Cog):
             cutoff = now - CONVERSATION_WINDOW_SECONDS
             self._last_reply_at = {k: t for k, t in self._last_reply_at.items() if t >= cutoff}
 
-    def should_auto_respond(self, message: discord.Message, guild_id: str) -> bool:
-        """Whether an unprompted message in this channel gets a reply under its auto-response mode."""
+    async def should_auto_respond(self, message: discord.Message, guild_id: str) -> bool:
+        """Whether an unprompted message in this channel gets a reply under its auto-response mode.
+
+        In "relevant" mode the cheap rules come first; when none matches, a small model reads
+        the recent conversation and decides (at most once per channel every
+        ``RELEVANCE_JUDGE_COOLDOWN_SECONDS``).
+        """
         settings = get_auto_response_settings(self.load_config(guild_id), str(message.channel.id))
         if settings["mode"] == "off":
             return False
+        now = time.monotonic()
         last = self._last_reply_at.get((message.channel.id, message.author.id))
-        in_conversation = last is not None and time.monotonic() - last < CONVERSATION_WINDOW_SECONDS
+        in_conversation = last is not None and now - last < CONVERSATION_WINDOW_SECONDS
         me = message.guild.me if message.guild else None
         bot_names = [getattr(self.bot.user, "name", ""), getattr(me, "display_name", "")]
-        return decide_auto_response(settings, message.content, bot_names, in_conversation)
+        if decide_auto_response(settings, message.content, bot_names, in_conversation):
+            return True
+        if settings["mode"] != "relevant" or len((message.content or "").strip()) < RELEVANCE_MIN_CHARS:
+            return False
+        if now - self._last_judged_at.get(message.channel.id, float("-inf")) < RELEVANCE_JUDGE_COOLDOWN_SECONDS:
+            return False
+        orchestrator = getattr(self.bot, "orchestrator", None)
+        if orchestrator is None:
+            return False
+        self._last_judged_at[message.channel.id] = now
+        try:
+            return await judge_relevance(orchestrator, self.bot, message, settings["keywords"])
+        except Exception as e:
+            await func.report_error(e, "auto-response relevance check")
+            return False
 
     def is_allowed_channel(self, channel: Union[discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.Thread], guild_id: str) -> Tuple[bool, bool, Optional[str]]:
         """

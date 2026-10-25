@@ -305,7 +305,7 @@ class PigPig(commands.Bot):
 
                 is_mentioned = self.user.id in message.raw_mentions and not message.mention_everyone
                 wants_reply = is_mentioned or is_reply_to_bot or (
-                    auto_response_enabled and channel_manager.should_auto_respond(message, guild_id)
+                    auto_response_enabled and await channel_manager.should_auto_respond(message, guild_id)
                 )
                 if is_allowed and wants_reply:
                     retry_after = self.rate_limiter.hit("chat", message.author.id)
