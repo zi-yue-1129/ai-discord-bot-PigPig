@@ -267,6 +267,10 @@ class LeaderboardCog(commands.Cog):
             return None
         return target
 
+    def _private(self, interaction: discord.Interaction, target: Any) -> bool:
+        """Whether to answer only the viewer: a hidden member looking at themselves stays hidden."""
+        return self.store.is_opted_out(interaction.guild_id, target.id)
+
     @app_commands.command(name="profile", description="Show a member's activity card and badges on this server")
     @app_commands.describe(user="Whose profile to show (defaults to you)")
     @app_commands.guild_only()
@@ -275,7 +279,9 @@ class LeaderboardCog(commands.Cog):
         if target is None:
             return
         await interaction.response.send_message(
-            await self.profile_text(interaction.guild, target), allowed_mentions=discord.AllowedMentions.none()
+            await self.profile_text(interaction.guild, target),
+            allowed_mentions=discord.AllowedMentions.none(),
+            ephemeral=self._private(interaction, target),
         )
 
     async def profile_text(self, guild: discord.Guild, member: Any) -> str:
@@ -307,7 +313,9 @@ class LeaderboardCog(commands.Cog):
         if target is None:
             return
         await interaction.response.send_message(
-            self.achievements_text(interaction.guild_id, target), allowed_mentions=discord.AllowedMentions.none()
+            self.achievements_text(interaction.guild_id, target),
+            allowed_mentions=discord.AllowedMentions.none(),
+            ephemeral=self._private(interaction, target),
         )
 
     def achievements_text(self, guild_id: int, member: Any) -> str:

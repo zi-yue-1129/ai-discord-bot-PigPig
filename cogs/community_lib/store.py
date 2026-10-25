@@ -232,6 +232,14 @@ class CommunityStore:
             ).fetchall()
 
     # ------------------------------------------------------------ job runs
+    def has_run(self, guild_id: int, job: str, period: str) -> bool:
+        """Whether a job was already marked done for a period (see ``claim_run``)."""
+        with self._session() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM job_runs WHERE guild_id = ? AND job = ? AND period = ?", (guild_id, job, period)
+            ).fetchone()
+            return row is not None
+
     def claim_run(self, guild_id: int, job: str, period: str) -> bool:
         """Marks a job as done for a period; returns False when it already was (so it runs once).
 
@@ -330,11 +338,11 @@ class CommunityStore:
                 (guild_id, user_id, role_id, remove_at),
             )
 
-    def due_birthday_roles(self, now: float) -> List[Tuple[int, int, int]]:
-        """Returns ``(guild_id, user_id, role_id)`` for birthday roles that should be taken back."""
+    def due_birthday_roles(self, now: float) -> List[Tuple[int, int, int, float]]:
+        """Returns ``(guild_id, user_id, role_id, remove_at)`` for birthday roles that should be taken back."""
         with self._session() as connection:
             return connection.execute(
-                "SELECT guild_id, user_id, role_id FROM birthday_roles WHERE remove_at <= ?", (now,)
+                "SELECT guild_id, user_id, role_id, remove_at FROM birthday_roles WHERE remove_at <= ?", (now,)
             ).fetchall()
 
     def forget_birthday_role(self, guild_id: int, user_id: int, role_id: int) -> None:

@@ -56,6 +56,8 @@ _DISCORD_EMOJI_RE = re.compile(r"<a?:\w+:\d+>")
 
 # Maximum number of words to keep in top_words to prevent unbounded growth
 _MAX_TOP_WORDS = 200
+# Longer "words" are spam (one long run of letters), not something people say.
+MAX_WORD_CHARS = 20
 
 # config-table key: first log day (UTC, YYYYMMDD) whose messages were counted live
 _LIVE_SINCE_KEY = "stats.live_since"
@@ -80,6 +82,9 @@ class StatsStorage:
         """
         self.db = db
         self.logger = logger
+        # Reaction changes are written one at a time, in the order the events arrived: a quick
+        # add then remove must not run its removal first (it would find nothing to take off).
+        self._reaction_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # user_stats CRUD
@@ -347,9 +352,10 @@ class StatsStorage:
                 as their reaction was never counted.
         """
         try:
-            await asyncio.to_thread(
-                self._record_reaction_sync, message_id, guild_id, channel_id, author_id, created_at, delta, reactor_id
-            )
+            async with self._reaction_lock:
+                await asyncio.to_thread(
+                    self._record_reaction_sync, message_id, guild_id, channel_id, author_id, created_at, delta, reactor_id
+                )
         except Exception as e:
             await func.report_error(e, f"record_reaction failed (message={message_id})")
 
@@ -658,8 +664,8 @@ def _extract_emojis(text: str) -> List[str]:
 def _segment_words(text: str) -> List[str]:
     """Segment text using jieba and filter stop-words / noise.
 
-    Returns a list of meaningful words (length >= 2, not pure digits,
-    not in the stop-word set).
+    Returns a list of meaningful words (2 to ``MAX_WORD_CHARS`` characters,
+    not pure digits, not in the stop-word set).
     """
     if not text:
         return []
@@ -678,7 +684,7 @@ def _segment_words(text: str) -> List[str]:
     words: List[str] = []
     for word in jieba.cut(cleaned):
         w = word.strip().lower()
-        if len(w) < 2:
+        if len(w) < 2 or len(w) > MAX_WORD_CHARS:
             continue
         if w.isdigit():
             continue

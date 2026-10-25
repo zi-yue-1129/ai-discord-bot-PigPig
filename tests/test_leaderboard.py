@@ -457,3 +457,27 @@ def test_every_language_has_the_same_leaderboard_texts(folder: str) -> None:
 
 def test_achievement_modes_are_in_settings() -> None:
     assert GuildSettings(guild_id=1).achievement_mode == "off"
+
+
+class FakeResponse:
+    def __init__(self) -> None:
+        self.sent: List[tuple] = []
+
+    async def send_message(self, text: str, **kwargs: Any) -> None:
+        self.sent.append((text, kwargs))
+
+
+@pytest.mark.asyncio
+async def test_a_hidden_member_sees_their_own_profile_and_achievements_privately(
+    cog: LeaderboardCog, guild: FakeGuild, store: CommunityStore, stats_storage: FakeStorage
+) -> None:
+    member = guild.add(10)
+    stats_storage.stats["10"] = {"total_messages": 5, "streak_days": 1}
+    interaction = SimpleNamespace(guild=guild, guild_id=GUILD_ID, user=member, response=FakeResponse())
+
+    await LeaderboardCog.profile.callback(cog, interaction)
+    store.set_optout(GUILD_ID, 10, True)
+    await LeaderboardCog.profile.callback(cog, interaction)
+    await LeaderboardCog.achievements_command.callback(cog, interaction)
+
+    assert [kwargs["ephemeral"] for _, kwargs in interaction.response.sent] == [False, True, True]

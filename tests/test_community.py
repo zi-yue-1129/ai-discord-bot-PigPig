@@ -459,3 +459,158 @@ async def test_the_announcement_writer_gives_none_when_every_model_fails(monkeyp
     )
 
     assert text is None
+
+
+# ------------------------------------------------------------------ review fixes
+
+
+def _http_error() -> Exception:
+    import discord
+
+    return discord.HTTPException(SimpleNamespace(status=503, reason="Service Unavailable"), "try again")
+
+
+@pytest.mark.asyncio
+async def test_a_birthday_post_that_fails_is_retried_at_the_next_check(
+    cog: CommunityCog, guild: FakeGuild, store: CommunityStore
+) -> None:
+    store.update_settings(GUILD_ID, birthday_enabled=True, birthday_hour=9)
+    guild.add(10)
+    store.set_birthday(GUILD_ID, 10, 10, 25)
+    _at(cog, datetime(2026, 10, 25, 9, 0, tzinfo=TAIPEI))
+    original = guild.channel.send
+    failures = [_http_error()]
+
+    async def flaky(text: str, allowed_mentions: Any = None) -> None:
+        if failures:
+            raise failures.pop()
+        await original(text, allowed_mentions)
+
+    guild.channel.send = flaky
+    await cog.run_daily_jobs()
+    assert guild.channel.sent == []
+    await cog.run_daily_jobs()
+    await cog.run_daily_jobs()
+    assert [text for text, _ in guild.channel.sent] == ["birthday|mentions=<@10>"]
+
+
+@pytest.mark.asyncio
+async def test_a_job_that_keeps_failing_is_given_up(cog: CommunityCog, store: CommunityStore) -> None:
+    calls: list = []
+
+    async def fail() -> bool:
+        calls.append(1)
+        return False
+
+    for _ in range(CommunityCog.MAX_JOB_ATTEMPTS + 2):
+        await cog._run_job(GUILD_ID, "birthday", "2026-10-25", fail)
+
+    assert len(calls) == CommunityCog.MAX_JOB_ATTEMPTS
+    assert store.has_run(GUILD_ID, "birthday", "2026-10-25")
+
+
+@pytest.mark.asyncio
+async def test_a_member_who_already_had_the_birthday_role_keeps_it(
+    cog: CommunityCog, guild: FakeGuild, store: CommunityStore
+) -> None:
+    store.update_settings(GUILD_ID, birthday_enabled=True, birthday_hour=9, birthday_role_id=77)
+    member = guild.add(10)
+    member.roles.append(guild.get_role(77))
+    store.set_birthday(GUILD_ID, 10, 10, 25)
+
+    _at(cog, datetime(2026, 10, 25, 9, 0, tzinfo=TAIPEI))
+    await cog.run_daily_jobs()
+    _at(cog, datetime(2026, 10, 26, 0, 1, tzinfo=TAIPEI))
+    await cog.run_daily_jobs()
+
+    assert [role.id for role in member.roles] == [77]
+
+
+@pytest.mark.asyncio
+async def test_a_birthday_role_that_could_not_be_removed_is_retried(
+    cog: CommunityCog, guild: FakeGuild, store: CommunityStore
+) -> None:
+    store.update_settings(GUILD_ID, birthday_enabled=True, birthday_hour=9, birthday_role_id=77)
+    member = guild.add(10)
+    store.set_birthday(GUILD_ID, 10, 10, 25)
+    _at(cog, datetime(2026, 10, 25, 9, 0, tzinfo=TAIPEI))
+    await cog.run_daily_jobs()
+    original = member.remove_roles
+
+    async def refuse(role: FakeRole, reason: str = "") -> None:
+        raise _http_error()
+
+    member.remove_roles = refuse
+    _at(cog, datetime(2026, 10, 26, 0, 1, tzinfo=TAIPEI))
+    await cog.run_daily_jobs()
+    assert [role.id for role in member.roles] == [77]
+
+    member.remove_roles = original
+    _at(cog, datetime(2026, 10, 26, 0, 6, tzinfo=TAIPEI))
+    await cog.run_daily_jobs()
+    assert member.roles == []
+    assert store.due_birthday_roles(cog._now()) == []
+
+
+def _role(position: int, permissions: int = 0, assignable: bool = True) -> Any:
+    import discord
+
+    class Role:
+        def __init__(self) -> None:
+            self.position = position
+            self.permissions = discord.Permissions(permissions)
+
+        def is_assignable(self) -> bool:
+            return assignable
+
+        def __ge__(self, other: Any) -> bool:
+            return self.position >= other.position
+
+    return Role()
+
+
+def test_the_birthday_role_must_be_one_the_admin_could_give_themselves() -> None:
+    import discord
+
+    def interaction(manage_roles: bool, top: int, owner: bool = False) -> Any:
+        user = SimpleNamespace(
+            id=5, guild_permissions=discord.Permissions(manage_roles=manage_roles), top_role=_role(top)
+        )
+        return SimpleNamespace(guild=SimpleNamespace(owner_id=5 if owner else 1), user=user)
+
+    plain = _role(3)
+    check = CommunityCog._birthday_role_problem
+    assert check(interaction(True, 5), plain) is None
+    assert check(interaction(False, 5), plain) == "birthday_role_not_yours"
+    assert check(interaction(True, 3), plain) == "birthday_role_not_yours"
+    assert check(interaction(False, 0, owner=True), plain) is None
+    assert check(interaction(True, 5), _role(3, discord.Permissions(ban_members=True).value)) == "birthday_role_elevated"
+    assert check(interaction(True, 5), _role(3, assignable=False)) == "birthday_role_unassignable"
+
+
+def test_long_messages_are_split_under_the_discord_limit() -> None:
+    from cogs.community import split_message
+
+    mentions = " ".join(f"<@{100000000000000000 + i}>" for i in range(100))
+    chunks = split_message(f"Welcome!\n{mentions}")
+    assert len(chunks) > 1 and all(len(chunk) <= 2000 for chunk in chunks)
+    assert " ".join(chunks).replace("\n", " ").split() == f"Welcome! {mentions}".split()
+    assert split_message("x" * 4500) == ["x" * 2000, "x" * 2000, "x" * 500]
+    assert split_message("hi") == ["hi"]
+
+
+@pytest.mark.asyncio
+async def test_an_older_welcome_task_does_not_drop_the_newer_one(cog: CommunityCog, guild: FakeGuild) -> None:
+    import asyncio
+
+    newer = asyncio.get_running_loop().create_future()
+
+    async def older() -> None:
+        cog._flushes[GUILD_ID] = newer  # a new batch was scheduled while this one ran
+        await cog._flush_after_delay(guild)
+
+    task = asyncio.ensure_future(older())
+    cog._flushes[GUILD_ID] = task
+    await task
+    assert cog._flushes[GUILD_ID] is newer
+    newer.cancel()

@@ -200,3 +200,10 @@ def test_a_play_log_failure_does_not_raise(tmp_path: Path) -> None:
     blocker.write_text("", encoding="utf-8")
 
     assert TasteStore(blocker / "taste.db").add_play_event(1, "a", "A", 5, False) is None
+
+
+def test_very_long_words_are_not_counted() -> None:
+    from cogs.memory.db.stats_storage import MAX_WORD_CHARS, _segment_words
+
+    words = _segment_words("pizza " + "a" * (MAX_WORD_CHARS + 1))
+    assert "pizza" in words and all(len(w) <= MAX_WORD_CHARS for w in words)

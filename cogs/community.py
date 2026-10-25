@@ -13,7 +13,7 @@ import asyncio
 import random
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
 
 import discord
 from discord import app_commands
@@ -40,6 +40,10 @@ from .community_lib.store import CommunityStore, GuildSettings
 from .language_manager import LanguageManager
 
 COMMUNITY_DB_PATH = "data/community.db"
+# Discord refuses longer messages.
+MESSAGE_LIMIT = 2000
+# A birthday role that could not be taken back is retried for this long, then dropped.
+ROLE_REMOVAL_RETRY_SECONDS = 7 * 86400
 
 _WELCOME_TASK = (
     "New members just joined this Discord server. Welcome them warmly and briefly (one to three "
@@ -65,6 +69,8 @@ class CommunityCog(commands.Cog):
 
     CHECK_SECONDS = 300
     UPCOMING_DAYS = 30
+    # A daily job that keeps failing (e.g. no permission to post) is given up after this many checks.
+    MAX_JOB_ATTEMPTS = 5
 
     community = app_commands.Group(
         name="community",
@@ -86,6 +92,7 @@ class CommunityCog(commands.Cog):
         self._now = time.time
         self._scheduler: Optional[asyncio.Task] = None
         self._flushes: Dict[int, asyncio.Task] = {}
+        self._attempts: Dict[Tuple[int, str, str], int] = {}
 
     async def cog_load(self) -> None:
         self.lang_manager = LanguageManager.get_instance(self.bot)
@@ -130,14 +137,20 @@ class CommunityCog(commands.Cog):
             return None
 
     async def _send(self, channel: Any, text: str, members: Sequence[Any]) -> bool:
-        """Posts ``text``, allowing pings only for ``members``."""
+        """Posts ``text`` (split into several messages when too long), allowing pings only for ``members``.
+
+        Returns False only when nothing could be posted, so a job is not retried over a partial post.
+        """
         allowed = discord.AllowedMentions(everyone=False, roles=False, users=[discord.Object(id=m.id) for m in members])
-        try:
-            await channel.send(text, allowed_mentions=allowed)
-            return True
-        except discord.HTTPException:
-            self.logger.warning(f"community: could not post in channel {getattr(channel, 'id', None)}", exc_info=True)
-            return False
+        posted = False
+        for chunk in split_message(text):
+            try:
+                await channel.send(chunk, allowed_mentions=allowed)
+                posted = True
+            except discord.HTTPException:
+                self.logger.warning(f"community: could not post in channel {getattr(channel, 'id', None)}", exc_info=True)
+                break
+        return posted
 
     @staticmethod
     def _pick_emoji(guild: discord.Guild) -> str:
@@ -165,7 +178,9 @@ class CommunityCog(commands.Cog):
         except Exception as error:
             await func.report_error(error, f"community: welcoming members in guild {guild.id}")
         finally:
-            self._flushes.pop(guild.id, None)
+            # A newer batch may have been scheduled meanwhile; only drop our own entry.
+            if self._flushes.get(guild.id) is asyncio.current_task():
+                del self._flushes[guild.id]
 
     async def welcome(self, guild: discord.Guild, members: List[discord.Member], *, preview_channel: Any = None) -> Optional[str]:
         """Welcomes a batch of new members; returns the posted text (None when nothing was posted).
@@ -243,69 +258,119 @@ class CommunityCog(commands.Cog):
             local = self._local_now(settings)
             if settings.weekly_enabled:
                 monday = recap_week_due(local, settings.weekly_day, settings.weekly_hour)
-                if monday is not None and self.store.claim_run(guild.id, "weekly", monday.date().isoformat()):
-                    await self.post_weekly_recap(guild, settings, monday, min(local, monday + timedelta(days=7)))
+                if monday is not None:
+                    end = min(local, monday + timedelta(days=7))
+                    await self._run_job(
+                        guild.id, "weekly", monday.date().isoformat(),
+                        lambda: self._weekly_job(guild, settings, monday, end),
+                    )
             if local.hour < settings.birthday_hour:
                 continue
             today = local.date().isoformat()
-            if settings.birthday_enabled and self.store.claim_run(guild.id, "birthday", today):
-                await self.celebrate_birthdays(guild, settings, local)
-            if settings.anniversary_enabled and self.store.claim_run(guild.id, "anniversary", today):
-                await self.celebrate_anniversaries(guild, settings, local)
+            if settings.birthday_enabled:
+                await self._run_job(guild.id, "birthday", today, lambda: self.celebrate_birthdays(guild, settings, local))
+                if settings.birthday_role_id:
+                    await self._run_job(
+                        guild.id, "birthday_role", today,
+                        lambda: self._give_birthday_role(guild, settings.birthday_role_id, self._birthday_members(guild, local), local),
+                    )
+            if settings.anniversary_enabled:
+                await self._run_job(guild.id, "anniversary", today, lambda: self.celebrate_anniversaries(guild, settings, local))
 
-    async def celebrate_birthdays(self, guild: discord.Guild, settings: GuildSettings, local: datetime) -> None:
-        """Posts one message for everyone whose birthday is today and gives the birthday role."""
+    async def _run_job(self, guild_id: int, job: str, period: str, run: Callable[[], Awaitable[bool]]) -> None:
+        """Runs a job once per period.
+
+        The job is only marked done once ``run`` returns True, so a temporary Discord error is
+        retried at the next check; after ``MAX_JOB_ATTEMPTS`` failed checks it is given up.
+        """
+        if self.store.has_run(guild_id, job, period):
+            return
+        key = (guild_id, job, period)
+        try:
+            done = await run()
+        except asyncio.CancelledError:
+            raise
+        except discord.HTTPException:
+            self.logger.warning(f"community: the {job} job failed in guild {guild_id}", exc_info=True)
+            done = False
+        except Exception as error:
+            await func.report_error(error, f"community: the {job} job in guild {guild_id}")
+            done = False
+        attempts = self._attempts.pop(key, 0) + 1
+        if done or attempts >= self.MAX_JOB_ATTEMPTS:
+            self.store.claim_run(guild_id, job, period)
+        else:
+            self._attempts[key] = attempts
+
+    def _birthday_members(self, guild: discord.Guild, local: datetime) -> List[discord.Member]:
+        """The members (not bots) whose birthday is on ``local``'s day, up to the mention limit."""
         ids = birthdays_on(local.date(), self.store.birthdays(guild.id))
         members = [m for m in (guild.get_member(user_id) for user_id in ids) if m is not None and not m.bot]
-        members = members[: self.limits.birthday_max_mentions]
-        if not members:
-            return
+        return members[: self.limits.birthday_max_mentions]
+
+    async def celebrate_birthdays(self, guild: discord.Guild, settings: GuildSettings, local: datetime) -> bool:
+        """Posts one message for everyone whose birthday is today; False when it could not be posted."""
+        members = self._birthday_members(guild, local)
         channel = self._channel_for(guild, settings)
-        if channel is not None:
-            mentions = [m.mention for m in members]
-            facts = "Birthday members: " + ", ".join(f"<<<{m.display_name}>>> (mention as {m.mention})" for m in members)
-            text = await self._write(channel, _BIRTHDAY_TASK, facts, mentions, self.limits.birthday_use_ai)
-            await self._send(channel, text or self._t(guild.id, "birthday", mentions=" ".join(mentions)), members)
-        if settings.birthday_role_id:
-            await self._give_birthday_role(guild, settings.birthday_role_id, members, local)
+        if not members or channel is None:
+            return True
+        mentions = [m.mention for m in members]
+        facts = "Birthday members: " + ", ".join(f"<<<{m.display_name}>>> (mention as {m.mention})" for m in members)
+        text = await self._write(channel, _BIRTHDAY_TASK, facts, mentions, self.limits.birthday_use_ai)
+        return await self._send(channel, text or self._t(guild.id, "birthday", mentions=" ".join(mentions)), members)
 
     async def _give_birthday_role(
         self, guild: discord.Guild, role_id: int, members: Sequence[discord.Member], local: datetime
-    ) -> None:
+    ) -> bool:
+        """Gives the birthday role until midnight; False when it could not be given to someone.
+
+        Members who already have the role keep it afterwards: only roles the bot gave are taken back.
+        """
         role = guild.get_role(role_id)
         if role is None:
-            return
+            return True
         midnight = (local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        given_all = True
         for member in members:
+            if any(r.id == role.id for r in member.roles):
+                continue
             try:
                 await member.add_roles(role, reason="Birthday")
             except discord.HTTPException:
                 self.logger.warning(f"community: could not give the birthday role in guild {guild.id}", exc_info=True)
+                given_all = False
                 continue
             self.store.add_birthday_role(guild.id, member.id, role.id, midnight.timestamp())
+        return given_all
 
     async def _remove_expired_birthday_roles(self) -> None:
-        for guild_id, user_id, role_id in self.store.due_birthday_roles(self._now()):
+        """Takes back birthday roles whose day is over; a failed removal is retried at the next check."""
+        now = self._now()
+        for guild_id, user_id, role_id, remove_at in self.store.due_birthday_roles(now):
             guild = self.bot.get_guild(guild_id)
             member = guild.get_member(user_id) if guild is not None else None
             role = guild.get_role(role_id) if guild is not None else None
             if member is not None and role is not None:
                 try:
                     await member.remove_roles(role, reason="Birthday is over")
+                except discord.NotFound:
+                    pass  # the member or role is gone
                 except discord.HTTPException:
                     self.logger.warning(f"community: could not remove the birthday role in guild {guild_id}", exc_info=True)
+                    if now - remove_at < ROLE_REMOVAL_RETRY_SECONDS:
+                        continue
             self.store.forget_birthday_role(guild_id, user_id, role_id)
 
-    async def celebrate_anniversaries(self, guild: discord.Guild, settings: GuildSettings, local: datetime) -> None:
-        """Posts one message for every member who joined on this day in an earlier year."""
+    async def celebrate_anniversaries(self, guild: discord.Guild, settings: GuildSettings, local: datetime) -> bool:
+        """Posts one message for every member who joined on this day in an earlier year; False when it could not be posted."""
         zone = local.tzinfo
         found = [(m, anniversary_years(local.date(), m.joined_at, zone)) for m in guild.members if not m.bot]
         found = [(m, years) for m, years in found if years > 0][: self.limits.birthday_max_mentions]
         if not found:
-            return
+            return True
         channel = self._channel_for(guild, settings)
         if channel is None:
-            return
+            return True
         members = [m for m, _ in found]
         mentions = [m.mention for m in members]
         facts = "Members: " + ", ".join(
@@ -315,7 +380,7 @@ class CommunityCog(commands.Cog):
         if not text:
             lines = "\n".join(self._t(guild.id, "anniversary_line", mention=m.mention, years=years) for m, years in found)
             text = self._t(guild.id, "anniversary", lines=lines)
-        await self._send(channel, text, members)
+        return await self._send(channel, text, members)
 
     # ------------------------------------------------------------ weekly recap
     def title_name(self, guild_id: Any, title_id: str) -> str:
@@ -328,6 +393,9 @@ class CommunityCog(commands.Cog):
 
         A quiet week (fewer than ``weekly_min_messages``) is skipped, except in a preview.
         Posting also hands this week's rotating titles to their new holders.
+
+        Raises:
+            discord.HTTPException: The recap could not be posted (so the scheduler retries it).
         """
         recap = await RecapBuilder(self.bot, self.limits).build(guild, start, end, self.store.optouts(guild.id))
         if recap is None:
@@ -343,13 +411,13 @@ class CommunityCog(commands.Cog):
         report = await self._write(channel, task, recap_facts(recap, title_name), [], self.limits.weekly_use_ai)
         embed = format_recap(recap, lambda key, **kw: self._t(guild.id, key, **kw), title_name, guild.name, report)
         if preview_channel is None:
-            try:
-                await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-            except discord.HTTPException:
-                self.logger.warning(f"community: could not post the weekly recap in guild {guild.id}", exc_info=True)
-                return None
+            await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
             self.store.set_titles(guild.id, recap.week, {title_id: member.id for title_id, (member, _) in recap.titles.items()})
         return embed
+
+    async def _weekly_job(self, guild: discord.Guild, settings: GuildSettings, start: datetime, end: datetime) -> bool:
+        await self.post_weekly_recap(guild, settings, start, end)
+        return True
 
     # ------------------------------------------------------------ admin commands
     async def _can_manage(self, interaction: discord.Interaction) -> bool:
@@ -476,10 +544,34 @@ class CommunityCog(commands.Cog):
         if hour is not None:
             changes["birthday_hour"] = hour
         if role is not None:
+            problem = self._birthday_role_problem(interaction, role)
+            if problem:
+                await interaction.response.send_message(self._t(interaction.guild_id, problem, role=role.mention), ephemeral=True)
+                return
             changes["birthday_role_id"] = role.id
         settings = self.store.update_settings(interaction.guild_id, **changes)
         key = "birthday_on" if enabled else "birthday_off"
         await interaction.response.send_message(self._t(interaction.guild_id, key, hour=settings.birthday_hour), ephemeral=True)
+
+    @staticmethod
+    def _birthday_role_problem(interaction: discord.Interaction, role: discord.Role) -> Optional[str]:
+        """Why ``role`` cannot be the birthday role, as a response key; None when it can.
+
+        The bot hands the role out by itself, so the admin must be able to give it themselves
+        (Manage Roles and a higher top role, or the server owner), the bot must be able to manage
+        it, and it must not carry moderator permissions.
+        """
+        guild, user = interaction.guild, interaction.user
+        if not role.is_assignable():
+            return "birthday_role_unassignable"
+        if role.permissions.value & discord.Permissions.elevated().value:
+            return "birthday_role_elevated"
+        if user.id != guild.owner_id:
+            permissions = getattr(user, "guild_permissions", None)
+            top_role = getattr(user, "top_role", None)
+            if permissions is None or not permissions.manage_roles or top_role is None or role >= top_role:
+                return "birthday_role_not_yours"
+        return None
 
     @community.command(name="anniversaries", description="Celebrate the yearly anniversary of when members joined")
     @app_commands.describe(enabled="Turn anniversary messages on or off")
@@ -599,6 +691,22 @@ class CommunityCog(commands.Cog):
         ]
         text = self._t(guild.id, "upcoming_title") + "\n" + "\n".join(lines) if lines else self._t(guild.id, "upcoming_none")
         await interaction.response.send_message(text, ephemeral=True)
+
+
+def split_message(text: str, limit: int = MESSAGE_LIMIT) -> List[str]:
+    """Splits ``text`` into messages of at most ``limit`` characters, at line breaks or spaces when possible."""
+    chunks: List[str] = []
+    while len(text) > limit:
+        cut = text.rfind("\n", 0, limit + 1)
+        if cut <= 0:
+            cut = text.rfind(" ", 0, limit + 1)
+        if cut <= 0:
+            cut = limit
+        chunks.append(text[:cut])
+        text = text[cut:].lstrip("\n ")
+    if text:
+        chunks.append(text)
+    return chunks
 
 
 async def setup(bot: commands.Bot) -> None:
