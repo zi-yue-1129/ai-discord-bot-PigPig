@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, List, Optional
 
+import discord
 import pytest
 
 from cogs.community_lib.store import CommunityStore
@@ -380,13 +381,20 @@ class FakeVoiceClient:
     def __init__(self) -> None:
         self.played: list = []
         self.playing = False
+        self.source: Any = None
+        self.disconnected = False
 
     def play(self, source: Any) -> None:
+        if self.playing:
+            raise discord.ClientException("Already playing audio.")
         self.played.append(source)
-        self.playing = True
+        self.playing, self.source = True, source
 
     def stop(self) -> None:
-        self.playing = False
+        self.playing, self.source = False, None
+
+    async def disconnect(self) -> None:
+        self.disconnected = True
 
     def is_playing(self) -> bool:
         return self.playing
@@ -401,7 +409,13 @@ class FakeMusic:
         self.state_manager = SimpleNamespace(get_state=lambda guild_id: SimpleNamespace(volume=0.4))
         self.audio_manager = SimpleNamespace(create_audio_source=self._source)
         self.youtube = SimpleNamespace(resolve_stream=self._resolve)
+        self.queue: list = []
+        self.queue_manager = SimpleNamespace(is_queue_empty=lambda guild_id: not self.queue)
         self.sources: list = []
+        self.played_next: list = []
+
+    async def play_next(self, ctx: Any) -> None:
+        self.played_next.append(ctx)
 
     def _source(self, song: dict, volume: float, start_offset: float) -> tuple:
         self.sources.append((song["video_id"], volume, start_offset))
@@ -489,17 +503,56 @@ async def test_question_writing_is_bounded_across_the_bot(cog: GamesCog, monkeyp
     assert peak == MAX_MODEL_CALLS
 
 
+def _interaction(user_id: int, channel_id: int) -> Any:
+    return SimpleNamespace(user=SimpleNamespace(id=user_id), channel=SimpleNamespace(id=channel_id), guild_id=GUILD_ID)
+
+
 def test_a_player_hosts_one_game_at_a_time(cog: GamesCog) -> None:
-    def interaction(user_id: int, channel_id: int) -> Any:
-        return SimpleNamespace(user=SimpleNamespace(id=user_id), channel=SimpleNamespace(id=channel_id))
+    cog._claim(_interaction(10, 500))
 
-    cog._claim(interaction(10, 500))
+    assert cog._busy(_interaction(10, 501)) == "hosting|"
+    assert cog._busy(_interaction(11, 500)) == "busy|"
+    assert cog._busy(_interaction(11, 501)) is None
+    cog._release(_interaction(10, 500))
+    assert cog._busy(_interaction(10, 501)) is None
 
-    assert cog._busy(interaction(10, 501)) == "hosting"
-    assert cog._busy(interaction(11, 500)) == "busy"
-    assert cog._busy(interaction(11, 501)) is None
-    cog._release(interaction(10, 500))
-    assert cog._busy(interaction(10, 501)) is None
+
+def test_games_respect_the_chat_quota_and_stay_out_of_the_request_channel(cog: GamesCog) -> None:
+    hits: list = []
+    cog.bot.rate_limiter = SimpleNamespace(hit=lambda bucket, user_id: hits.append((bucket, user_id)) or (12.4 if user_id == 13 else 0))
+    requests = SimpleNamespace(is_request_channel=lambda channel: channel.id == 777)
+    cog.bot.get_cog = lambda name: SimpleNamespace(requests=requests) if name == "YTMusic" else None
+
+    assert cog._busy(_interaction(13, 500)) == "rate_limited|seconds=12"
+    assert cog._busy(_interaction(14, 777)) == "request_channel|"
+    assert cog._busy(_interaction(14, 500, )) is None
+    assert cog._busy(_interaction(13, 500), uses_model=False) is None  # guess the song calls no model
+    assert hits == [("chat", 13), ("chat", 14)]
+
+
+@pytest.mark.asyncio
+async def test_a_reloaded_cog_shares_the_limits_and_unloading_stops_running_games(cog: GamesCog, store: CommunityStore) -> None:
+    started = asyncio.Event()
+
+    async def hosted_game() -> None:
+        cog._claim(_interaction(10, 500))
+        try:
+            started.set()
+            await asyncio.sleep(60)
+        finally:
+            cog._release(_interaction(10, 500))
+
+    task = asyncio.create_task(hosted_game())
+    await started.wait()
+    reloaded = GamesCog(cog.bot, store=store)
+    reloaded.lang_manager = FakeLang()
+
+    assert reloaded._busy(_interaction(10, 501)) == "hosting|"
+    assert reloaded.limits.model_slots is cog.limits.model_slots
+    await cog.cog_unload()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert reloaded._busy(_interaction(10, 501)) is None
 
 
 @pytest.mark.asyncio
@@ -521,3 +574,77 @@ async def test_the_answer_clock_starts_once_the_question_is_posted(cog: GamesCog
     assert rounds[0].started_at == 110.0
     rounds[0].answer(10, question.answer, 110.0)
     assert rounds[0].points() == {10: BASE_POINTS * 2}
+
+
+class FakeThread(FakeTextChannel):
+    def __init__(self, public_parent: bool, private: bool) -> None:
+        super().__init__(public_parent)  # a thread inherits its parent's permissions
+        self.parent_id = 500
+        self.parent = object()
+        self.type = discord.ChannelType.private_thread if private else discord.ChannelType.public_thread
+
+
+def test_a_private_thread_under_a_public_channel_is_not_public() -> None:
+    guild = FakeGuild()
+    guild.channels = {**FakeGuild.channels, 600: FakeThread(True, private=True), 601: FakeThread(True, private=False)}
+
+    assert GamesCog._may_show(guild, "600", here=None) is False
+    assert GamesCog._may_show(guild, "601", here=None) is True
+    assert GamesCog._may_show(guild, "600", here=600) is True  # the quiz runs in that thread
+
+
+@pytest.mark.asyncio
+async def test_a_question_whose_channel_became_private_is_not_posted(cog: GamesCog) -> None:
+    guild = FakeGuild()
+    guild.channels = dict(FakeGuild.channels)
+    public = parse_question(_reply(), MEMORY, META)
+    restricted_later = parse_question(_reply(), MEMORY, {**META, "channel_id": "501"})
+    channel = FakeChannel({})
+    channel.id = 502
+
+    await cog.run_quiz(channel, guild, [restricted_later, public])
+
+    first, final = channel.sent
+    assert first.embed.title == "question_title|number=1|total=1"
+    assert final.embed.title == "final_title|"
+
+
+@pytest.mark.asyncio
+async def test_a_clip_only_stops_its_own_audio_and_hands_queued_music_back(cog: GamesCog) -> None:
+    music = FakeMusic({"a": {"title": TITLE_EN, "duration": 200, "url": "u"}})
+    voice = FakeVoiceClient()
+    cog.clip_seconds, cog.guess_seconds = 0.05, 0.1
+    channel, guild = ChainChannel(), SimpleNamespace(id=GUILD_ID)
+    song = dict(music.songs["a"], video_id="a")
+
+    async def someone_plays_music() -> None:
+        await asyncio.sleep(0.02)
+        voice.stop()
+        voice.play("music")  # /play replaced the clip
+        music.queue.append("next song")
+
+    await asyncio.gather(cog.play_round(channel, guild, voice, music, song), someone_plays_music())
+    assert voice.source == "music" and voice.playing
+
+    # A second game in the same voice connection cannot start a clip over the music.
+    with pytest.raises(discord.ClientException):
+        await cog.play_round(channel, guild, voice, music, song)
+    assert voice.source == "music"
+
+    voice.stop()
+    await cog._hand_back_voice(guild, channel, voice, music, joined=True, user=SimpleNamespace(id=1))
+    assert len(music.played_next) == 1 and voice.disconnected is False
+    music.queue.clear()
+    await cog._hand_back_voice(guild, channel, voice, music, joined=True, user=SimpleNamespace(id=1))
+    assert voice.disconnected is True
+
+
+@pytest.mark.asyncio
+async def test_queued_music_ends_the_song_game(cog: GamesCog) -> None:
+    music = FakeMusic({"a": {"title": TITLE_EN, "duration": 200, "url": "u"}})
+    music.queue.append("song")
+    channel = ChainChannel()
+
+    await cog.run_song_game(channel, SimpleNamespace(id=GUILD_ID), FakeVoiceClient(), music, [("a", TITLE_EN)], 1, SimpleNamespace(id=1))
+
+    assert channel.sent[0] == "song_interrupted|" and music.sources == []

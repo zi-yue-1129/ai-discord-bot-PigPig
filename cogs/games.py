@@ -99,10 +99,10 @@ class GamesCog(commands.Cog):
         self.pause_seconds: float = PAUSE_SECONDS
         self.chain_idle_seconds: float = CHAIN_IDLE_SECONDS
         self.chain_max_seconds: float = CHAIN_MAX_SECONDS
-        self._running: Dict[int, bool] = {}
-        # Players currently hosting a game: one game per player at a time, across channels.
-        self._hosts: Set[int] = set()
-        self._model_slots = asyncio.Semaphore(MAX_MODEL_CALLS)
+        # Kept on the bot, so a reloaded cog still sees the games and model calls of the old one.
+        self.limits: GameLimits = getattr(bot, "game_limits", None) or GameLimits()
+        bot.game_limits = self.limits
+        self._tasks: Set[asyncio.Task] = set()
         self._chains: Dict[int, "ChainGame"] = {}
         self._guesses: Dict[int, "GuessRound"] = {}
         self.clip_seconds: float = song_guess.CLIP_SECONDS
@@ -110,6 +110,11 @@ class GamesCog(commands.Cog):
 
     async def cog_load(self) -> None:
         self.lang_manager = LanguageManager.get_instance(self.bot)
+
+    async def cog_unload(self) -> None:
+        # A running game would keep posting (and playing) with nobody left to answer it.
+        for task in list(self._tasks):
+            task.cancel()
 
     def _t(self, guild_id: Any, key: str, **kwargs: Any) -> str:
         if self.lang_manager is None:
@@ -122,21 +127,39 @@ class GamesCog(commands.Cog):
         return store if hasattr(store, "sample_memories") else None
 
     # ------------------------------------------------------------ running games
-    def _busy(self, interaction: discord.Interaction) -> Optional[str]:
-        """Why a game cannot start here (a response key), or None."""
-        if self._running.get(interaction.channel.id):
-            return "busy"
-        if interaction.user.id in self._hosts:
-            return "hosting"
+    def _busy(self, interaction: discord.Interaction, uses_model: bool = True) -> Optional[str]:
+        """Why a game cannot start here (the text to tell the host), or None.
+
+        Games that call the model count as one chat use of the host's quota.
+        """
+        guild_id, channel = interaction.guild_id, interaction.channel
+        if channel.id in self.limits.running:
+            return self._t(guild_id, "busy")
+        if interaction.user.id in self.limits.hosts:
+            return self._t(guild_id, "hosting")
+        music = self.bot.get_cog("YTMusic") if hasattr(self.bot, "get_cog") else None
+        requests = getattr(music, "requests", None)
+        if requests is not None and requests.is_request_channel(channel):
+            # Every message there is taken as a song request, so no answer would reach the game.
+            return self._t(guild_id, "request_channel")
+        limiter = getattr(self.bot, "rate_limiter", None)
+        if uses_model and limiter is not None:
+            retry_after = limiter.hit("chat", interaction.user.id)
+            if retry_after:
+                return self._t(guild_id, "rate_limited", seconds=max(1, round(retry_after)))
         return None
 
     def _claim(self, interaction: discord.Interaction) -> None:
-        self._running[interaction.channel.id] = True
-        self._hosts.add(interaction.user.id)
+        self.limits.running.add(interaction.channel.id)
+        self.limits.hosts.add(interaction.user.id)
+        task = _current_task()
+        if task is not None:
+            self._tasks.add(task)
 
     def _release(self, interaction: discord.Interaction) -> None:
-        self._running.pop(interaction.channel.id, None)
-        self._hosts.discard(interaction.user.id)
+        self.limits.running.discard(interaction.channel.id)
+        self.limits.hosts.discard(interaction.user.id)
+        self._tasks.discard(_current_task())
 
     # ------------------------------------------------------------ questions
     async def make_questions(
@@ -168,7 +191,7 @@ class GamesCog(commands.Cog):
         random.shuffle(candidates)
 
         async def one(memory: Any) -> Optional[QuizQuestion]:
-            async with self._model_slots:
+            async with self.limits.model_slots:
                 reply = await write_question(orchestrator, str(guild.id), memory.content)
             return parse_question(reply, memory.content, memory.metadata or {}) if reply else None
 
@@ -192,6 +215,10 @@ class GamesCog(commands.Cog):
         channel = guild.get_channel_or_thread(channel_id)
         if channel is None:
             return False
+        if isinstance(channel, discord.Thread) or getattr(channel, "parent_id", None) is not None:
+            # A thread inherits its parent's permissions, but a private one is only open to its members.
+            if getattr(channel, "type", None) == discord.ChannelType.private_thread or getattr(channel, "parent", None) is None:
+                return False
         everyone = channel.permissions_for(guild.default_role)
         return everyone.view_channel and everyone.read_message_history
 
@@ -254,19 +281,25 @@ class GamesCog(commands.Cog):
         """Plays the questions in ``channel`` and records the points."""
         scoreboard = QuizScoreboard()
         quiet = discord.AllowedMentions.none()
-        for number, question in enumerate(questions, start=1):
+        total, number = len(questions), 0
+        for question in questions:
+            if not self._may_show(guild, question.channel_id, channel.id):
+                # The source channel was restricted or deleted while the game ran.
+                total -= 1
+                continue
+            number += 1
             quiz_round = QuizRound(question=question, started_at=self._now())
             view = QuizView(self, guild.id, quiz_round)
             message = await channel.send(
-                embed=self.question_embed(guild.id, number, len(questions), question), view=view, allowed_mentions=quiet
+                embed=self.question_embed(guild.id, number, total, question), view=view, allowed_mentions=quiet
             )
             # Scoring and the answer window both start once the question can be seen.
             quiz_round.started_at = self._now()
             await asyncio.sleep(self.answer_seconds)
             view.stop()
             scoreboard.add(quiz_round.points())
-            await message.edit(embed=self.answer_embed(guild, number, len(questions), quiz_round, scoreboard), view=None)
-            if number < len(questions):
+            await message.edit(embed=self.answer_embed(guild, number, total, quiz_round, scoreboard), view=None)
+            if number < total:
                 await asyncio.sleep(self.pause_seconds)
         self.store.add_game_scores(guild.id, "quiz", scoreboard.totals, self._now())
         final = discord.Embed(
@@ -292,7 +325,7 @@ class GamesCog(commands.Cog):
         guild, channel = interaction.guild, interaction.channel
         busy = self._busy(interaction)
         if busy:
-            await interaction.response.send_message(self._t(guild.id, busy), ephemeral=True)
+            await interaction.response.send_message(busy, ephemeral=True)
             return
         if self._memory_store() is None or getattr(self.bot, "orchestrator", None) is None:
             await interaction.response.send_message(self._t(guild.id, "unavailable"), ephemeral=True)
@@ -357,7 +390,7 @@ class GamesCog(commands.Cog):
         start = f"the character {last_char(chain.last_word)}"
         if chain.homophones:
             start += " (or any character with the same pinyin, tones ignored)"
-        async with self._model_slots:
+        async with self.limits.model_slots:
             reply = await write_chain_word(
                 orchestrator, str(guild.id), self._language(guild.id), start, chain.words[-30:], MAX_CJK_LENGTH
             )
@@ -438,7 +471,7 @@ class GamesCog(commands.Cog):
         guild, channel = interaction.guild, interaction.channel
         busy = self._busy(interaction)
         if busy:
-            await interaction.response.send_message(self._t(guild.id, busy), ephemeral=True)
+            await interaction.response.send_message(busy, ephemeral=True)
             return
         use_homophones = homophones and homophones_available()
         self._claim(interaction)
@@ -494,17 +527,28 @@ class GamesCog(commands.Cog):
         volume = music.state_manager.get_state(guild.id).volume
         source = music.audio_manager.create_audio_source(song, volume=volume, start_offset=start)
         guess_round = GuessRound(song.get("title") or "", self._now())
+
+        def stop_clip() -> None:
+            # Only the game's own clip: music someone started meanwhile keeps playing.
+            if getattr(voice_client, "source", None) is source and voice_client.is_playing():
+                voice_client.stop()
+
+        voice_client.play(source)
         self._guesses[channel.id] = guess_round
         try:
-            voice_client.play(source)
             if not await self._wait_solved(guess_round, self.clip_seconds):
-                voice_client.stop()
+                stop_clip()
                 await self._wait_solved(guess_round, self.guess_seconds - self.clip_seconds)
         finally:
             self._guesses.pop(channel.id, None)
-            if voice_client.is_playing():
-                voice_client.stop()
+            stop_clip()
         return guess_round
+
+    @staticmethod
+    def _music_busy(voice_client: Any, music: Any, guild_id: int) -> bool:
+        """Whether music is playing, paused or queued in the guild."""
+        playing = voice_client is not None and (voice_client.is_playing() or voice_client.is_paused())
+        return playing or not music.queue_manager.is_queue_empty(guild_id)
 
     def song_answer_embed(self, guild_id: int, number: int, total: int, song: dict, guess_round: "GuessRound", scoreboard: QuizScoreboard) -> discord.Embed:
         name = song_guess.answer_name(song.get("title") or "")
@@ -536,7 +580,7 @@ class GamesCog(commands.Cog):
         for video_id, _ in pool[: rounds * 2]:  # a few songs may not be playable any more
             if number >= rounds:
                 break
-            if voice_client.is_playing() or voice_client.is_paused():
+            if self._music_busy(voice_client, music, guild.id):
                 await channel.send(self._t(guild.id, "song_interrupted"), allowed_mentions=quiet)
                 break
             song, _ = await music.youtube.resolve_stream(f"https://www.youtube.com/watch?v={video_id}", context)
@@ -550,7 +594,11 @@ class GamesCog(commands.Cog):
                 ),
                 allowed_mentions=quiet,
             )
-            guess_round = await self.play_round(channel, guild, voice_client, music, song)
+            try:
+                guess_round = await self.play_round(channel, guild, voice_client, music, song)
+            except discord.ClientException:  # someone started music right before the clip
+                await channel.send(self._t(guild.id, "song_interrupted"), allowed_mentions=quiet)
+                break
             if guess_round.winner is not None:
                 user_id, elapsed = guess_round.winner
                 scoreboard.add({user_id: song_guess.points_for(elapsed)})
@@ -579,19 +627,19 @@ class GamesCog(commands.Cog):
             problem = "song_need_voice"
         elif music is None or getattr(music, "youtube", None) is None:
             problem = "song_unavailable"
-        elif (voice_client is not None and (voice_client.is_playing() or voice_client.is_paused())) or not (
-            music.queue_manager.is_queue_empty(guild.id)
-        ):
+        elif guild.id in self.limits.song_guilds:
+            problem = "song_other_game"
+        elif self._music_busy(voice_client, music, guild.id):
             problem = "song_music_playing"
-        else:
-            problem = self._busy(interaction)
         pool = self.song_pool(music, guild.id) if problem is None else []
         if problem is None and len(pool) < MIN_SONGS:
             problem = "song_not_enough"
-        if problem is not None:
-            await interaction.response.send_message(self._t(guild.id, problem, count=MIN_SONGS), ephemeral=True)
+        text = self._t(guild.id, problem, count=MIN_SONGS) if problem else self._busy(interaction, uses_model=False)
+        if text:
+            await interaction.response.send_message(text, ephemeral=True)
             return
         self._claim(interaction)
+        self.limits.song_guilds.add(guild.id)
         joined = False
         try:
             await interaction.response.send_message(
@@ -612,11 +660,39 @@ class GamesCog(commands.Cog):
                 pass
         finally:
             self._release(interaction)
-            if joined and voice_client is not None and not (voice_client.is_playing() or voice_client.is_paused()):
-                try:
-                    await voice_client.disconnect()
-                except Exception:
-                    self.logger.warning("games: could not leave the voice channel", exc_info=True)
+            self.limits.song_guilds.discard(guild.id)
+            await self._hand_back_voice(guild, channel, voice_client, music, joined, interaction.user)
+
+    async def _hand_back_voice(self, guild: Any, channel: Any, voice_client: Any, music: Any, joined: bool, user: Any) -> None:
+        """After the game: start songs queued with /play meanwhile, or leave a channel joined only for the game."""
+        if voice_client is None or voice_client.is_playing() or voice_client.is_paused():
+            return
+        try:
+            if not music.queue_manager.is_queue_empty(guild.id):
+                await music.play_next(PlaybackContext(guild=guild, channel=channel, user=user))
+            elif joined:
+                await voice_client.disconnect()
+        except Exception:
+            self.logger.warning("games: could not hand the voice channel back to the music player", exc_info=True)
+
+
+def _current_task() -> Optional[asyncio.Task]:
+    try:
+        return asyncio.current_task()
+    except RuntimeError:  # no running loop
+        return None
+
+
+class GameLimits:
+    """What is running across the bot: channels with a game, hosts, guilds with a song game, model slots."""
+
+    def __init__(self) -> None:
+        self.running: Set[int] = set()
+        # Players currently hosting a game: one game per player at a time, across channels.
+        self.hosts: Set[int] = set()
+        # Guess the song uses the guild's one voice connection.
+        self.song_guilds: Set[int] = set()
+        self.model_slots = asyncio.Semaphore(MAX_MODEL_CALLS)
 
 
 class GuessRound:

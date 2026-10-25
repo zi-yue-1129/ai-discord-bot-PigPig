@@ -2,6 +2,8 @@
     "responses": {
         "busy": "这个频道已经有一场游戏在进行了。",
         "hosting": "你已经在别的频道开了一局游戏，先把那局玩完吧。",
+        "request_channel": "点歌频道不能玩游戏，那里的每条消息都会被当成点歌。",
+        "rate_limited": "你的聊天次数用完了，{seconds} 秒后再开游戏吧。",
         "unavailable": "问答需要服务器记忆和 AI 模型，目前其中一个无法使用。",
         "preparing": "🧠 {user} 开了一场 {rounds} 题的服务器知识问答，正在出题…",
         "no_memories": "出不了题：这个服务器的记忆还不够多（或指定的范围内没有）。",
@@ -31,6 +33,7 @@
         "song_need_voice": "请先加入语音频道，片段会在那里播放。",
         "song_unavailable": "音乐功能目前无法使用，所以猜歌没办法开始。",
         "song_music_playing": "这个服务器正在放音乐（或队列里还有歌），等放完再来吧。",
+        "song_other_game": "这个服务器已经有一局猜歌在进行了。",
         "song_not_enough": "这个服务器至少要用 /play 放过 {count} 首歌，才能玩猜歌。",
         "song_preparing": "🎧 {user} 在 {channel} 开了猜歌，共 {rounds} 首！在这里打歌名（或歌手），最先答对的人赢得这一题。",
         "song_round_title": "🎵 第 {number}/{total} 首",

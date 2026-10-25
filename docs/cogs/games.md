@@ -17,13 +17,13 @@ Points from every game go to `/leaderboard top kind:Game points`.
 How a game goes:
 
 1. The bot picks random memories of this server (`QdrantStore.sample_memories`, three per wanted question) and asks the model for one four-option question each.
-2. A question is used only if the reply is valid JSON with four distinct options **and the correct option appears word for word in the memory**, so the model cannot make facts up. Memories whose authors all opted out with `/leaderboard optout` are never used, and neither are memories from channels `@everyone` cannot read (unless the quiz is played in that same channel), so a quiz never reveals what was said in a restricted channel.
+2. A question is used only if the reply is valid JSON with four distinct options **and the correct option appears word for word in the memory**, so the model cannot make facts up. Memories whose authors all opted out with `/leaderboard optout` are never used, and neither are memories from channels `@everyone` cannot read (unless the quiz is played in that same channel), so a quiz never reveals what was said in a restricted channel. Private threads count as restricted even under a public channel, and each question is checked again right before it is posted (a channel restricted or deleted meanwhile is skipped).
 3. Each question is posted with A–D buttons. Everyone has 20 seconds; only a player's first answer counts.
 4. A correct answer scores 500 points plus up to 500 more the faster it came.
 5. The answer is revealed with how many got it right, the **source** (channel, day, link to the original messages) and the standings.
 6. After the last question the final standings are posted and the points are saved.
 
-Only one game runs per channel at a time, and a player can host one game at a time. At most 3 model calls for games run at once across the bot. The quiz needs the memory system (Qdrant) and a working model; otherwise it says so.
+Only one game runs per channel at a time, and a player can host one game at a time. Starting the quiz or the word chain counts as one use of the host's chat quota (the `chat` rate limit). At most 3 model calls for games run at once across the bot; these limits live on the bot, so they survive a reload of the cog, and unloading the cog stops running games. Games can't be started in the music request channel. The quiz needs the memory system (Qdrant) and a working model; otherwise it says so.
 
 ## `/game chain [homophones]`
 
@@ -46,7 +46,8 @@ Short clips of songs this server listened to; the first player to type the song'
 - A guess counts when it is close (≥ 0.8 similarity) to a part of the YouTube title: the text around `-`/`|`/`/`, text inside 「」『』《》 or non-tag brackets, and each Chinese or Latin run of those. Tags such as "Official Music Video", "MV", "4K", "Lyrics" are ignored, and Traditional and Simplified Chinese compare alike (OpenCC).
 - The winning guess gets ✅. Other messages in the channel during a round are not answered by the chat AI, except ones that mention the bot.
 - The winner scores 500 points plus up to 500 more the faster they were. The answer shows the cleaned-up title with a link.
-- If someone starts music with `/play` during the game, it stops.
+- Only one guess the song game runs per server (they share the voice connection). The game only stops its own clip: if someone starts music with `/play` during the game, the music keeps playing and the game stops; songs queued meanwhile start when it ends, and the bot stays in the channel for them.
+- The clips are streamed from YouTube through yt-dlp, like `/play`, with no extra licensing filter: playing short clips of songs in a server is the bot owner's policy call.
 
 ## Storage
 

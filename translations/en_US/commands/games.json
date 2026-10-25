@@ -2,6 +2,8 @@
     "responses": {
         "busy": "A game is already running in this channel.",
         "hosting": "You're already running a game in another channel. Finish that one first.",
+        "request_channel": "Games can't run in the music request channel: every message there is taken as a song request.",
+        "rate_limited": "You've hit your chat limit. Try starting a game again in {seconds} seconds.",
         "unavailable": "The quiz needs the server's memories and a model, and one of them is not available right now.",
         "preparing": "🧠 {user} started a quiz with {rounds} questions about this server. Writing the questions…",
         "no_memories": "I could not make any questions: there are not enough memories of this server yet (or none in that range).",
@@ -31,6 +33,7 @@
         "song_need_voice": "Join a voice channel first: the clips play there.",
         "song_unavailable": "Music isn't available right now, so guess the song can't start.",
         "song_music_playing": "Music is playing (or queued) on this server. Try again when it's done.",
+        "song_other_game": "A guess the song game is already running on this server.",
         "song_not_enough": "This server needs at least {count} songs played with /play before guess the song works.",
         "song_preparing": "🎧 {user} started guess the song with {rounds} songs in {channel}! Type the song name (or the artist) here; the first right answer wins the round.",
         "song_round_title": "🎵 Song {number}/{total}",

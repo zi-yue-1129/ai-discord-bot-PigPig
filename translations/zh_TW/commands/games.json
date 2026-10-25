@@ -2,6 +2,8 @@
     "responses": {
         "busy": "這個頻道已經有一場遊戲在進行了。",
         "hosting": "你已經在別的頻道開了一局遊戲，先把那局玩完吧。",
+        "request_channel": "點歌頻道不能玩遊戲，那裡的每則訊息都會被當成點歌。",
+        "rate_limited": "你的聊天次數用完了，{seconds} 秒後再開遊戲吧。",
         "unavailable": "問答需要伺服器記憶和 AI 模型，目前其中一個無法使用。",
         "preparing": "🧠 {user} 開了一場 {rounds} 題的伺服器知識問答，正在出題…",
         "no_memories": "出不了題：這個伺服器的記憶還不夠多（或指定的範圍內沒有）。",
@@ -31,6 +33,7 @@
         "song_need_voice": "請先加入語音頻道，片段會在那裡播放。",
         "song_unavailable": "音樂功能目前無法使用，所以猜歌沒辦法開始。",
         "song_music_playing": "這個伺服器正在放音樂（或佇列裡還有歌），等放完再來吧。",
+        "song_other_game": "這個伺服器已經有一局猜歌在進行了。",
         "song_not_enough": "這個伺服器至少要用 /play 放過 {count} 首歌，才能玩猜歌。",
         "song_preparing": "🎧 {user} 在 {channel} 開了猜歌，共 {rounds} 首！在這裡打歌名（或歌手），最先答對的人贏得這一題。",
         "song_round_title": "🎵 第 {number}/{total} 首",
