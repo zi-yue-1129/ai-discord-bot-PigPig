@@ -743,3 +743,47 @@ async def test_a_birthday_is_still_posted_when_a_channel_is_set_later_that_day(
     _at(cog, datetime(2026, 10, 25, 15, 0, tzinfo=TAIPEI))
     await cog.run_daily_jobs()
     assert [text for text, _ in guild.channel.sent] == ["birthday|mentions=<@10>"]
+
+
+@pytest.mark.asyncio
+async def test_a_member_missing_from_the_cache_still_loses_the_birthday_role(
+    cog: CommunityCog, guild: FakeGuild, store: CommunityStore
+) -> None:
+    store.update_settings(GUILD_ID, birthday_enabled=True, birthday_hour=9, birthday_role_id=77)
+    member = guild.add(10)
+    store.set_birthday(GUILD_ID, 10, 10, 25)
+    _at(cog, datetime(2026, 10, 25, 9, 0, tzinfo=TAIPEI))
+    await cog.run_daily_jobs()
+
+    guild.members.remove(member)  # restarted: not cached yet
+    lookups: list = []
+
+    async def fetch_member(user_id: int) -> FakeMember:
+        lookups.append(user_id)
+        if len(lookups) == 1:
+            raise _http_error()
+        return member
+
+    guild.fetch_member = fetch_member
+    _at(cog, datetime(2026, 10, 26, 0, 1, tzinfo=TAIPEI))
+    await cog._remove_expired_birthday_roles()
+    assert len(store.due_birthday_roles(cog._now())) == 1  # lookup failed: kept
+
+    _at(cog, datetime(2026, 10, 26, 0, 6, tzinfo=TAIPEI))
+    await cog._remove_expired_birthday_roles()
+    assert member.roles == [] and store.due_birthday_roles(cog._now()) == []
+
+
+@pytest.mark.asyncio
+async def test_a_member_who_really_left_is_forgotten(cog: CommunityCog, guild: FakeGuild, store: CommunityStore) -> None:
+    import discord
+
+    store.add_birthday_role(GUILD_ID, 10, 77, 0)
+
+    async def fetch_member(user_id: int) -> FakeMember:
+        raise discord.NotFound(SimpleNamespace(status=404, reason="Not Found"), "Unknown Member")
+
+    guild.fetch_member = fetch_member
+    _at(cog, datetime(2026, 10, 26, 0, 1, tzinfo=TAIPEI))
+    await cog._remove_expired_birthday_roles()
+    assert store.due_birthday_roles(cog._now()) == []

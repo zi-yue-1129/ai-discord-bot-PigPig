@@ -88,8 +88,8 @@ def is_public(guild: Any, channel: Any) -> bool:
     """Whether every member (the @everyone role) can see ``channel`` and read its history."""
     try:
         permissions = channel.permissions_for(guild.default_role)
-    except (AttributeError, TypeError):
-        return False
+    except (AttributeError, TypeError, discord.ClientException):
+        return False  # e.g. a thread whose parent channel is not cached: left out, never leaked
     return bool(permissions.view_channel and permissions.read_message_history)
 
 
@@ -190,7 +190,8 @@ class RecapBuilder:
         """The most reacted message of the week that is still there, in a channel everyone can read, by a visible member."""
         for row in await storage.get_top_reacted_messages(str(guild.id), since, until, 10):
             author = _visible(guild, [(row["author_id"], row["count"])], hidden)
-            channel = guild.get_channel(int(row["channel_id"])) if str(row["channel_id"]).isdigit() else None
+            lookup = getattr(guild, "get_channel_or_thread", None) or guild.get_channel
+            channel = lookup(int(row["channel_id"])) if str(row["channel_id"]).isdigit() else None
             # The bot can read private channels; their messages must not end up in a public post.
             if not author or channel is None or not is_public(guild, channel):
                 continue

@@ -406,3 +406,14 @@ async def test_a_recap_that_could_not_be_posted_is_retried(cog: CommunityCog, gu
 
     assert len(guild.channels[501].sent) == 1
     assert store.titles_of(GUILD_ID, 11) == ["funny", "talker"]
+
+
+def test_a_thread_whose_parent_is_not_cached_is_left_out(guild: FakeGuild) -> None:
+    from cogs.community_lib.recap import public_channel_ids
+
+    def no_parent(role: Any) -> Any:
+        raise discord.ClientException("Parent channel not found")
+
+    guild.threads = [SimpleNamespace(id=900, type=discord.ChannelType.public_thread, permissions_for=no_parent)]
+
+    assert sorted(public_channel_ids(guild)) == ["500", "501"]

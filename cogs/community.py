@@ -381,8 +381,17 @@ class CommunityCog(commands.Cog):
             guild = self.bot.get_guild(guild_id)
             if guild is None or getattr(guild, "unavailable", False):
                 continue  # not loaded yet (or an outage): the entry waits until the guild is back
-            member = guild.get_member(user_id)
             role = guild.get_role(role_id)
+            member = guild.get_member(user_id)
+            if member is None and role is not None and given_by_bot:
+                # Not cached is not the same as gone (e.g. right after a restart): ask Discord.
+                try:
+                    member = await guild.fetch_member(user_id)
+                except discord.NotFound:
+                    member = None  # really left
+                except discord.HTTPException:
+                    self._failed(key)
+                    continue
             # A member who left or a deleted role has nothing to take back.
             if member is not None and role is not None and given_by_bot:
                 try:
