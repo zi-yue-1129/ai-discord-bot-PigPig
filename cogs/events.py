@@ -54,18 +54,23 @@ def mention_lines(user_ids: List[int], limit: int = FIELD_LIMIT, more: str = "+{
     return text
 
 
+def mention_groups(prefix: str, user_ids: List[int], limit: int = MESSAGE_LIMIT) -> List[List[int]]:
+    """The people to mention in each message, so that ``prefix`` plus their mentions fits ``limit``."""
+    groups: List[List[int]] = [[]]
+    length = len(prefix)
+    for user_id in user_ids:
+        piece = len(f" <@{user_id}>")
+        if groups[-1] and length + piece > limit:
+            groups.append([])
+            length = len(prefix)
+        groups[-1].append(user_id)
+        length += piece
+    return groups
+
+
 def mention_chunks(prefix: str, user_ids: List[int], limit: int = MESSAGE_LIMIT) -> List[str]:
     """``prefix`` followed by every mention, split into messages under ``limit`` characters."""
-    chunks, current = [], prefix
-    for user_id in user_ids:
-        piece = f" <@{user_id}>"
-        if len(current) + len(piece) > limit:
-            chunks.append(current)
-            current = piece.strip()
-        else:
-            current += piece
-    chunks.append(current)
-    return chunks
+    return [prefix + "".join(f" <@{user_id}>" for user_id in users) for users in mention_groups(prefix, user_ids, limit)]
 
 
 class EventView(discord.ui.View):
@@ -195,6 +200,11 @@ class EventsCog(commands.Cog):
             return
         user_id = interaction.user.id
         async with self._lock(event.id):
+            # Read again under the lock: a cancel may have finished while this press waited.
+            event = self.store.get(event.id)
+            if event is None or event.status == CANCELLED:
+                await interaction.response.send_message(self._t(guild_id, "event_gone"), ephemeral=True)
+                return
             before = self.store.roster(event)
             if status is None:
                 changed = self.store.leave(event.id, user_id)
@@ -319,11 +329,16 @@ class EventsCog(commands.Cog):
 
     @staticmethod
     def _can_see(interaction: discord.Interaction, event: Event) -> bool:
+        """Whether the member may see the event's channel: never for a private thread, whose
+        permissions are inherited from its parent although only its members can read it."""
         guild = interaction.guild
         channel = guild.get_channel_or_thread(event.channel_id) if guild is not None else None
-        if channel is None:
+        if channel is None or getattr(channel, "type", None) == discord.ChannelType.private_thread:
             return False
-        permissions = channel.permissions_for(interaction.user)
+        try:
+            permissions = channel.permissions_for(interaction.user)
+        except (AttributeError, TypeError, discord.ClientException):
+            return False  # e.g. a thread whose parent is not cached: left out, never leaked
         return bool(permissions.view_channel and permissions.read_message_history)
 
     @event.command(name="cancel", description="Cancel an event you created")
@@ -367,11 +382,20 @@ class EventsCog(commands.Cog):
             await self._remind(event, now)
 
     async def _remind(self, event: Event, now: float) -> None:
-        """Mentions everyone going; marks the event reminded only once every message was sent."""
+        """Mentions everyone going; marks the event reminded only once every message was sent.
+
+        Each message records whom it mentioned, so a retry after a failure (or a restart) mentions
+        only the people still waiting for their reminder.
+        """
         async with self._lock(event.id):
-            roster = self.store.roster(event)
-            if not roster.going or event.starts_at <= now - 3600:
-                # Nobody to remind, or the bot was off long past the start.
+            # Read again under the lock: the event may have been cancelled since the due query.
+            event = self.store.get(event.id)
+            if event is None or event.status != OPEN:
+                return
+            reminded = set(self.store.reminded_users(event.id))
+            going = [user for user in self.store.roster(event).going if user not in reminded]
+            if not going or event.starts_at <= now - 3600:
+                # Nobody (left) to remind, or the bot was off long past the start.
                 self.store.mark_reminded(event.id)
                 return
             channel = self.bot.get_channel(event.channel_id)
@@ -380,14 +404,15 @@ class EventsCog(commands.Cog):
                 return
             key = "reminder" if event.starts_at > now else "reminder_now"
             prefix = self._t(event.guild_id, key, title=event.title, when=f"<t:{int(event.starts_at)}:R>")
-            mentions = discord.AllowedMentions(everyone=False, roles=False, users=[discord.Object(u) for u in roster.going])
-            try:
-                for chunk in mention_chunks(prefix, roster.going):
-                    await channel.send(chunk, allowed_mentions=mentions)
-            except discord.HTTPException:
-                self.logger.warning(f"events: reminder for event {event.id} failed", exc_info=True)
-                self._fail(event, now)
-                return
+            for users in mention_groups(prefix, going):
+                mentions = discord.AllowedMentions(everyone=False, roles=False, users=[discord.Object(u) for u in users])
+                try:
+                    await channel.send(mention_chunks(prefix, users)[0], allowed_mentions=mentions)
+                except discord.HTTPException:
+                    self.logger.warning(f"events: reminder for event {event.id} failed", exc_info=True)
+                    self._fail(event, now)
+                    return
+                self.store.mark_users_reminded(event.id, users)
             self.store.mark_reminded(event.id)
 
     def _fail(self, event: Event, now: float) -> None:

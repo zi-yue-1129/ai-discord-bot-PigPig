@@ -37,14 +37,22 @@ async def write_recap(
     Raises:
         QuotaExhausted: ``charge`` refused a model attempt.
     """
+    # Summaries get at most half of the budget (the newest ones first), the latest messages the rest.
+    kept: list = []
+    used = 0
+    for summary in reversed(summaries):
+        summary = summary[: MAX_INPUT_CHARS // 2 - used]
+        if not summary:
+            break
+        kept.insert(0, summary)
+        used += len(summary)
     story = ""
-    if summaries:
-        story += "Earlier summaries:\n" + "\n".join(f"- {summary}" for summary in summaries) + "\n\n"
+    if kept:
+        story += "Earlier summaries:\n" + "\n".join(f"- {summary}" for summary in kept) + "\n\n"
+    room = max(MAX_INPUT_CHARS - len(story), 0)
     latest = "\n".join(recent_lines)
     # Keep the newest messages when there is too much text.
-    room = MAX_INPUT_CHARS - len(story)
-    if room < len(latest):
-        latest = latest[-max(room, 0):]
+    latest = latest[len(latest) - room:] if room < len(latest) else latest
     story += "Latest messages:\n" + latest
     prompt = [
         SystemMessage(content=_RULES.format(language=language)),

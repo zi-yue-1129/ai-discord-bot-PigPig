@@ -227,6 +227,10 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
         if instance is None:
             await interaction.response.send_message(self._t(guild_id, "story", "addons", "no_story"), ephemeral=True)
             return
+        # The recap retells the channel's history, so it is only for members who may read it.
+        if not _reads_history(interaction.channel, interaction.user):
+            await interaction.response.send_message(self._t(guild_id, "story", "addons", "recap_no_history"), ephemeral=True)
+            return
         await interaction.response.defer()
         text = await self._recap_text(interaction.channel, instance, interaction.user.id)
         if not text:
@@ -247,7 +251,8 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
             if last_day == today:
                 return
             try:
-                if last_day is not None:
+                # Posted for the whole channel: skipped where members may see new messages but not the history.
+                if last_day is not None and _reads_history(message.channel, message.guild.default_role):
                     text = await self._recap_text(message.channel, instance, message.author.id, before=message)
                     if text:
                         await message.channel.send(
@@ -303,7 +308,15 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
         # A private character's card is shown only to its creator.
         private = not found.is_public
         await interaction.response.defer(ephemeral=private)
-        result = await images._generate_image_logic(card_prompt(found), str(guild_id), interaction.channel_id)
+        # A history of its own, dropped afterwards: the card's details never reach the channel's
+        # shared image history (other members' requests), nor does that history reach the card.
+        history_key = f"story_card:{interaction.id}"
+        try:
+            result = await images._generate_image_logic(card_prompt(found), str(guild_id), history_key)
+        finally:
+            history = getattr(images, "conversation_history", None)
+            if isinstance(history, dict):
+                history.pop(history_key, None)
         attachment = next((item for item in result.get("attachments", []) if item.get("data_base64")), None)
         if attachment is None:
             await interaction.followup.send(self._t(guild_id, "story", "addons", "card_failed"), ephemeral=True)
@@ -386,6 +399,15 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
                 except:
                     # 最後的備用方案
                     await message.channel.send(self._t(guild_id, "story", "menu", "story_process_error"))
+
+
+def _reads_history(channel: Any, who: Any) -> bool:
+    """Whether ``who`` (a member or role) may see ``channel`` and read its message history."""
+    try:
+        permissions = channel.permissions_for(who)
+    except (AttributeError, TypeError, discord.ClientException):
+        return False
+    return bool(permissions.view_channel and permissions.read_message_history)
 
 
 def card_prompt(character: Any) -> str:

@@ -27,8 +27,8 @@ Limits: an event can be at most 180 days ahead, a member can have 5 upcoming eve
 
 At `starts − remind` minutes the bot posts in the event's channel, mentioning everyone going (not the waiting list or maybes). Only those members can be pinged by it: `@everyone`, roles and other mentions in the title are never pinged. Long lists are split into several messages under Discord's 2000-character limit.
 
-The event is marked reminded only after every message was sent. A failed reminder is tried again after a minute, at most 3 times. If the bot was offline past the reminder time it still reminds, saying the event has started, unless it is more than an hour past the start.
+The event is marked reminded only after every message was sent. A failed reminder is tried again after a minute, at most 3 times; each message records whom it mentioned, so a retry (or a restart) mentions only the people who did not get it yet. A cancelled event is never reminded, and a button pressed while the event is being cancelled is refused. If the bot was offline past the reminder time it still reminds, saying the event has started, unless it is more than an hour past the start.
 
 ## `/event list` and `/event cancel event_id`
 
-`/event list` shows the server's upcoming events with links (only to you), leaving out events in channels you cannot see. `/event cancel` can be used by the host or anyone with **Manage Events**; the message is struck through and its buttons removed.
+`/event list` shows the server's upcoming events with links (only to you), leaving out events in channels you cannot see and every event in a private thread (thread permissions follow the parent channel even though only the thread's members can read it). `/event cancel` can be used by the host or anyone with **Manage Events**; the message is struck through and its buttons removed.

@@ -10,5 +10,6 @@
     "card_not_found": "找不到這個角色（只能選這個伺服器的公開角色或你自己建立的角色）。",
     "card_unavailable": "生圖功能目前無法使用。",
     "card_failed": "角色卡畫不出來，稍後再試。",
-    "card_rate_limited": "你的生圖次數用完了，{seconds} 秒後再試。"
+    "card_rate_limited": "你的生圖次數用完了，{seconds} 秒後再試。",
+    "recap_no_history": "你沒有讀取這個頻道訊息紀錄的權限，所以不能看前情提要。"
 }

@@ -1610,10 +1610,10 @@ Rolls dice in any channel: `d20`, `2d6+3`, `4d6-1`, `d8+d6+2` (up to 100 dice, 1
 
 ### `/story recap` and the daily recap
 
-`/story recap` posts a "previously on…" of the channel's story: the model writes it from the story's last saved summaries and the latest 40 messages. It counts as one use of the chat quota of whoever asked (fallback models included); without quota or a working model, the latest saved summary is shown instead.
+`/story recap` posts a "previously on…" of the channel's story: the model writes it from the story's last saved summaries and the latest 40 messages (at most 6000 characters in all: summaries up to half, the newest messages the rest). It counts as one use of the chat quota of whoever asked (fallback models included); without quota or a working model, the latest saved summary is shown instead. Only members who can read the channel's message history can ask for it.
 
-The bot also posts this recap by itself before the first story message of a new day, when the story moved on on an earlier day. The day the story last moved on is kept per channel in `data/story_recaps.db`. Two messages at once post one recap. The model call is charged to the member whose message started the day; a recap that fails is not tried again that day, and the story goes on without it.
+The bot also posts this recap by itself before the first story message of a new day, when the story moved on on an earlier day. It is skipped in channels where `@everyone` can see new messages but not the history. The day the story last moved on is kept per channel in `data/story_recaps.db`. Two messages at once post one recap. The model call is charged to the member whose message started the day; a recap that fails is not tried again that day, and the story goes on without it.
 
 ### `/story card character`
 
-Draws a character card picture with the image generator from the character's name, description and attributes, and posts it with those details. The list offers this server's public characters and your own private ones. A private character's card is shown only to you. It counts as one use of your image quota (the `image` rate limit); a character you cannot pick is refused without using it.
+Draws a character card picture with the image generator from the character's name, description and attributes, and posts it with those details. The list offers this server's public characters and your own private ones. A private character's card is shown only to you. It counts as one use of your image quota (the `image` rate limit); a character you cannot pick is refused without using it. The card is drawn with an image history of its own that is dropped afterwards, so its details never reach other members' image requests in the channel.

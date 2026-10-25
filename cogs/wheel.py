@@ -118,7 +118,9 @@ class WheelCog(commands.Cog):
         if not keyword:
             keywords = [row[0] for row in search.db.getKeywords() or []]
             if not keywords:
-                await interaction.edit_original_response(content=self._t(guild_key, "food_none", keyword="?"))
+                await interaction.edit_original_response(
+                    content=self._t(guild_key, "food_none", keyword="?"), allowed_mentions=discord.AllowedMentions.none()
+                )
                 return
             keyword = search.recommender.suggest_keyword(guild_key, keywords)
         lang = self.lang_manager.get_server_lang(guild_key) if self.lang_manager else "en_US"
@@ -130,7 +132,9 @@ class WheelCog(commands.Cog):
         ranked = (search.recommender.rank_candidates(guild_key, results or []) or results or [])[:FOOD_OPTIONS]
         ranked = [place for place in ranked if place.get("name")]
         if len(ranked) < wheel.MIN_OPTIONS:
-            await interaction.edit_original_response(content=self._t(guild_key, "food_none", keyword=keyword))
+            await interaction.edit_original_response(
+                content=self._t(guild_key, "food_none", keyword=keyword), allowed_mentions=discord.AllowedMentions.none()
+            )
             return
         names = [place["name"][: wheel.MAX_OPTION_LENGTH] for place in ranked]
         pick = await self._spin(interaction, self._t(guild_key, "food_title", keyword=keyword), names)

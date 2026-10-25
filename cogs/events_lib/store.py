@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS event_signups (
     status TEXT NOT NULL,
     joined_at REAL NOT NULL,
     seq INTEGER NOT NULL,
+    reminded INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (event_id, user_id)
 );
 """
@@ -214,6 +215,21 @@ class EventStore:
                 " joined_at = excluded.joined_at, seq = excluded.seq",
                 (event_id, user_id, status, now, seq),
             )
+
+    def mark_users_reminded(self, event_id: int, user_ids: List[int]) -> None:
+        """Records that these people got the reminder, so a retry does not mention them again."""
+        with self._session() as db:
+            db.executemany(
+                "UPDATE event_signups SET reminded = 1 WHERE event_id = ? AND user_id = ?",
+                [(event_id, user_id) for user_id in user_ids],
+            )
+
+    def reminded_users(self, event_id: int) -> List[int]:
+        with self._session() as db:
+            rows = db.execute(
+                "SELECT user_id FROM event_signups WHERE event_id = ? AND reminded = 1", (event_id,)
+            ).fetchall()
+        return [row[0] for row in rows]
 
     def leave(self, event_id: int, user_id: int) -> bool:
         with self._session() as db:

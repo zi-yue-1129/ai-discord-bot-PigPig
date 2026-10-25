@@ -10,5 +10,6 @@
     "card_not_found": "I couldn't find that character (pick a public character of this server or one you created).",
     "card_unavailable": "Image generation isn't available right now.",
     "card_failed": "I couldn't draw the character card; try again later.",
-    "card_rate_limited": "You've used up your image quota; try again in {seconds} seconds."
+    "card_rate_limited": "You've used up your image quota; try again in {seconds} seconds.",
+    "recap_no_history": "You can't read this channel's message history, so you can't see its recap."
 }

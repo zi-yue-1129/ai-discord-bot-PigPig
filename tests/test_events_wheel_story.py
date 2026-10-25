@@ -99,14 +99,23 @@ class FakeInteraction:
 
 
 class FakeChannel:
-    def __init__(self, channel_id: int = 500, fail: bool = False) -> None:
+    def __init__(self, channel_id: int = 500, fail: bool = False, fail_on: Optional[int] = None) -> None:
         self.id = channel_id
         self.fail = fail
+        # Fail only the send with this number (1-based), once.
+        self.fail_on = fail_on
+        self.attempts = 0
         self.sent: List[tuple] = []
         self.history_messages: List[Any] = []
+        self.history_readers: Optional[set] = None  # None: everyone may read the history
+
+    def permissions_for(self, who: Any) -> Any:
+        allowed = self.history_readers is None or getattr(who, "id", None) in self.history_readers
+        return SimpleNamespace(view_channel=True, read_message_history=allowed)
 
     async def send(self, content: Any = None, **kwargs: Any) -> Any:
-        if self.fail:
+        self.attempts += 1
+        if self.fail or self.attempts == self.fail_on:
             raise discord.HTTPException(SimpleNamespace(status=500, reason="boom"), "boom")
         self.sent.append((content, kwargs))
         return SimpleNamespace(id=len(self.sent))
@@ -508,7 +517,9 @@ async def test_the_daily_recap_is_posted_once_on_a_new_day(monkeypatch: pytest.M
         SimpleNamespace(author=SimpleNamespace(id=1, display_name="PigPig"), content="", embeds=[SimpleNamespace(description="洞窟裡很暗。")]),
         SimpleNamespace(author=SimpleNamespace(id=5, display_name="Alice"), content="我點起火把", embeds=[]),
     ]
-    message = SimpleNamespace(guild=SimpleNamespace(id=GUILD_ID), channel=channel, author=SimpleNamespace(id=5))
+    message = SimpleNamespace(
+        guild=SimpleNamespace(id=GUILD_ID, default_role=SimpleNamespace(id=GUILD_ID)), channel=channel, author=SimpleNamespace(id=5)
+    )
 
     day = ["2026-10-25"]
     cog._today = lambda: day[0]
@@ -643,3 +654,170 @@ async def test_buttons_reach_the_cog_loaded_now() -> None:
 
 async def _record(log: list, status: Any) -> None:
     log.append(status)
+
+
+@pytest.mark.asyncio
+async def test_the_event_list_hides_events_in_private_threads(store: EventStore) -> None:
+    cog = _events_cog(store, FakeChannel())
+    thread_event = _event(store)
+
+    thread = SimpleNamespace(
+        type=discord.ChannelType.private_thread,
+        permissions_for=lambda member: SimpleNamespace(view_channel=True, read_message_history=True),  # inherited
+    )
+    interaction = FakeInteraction(user_id=3)
+    interaction.guild = SimpleNamespace(get_channel_or_thread=lambda channel_id: thread)
+    await EventsCog.list_events.callback(cog, interaction)
+
+    assert interaction.sent[0][0] == "none_upcoming|"
+    assert thread_event.id  # the event exists, it is just not shown
+
+
+@pytest.mark.asyncio
+async def test_a_press_queued_behind_a_cancel_does_not_sign_up(store: EventStore) -> None:
+    channel = FakeChannel()
+    cog = _events_cog(store, channel)
+    event = _event(store)
+    interaction = FakeInteraction(user_id=3, message=SimpleNamespace(id=event.message_id))
+
+    async with cog._lock(event.id):
+        press = asyncio.create_task(cog.answer(interaction, GOING))
+        await asyncio.sleep(0)  # the press read the event before the cancel and now waits for the lock
+        store.cancel(event.id)
+    await press
+
+    assert interaction.sent[0][0] == "event_gone|" and interaction.edits == []
+    assert store.roster(store.get(event.id)).going == []
+
+
+@pytest.mark.asyncio
+async def test_no_reminder_for_an_event_cancelled_after_it_fell_due(store: EventStore) -> None:
+    channel = FakeChannel()
+    cog = _events_cog(store, channel)
+    event = _event(store)
+    store.sign_up(event.id, 1, GOING, NOW)
+    stale = store.due_reminders(NOW + 3000)[0]
+    store.cancel(event.id)
+
+    await cog._remind(stale, NOW + 3000)
+
+    assert channel.sent == [] and store.get(event.id).status == CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_a_retry_after_a_failed_second_message_mentions_only_those_still_waiting(store: EventStore) -> None:
+    channel = FakeChannel(fail_on=2)
+    cog = _events_cog(store, channel)
+    event = _event(store)
+    users = list(range(10**17, 10**17 + 100))
+    for user in users:
+        store.sign_up(event.id, user, GOING, NOW)
+
+    await cog._remind(store.get(event.id), NOW + 3000)
+    assert store.get(event.id).status == OPEN
+    await cog._remind(store.get(event.id), NOW + 3100)
+
+    mentioned = [user for content, _ in channel.sent for user in users if f"<@{user}>" in content]
+    assert sorted(mentioned) == users  # everyone exactly once
+    assert store.get(event.id).status == REMINDED
+
+
+@pytest.mark.asyncio
+async def test_a_food_search_without_results_never_pings_the_keyword() -> None:
+    class Provider:
+        async def async_search_list(self, keyword: str, lang: str) -> list:
+            return []
+
+    search = SimpleNamespace(
+        db=SimpleNamespace(), provider=Provider(),
+        recommender=SimpleNamespace(rank_candidates=lambda guild, found: found),
+    )
+    cog = WheelCog(SimpleNamespace(get_cog=lambda name: search, rate_limiter=None))
+    cog.lang_manager = FakeLang()
+    interaction = FakeInteraction()
+
+    await WheelCog.food.callback(cog, interaction, "<@123>")
+
+    assert "<@123>" in interaction.edits[-1]["content"]
+    assert interaction.edits[-1]["allowed_mentions"].users is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("summaries", [[], ["勇者進了洞窟。"]])
+async def test_recap_is_refused_to_members_who_cannot_read_the_history(summaries: list) -> None:
+    cog = _story_cog(_instance(summaries=summaries), orchestrator=object())
+    interaction = FakeInteraction(user_id=5)
+    interaction.channel.history_readers = {6}
+
+    await StoryManagerCog.recap.callback(cog, interaction)
+
+    assert interaction.sent[0][0] == "recap_no_history|" and interaction.followups == []
+
+
+@pytest.mark.asyncio
+async def test_no_daily_recap_where_members_cannot_read_the_history(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_write(*args: Any) -> str:
+        return "recap"
+
+    monkeypatch.setitem(StoryManagerCog._recap_text.__globals__, "write_recap", fake_write)
+    cog = _story_cog(_instance(), orchestrator=object())
+    channel = FakeChannel()
+    channel.history_readers = {5}  # not @everyone
+    message = SimpleNamespace(
+        guild=SimpleNamespace(id=GUILD_ID, default_role=SimpleNamespace(id=GUILD_ID)), channel=channel, author=SimpleNamespace(id=5)
+    )
+    cog.recap_store.set_active_day(500, "2026-10-25")
+    cog._today = lambda: "2026-10-26"
+
+    await cog.maybe_post_daily_recap(message)
+
+    assert channel.sent == [] and cog.recap_store.last_active_day(500) == "2026-10-26"
+
+
+@pytest.mark.asyncio
+async def test_a_card_never_shares_the_channel_image_history() -> None:
+    from cogs.gen_img import ImageGenerationCog
+
+    class Images:
+        conversation_history: dict = {}
+        _get_conversation_history = ImageGenerationCog._get_conversation_history
+        _update_conversation_history = ImageGenerationCog._update_conversation_history
+
+        def __init__(self) -> None:
+            self.conversation_history = {500: [{"role": "user", "content": "earlier public request"}]}
+            self.seen: list = []
+
+        async def _generate_image_logic(self, prompt: str, guild_id: str, channel_id: Any) -> dict:
+            self.seen.append(list(self._get_conversation_history(channel_id)))
+            self._update_conversation_history(channel_id, "user", prompt)
+            return {"attachments": [{"data_base64": base64.b64encode(b"png").decode()}]}
+
+    images = Images()
+    characters = {"c2": _character(character_id="c2", name="影", description="秘密身分", is_public=False)}
+    cog = _story_cog(characters=characters, cogs={"ImageGenerationCog": images}, rate_limiter=None)
+
+    await StoryManagerCog.card.callback(cog, FakeInteraction(user_id=5), "c2")
+
+    assert images.seen == [[]]  # the card did not see the channel's earlier requests
+    assert images.conversation_history == {500: [{"role": "user", "content": "earlier public request"}]}
+
+
+def test_the_recap_input_stays_within_its_budget() -> None:
+    from llm import story_recap_writer
+
+    captured: list = []
+
+    async def fake_ask(orchestrator, guild_id, prompt, purpose, charge):
+        captured.append(prompt[1].content)
+        return "ok"
+
+    original = story_recap_writer._ask
+    story_recap_writer._ask = fake_ask
+    try:
+        asyncio.run(story_recap_writer.write_recap(None, "1", "English", ["s" * 6100], ["line " + "x" * 395] * 40))
+    finally:
+        story_recap_writer._ask = original
+
+    text = captured[0]
+    assert len(text) <= story_recap_writer.MAX_INPUT_CHARS + 100
+    assert "Latest messages:" in text and text.rstrip(">").endswith("x")  # the newest lines are kept
