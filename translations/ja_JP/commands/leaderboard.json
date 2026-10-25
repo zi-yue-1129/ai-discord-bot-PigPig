@@ -1,0 +1,41 @@
+{
+    "responses": {
+        "title_week": "🏆 **今週いちばん話した人**",
+        "title_month": "🏆 **今月いちばん話した人**",
+        "title_all": "🏆 **これまでいちばん話した人**",
+        "title_streak": "🔥 **連続発言日数**",
+        "value_messages": "{count} 件",
+        "value_streak": "{count} 日",
+        "empty": "このランキングにはまだ誰もいません。",
+        "unavailable": "いまはメッセージの統計を取得できません。",
+        "your_rank": "あなたは {rank} 位です（{value}）。",
+        "you_unranked": "あなたはまだこのランキングに入っていません。",
+        "you_hidden": "ランキングに表示しない設定です（/leaderboard optout）。",
+        "hidden": "今後はランキング、週間まとめ、実績のお知らせに表示されません。自分の /profile と /achievements は引き続き見られます。",
+        "shown": "ランキングに再び表示されます。",
+        "profile_hidden": "{name} さんはプロフィールを非公開にしています。",
+        "no_stats": "{name} さんのこのサーバーでの統計はまだありません。",
+        "profile_rank": "通算順位：{total} 人中 {rank} 位",
+        "profile_badges": "バッジ：{badges}（{done}/{total}）",
+        "achievements_title": "🏆 **{name} さんの実績**（{done}/{total}）",
+        "unlocked": "🏆 {name} さんが実績を解除しました：{achievements}！",
+        "list_joiner": "、",
+        "needs_joiner": "、",
+        "needs_total_messages": "{value} 件発言する",
+        "needs_streak_days": "{value} 日連続で発言する",
+        "needs_gap_days": "{value} 日沈黙したあとに発言する",
+        "needs_night_ratio": "発言の {value} を 0 時から 5 時に送る",
+        "needs_membership_days": "初めての発言から {value} 日たつ"
+    },
+    "achievements": {
+        "msg_100": "おしゃべりさん",
+        "msg_1000": "千の言葉",
+        "msg_10000": "万言の書",
+        "streak_7": "一週間皆勤",
+        "streak_30": "皆勤賞",
+        "night_owl": "夜ふかし",
+        "diver": "潜水マスター",
+        "revived": "よみがえり",
+        "veteran": "古参メンバー"
+    }
+}

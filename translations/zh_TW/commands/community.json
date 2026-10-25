@@ -11,7 +11,7 @@
         "off": "關閉",
         "not_set": "未設定",
         "host_timezone": "機器人的時區",
-        "status": "**社群設定**\n公告頻道：{announce}\n時區：{timezone}\n新成員歡迎：{welcome}（頻道：{welcome_channel}，離開通知：{farewell}）\n生日祝福：{birthday}（每天 {hour}:00，身分組：{role}）\n入群週年：{anniversary}",
+        "status": "**社群設定**\n公告頻道：{announce}\n時區：{timezone}\n新成員歡迎：{welcome}（頻道：{welcome_channel}，離開通知：{farewell}）\n生日祝福：{birthday}（每天 {hour}:00，身分組：{role}）\n入群週年：{anniversary}\n成就公告：{achievements}",
         "channel_set": "社群公告會發在 {channel}。",
         "invalid_timezone": "我不認得 `{name}` 這個時區，請用像 `Asia/Taipei` 這樣的名稱。",
         "timezone_set": "時區已設為 `{name}`，那裡現在是 {time}。",
@@ -29,6 +29,12 @@
         "birthday_none": "你在這個伺服器沒有儲存生日。",
         "upcoming_title": "🎂 未來 30 天的生日：",
         "upcoming_line": "{date} {name}",
-        "upcoming_none": "未來 30 天沒有人生日。"
+        "upcoming_none": "未來 30 天沒有人生日。",
+        "achievements_off": "不再公告成就，成員仍可以在 /profile 和 /achievements 看到。",
+        "achievements_reply": "解鎖成就時，會在那則訊息加上 🏆 並簡短回覆。",
+        "achievements_channel": "解鎖成就時，會在社群公告頻道發一行公告。",
+        "achievement_mode_off": "關閉",
+        "achievement_mode_reply": "回覆那則訊息",
+        "achievement_mode_channel": "公告頻道"
     }
 }

@@ -17,6 +17,7 @@ Messages are written by the model in the bot's own voice (the server's persona).
 | `/community welcome_test` | Previews the welcome with yourself as the new member (only you see it) |
 | `/community birthdays enabled [hour] [role]` | Celebrates saved birthdays at `hour` (local, default 9). `role` is given for the day and taken back at midnight |
 | `/community anniversaries enabled` | Celebrates members who joined on this day in an earlier year (at the same hour) |
+| `/community achievements mode` | How unlocked achievements are announced: `off` (default), `reply` (🏆 reaction and a short reply) or `channel` (announcement channel). See [Leaderboards & Achievements](leaderboard.md) |
 
 ## Member commands (`/birthday`)
 
@@ -56,7 +57,7 @@ community:
 
 ## Storage
 
-`data/community.db` (SQLite): `guild_settings`, `birthdays` (per server), `job_runs`, `birthday_roles`.
+`data/community.db` (SQLite): `guild_settings`, `birthdays` (per server), `job_runs`, `birthday_roles`, and for the leaderboard cog `optouts`, `user_achievements`, `achievement_checked`. Columns added later (such as `achievement_mode`) are added to older files on first use.
 
 ## Code
 

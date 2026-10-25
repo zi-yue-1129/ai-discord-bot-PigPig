@@ -1,4 +1,4 @@
-"""Community features: welcoming new members, birthdays and yearly join anniversaries.
+"""Community features: welcoming new members, birthdays, yearly join anniversaries and achievement announcements.
 
 Every feature is off until a server admin turns it on with ``/community``; the bot owner
 sets the limits in the ``community:`` block of base.yaml. Messages are written by the
@@ -332,6 +332,7 @@ class CommunityCog(commands.Cog):
             hour=settings.birthday_hour,
             role=f"<@&{settings.birthday_role_id}>" if settings.birthday_role_id else self._t(guild.id, "not_set"),
             anniversary=on_off(settings.anniversary_enabled),
+            achievements=self._t(guild.id, f"achievement_mode_{settings.achievement_mode}"),
         )
 
     @community.command(name="status", description="Show which community features are on")
@@ -436,6 +437,24 @@ class CommunityCog(commands.Cog):
         settings = self.store.update_settings(interaction.guild_id, anniversary_enabled=enabled)
         key = "anniversary_on" if enabled else "anniversary_off"
         await interaction.response.send_message(self._t(interaction.guild_id, key, hour=settings.birthday_hour), ephemeral=True)
+
+    @community.command(name="achievements", description="Choose how unlocked achievements are announced")
+    @app_commands.describe(mode="Off keeps them in /profile and /achievements only")
+    @app_commands.choices(
+        mode=[
+            app_commands.Choice(name="Off", value="off"),
+            app_commands.Choice(name="Reply to the message", value="reply"),
+            app_commands.Choice(name="Announcement channel", value="channel"),
+        ]
+    )
+    async def achievements_command(self, interaction: discord.Interaction, mode: str) -> None:
+        if not await self._can_manage(interaction):
+            return
+        settings = self.store.update_settings(interaction.guild_id, achievement_mode=mode)
+        text = self._t(interaction.guild_id, f"achievements_{mode}")
+        if mode == "channel" and self._channel_for(interaction.guild, settings) is None:
+            text += "\n" + self._t(interaction.guild_id, "no_channel")
+        await interaction.response.send_message(text, ephemeral=True)
 
     # ------------------------------------------------------------ member commands
     @birthday.command(name="set", description="Save your birthday on this server (no year needed)")

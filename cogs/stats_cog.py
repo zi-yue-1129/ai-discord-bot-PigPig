@@ -158,7 +158,7 @@ class StatsCog(commands.Cog):
             content = message.content or ""
 
             # 1) Update cumulative stats in procedural.db
-            await asyncio.shield(
+            stats = await asyncio.shield(
                 self.stats_storage.upsert_user_stats(
                     user_id=user_id,
                     guild_id=guild_id,
@@ -167,6 +167,9 @@ class StatsCog(commands.Cog):
                     timestamp=timestamp,
                 )
             )
+            # Lets other cogs (achievements) react to the fresh numbers without re-reading them.
+            if stats and hasattr(self.bot, "dispatch"):
+                self.bot.dispatch("user_stats_updated", message, stats)
 
             # 2) Update event stats in stats.db for dashboard trends
             if hasattr(self.bot, "stats_collector"):
