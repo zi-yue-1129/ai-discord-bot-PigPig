@@ -139,8 +139,27 @@ class FakeVectorStore:
         return self.memories[:limit]
 
 
-def _memory(text: str, authors: Optional[list] = None) -> SimpleNamespace:
-    return SimpleNamespace(content=text, metadata={**META, "author_ids": authors or ["7"]})
+def _memory(text: str, authors: Optional[list] = None, channel_id: str = "500") -> SimpleNamespace:
+    return SimpleNamespace(content=text, metadata={**META, "author_ids": authors or ["7"], "channel_id": channel_id})
+
+
+class FakeTextChannel:
+    def __init__(self, public: bool) -> None:
+        self.public = public
+
+    def permissions_for(self, role: Any) -> Any:
+        return SimpleNamespace(view_channel=self.public, read_message_history=self.public)
+
+
+class FakeGuild:
+    """Channel 500 is public, 501 is restricted, 502 is where a private quiz runs."""
+
+    id = GUILD_ID
+    default_role = object()
+    channels = {500: FakeTextChannel(True), 501: FakeTextChannel(False), 502: FakeTextChannel(False)}
+
+    def get_channel_or_thread(self, channel_id: int) -> Any:
+        return self.channels.get(channel_id)
 
 
 @pytest.fixture
@@ -150,7 +169,15 @@ def store(tmp_path: Path) -> CommunityStore:
 
 @pytest.fixture
 def cog(store: CommunityStore) -> GamesCog:
-    memories = [_memory(MEMORY), _memory(MEMORY, ["13"]), _memory("太短"), _memory(MEMORY + "（第二次）")]
+    memories = [
+        _memory(MEMORY),
+        _memory(MEMORY, ["13"]),
+        _memory("太短"),
+        _memory(MEMORY + "（第二次）"),
+        _memory(MEMORY + "（私密頻道）", channel_id="501"),
+        _memory(MEMORY + "（這裡）", channel_id="502"),
+        _memory(MEMORY + "（已刪除的頻道）", channel_id="999"),
+    ]
     bot = SimpleNamespace(orchestrator=object(), vector_manager=SimpleNamespace(store=FakeVectorStore(memories)))
     instance = GamesCog(bot, store=store)
     instance.lang_manager = FakeLang()
@@ -170,11 +197,12 @@ async def test_questions_come_from_usable_memories_only(cog: GamesCog, monkeypat
 
     monkeypatch.setitem(GamesCog.make_questions.__globals__, "write_question", fake_write)
 
-    questions = await cog.make_questions(SimpleNamespace(id=GUILD_ID), 3, channel_id="500", since=10.0)
+    questions = await cog.make_questions(FakeGuild(), 7, channel_id="500", since=10.0, here=502)
 
-    assert len(questions) == 2  # the hidden author's memory and the short one are skipped
-    assert sorted(seen) == sorted([MEMORY, MEMORY + "（第二次）"])
-    assert cog.bot.vector_manager.store.calls == [(str(GUILD_ID), 9, "500", 10.0)]
+    # Skipped: the hidden author's memory, the short one, and those from a restricted or unknown channel.
+    assert len(questions) == 3
+    assert sorted(seen) == sorted([MEMORY, MEMORY + "（第二次）", MEMORY + "（這裡）"])
+    assert cog.bot.vector_manager.store.calls == [(str(GUILD_ID), 21, "500", 10.0)]
 
 
 @pytest.mark.asyncio
@@ -204,3 +232,104 @@ def test_every_language_has_the_same_game_texts(folder: str) -> None:
         return set(json.loads((ROOT / "translations" / lang / "commands" / "games.json").read_text("utf-8"))["responses"])
 
     assert keys(folder) == keys("en_US")
+
+
+# ------------------------------------------------------------------ word chain
+
+from cogs.games_lib.chain import BOT_PLAYER, WORD_POINTS, WordChain, chains, last_char, normalise_word  # noqa: E402
+
+
+def test_only_single_words_count_as_moves() -> None:
+    assert normalise_word(" 蘋果 ") == "蘋果"
+    assert normalise_word("Apple") == "apple"
+    assert normalise_word("ｒｉｖｅｒ") == "river"  # full-width letters
+    assert normalise_word("哈哈 好笑") is None
+    assert normalise_word("果") is None
+    assert normalise_word("這是一句很長很長的話吧") is None
+    assert normalise_word("ok!") is None
+
+
+def test_words_chain_by_their_last_character() -> None:
+    assert chains("蘋果", "果汁") and chains("apple", "egg")
+    assert not chains("蘋果", "汁液")
+    assert last_char("コーヒー") == "ヒ" and chains("コーヒー", "ひこうき") and chains("コーヒー", "ヒント")
+    assert chains("でんしゃ", "やま")  # small kana count as large
+    assert chains("蘋果", "過年", homophones=True) and not chains("蘋果", "過年")
+
+
+def test_the_chain_refuses_repeats_dead_ends_and_double_turns() -> None:
+    chain = WordChain("蘋果")
+
+    assert chain.play("汁液", 1) == "wrong_start"
+    assert chain.play("果汁", 1) is None
+    assert chain.play("汁水", 1) == "twice"
+    assert chain.play("汁水", 2) is None
+    assert chain.play("水果", 1) is None
+    assert chain.play("果汁", 2) == "used"
+    assert WordChain("みかん").problem("みかん", 1) == "wrong_start"
+    assert WordChain("りんご").problem("ごはん", 1) == "dead_end"
+    assert chain.play("果醬", BOT_PLAYER) is None
+
+    assert chain.counts() == {1: 2, 2: 1}
+    assert chain.points() == {1: 2 * WORD_POINTS, 2: WORD_POINTS}
+
+
+class ChainMessage:
+    def __init__(self, channel: Any, author_id: int, content: str, bot: bool = False) -> None:
+        self.channel = channel
+        self.author = SimpleNamespace(id=author_id, bot=bot)
+        self.content = content
+        self.reactions: list = []
+
+    async def add_reaction(self, emoji: str) -> None:
+        self.reactions.append(emoji)
+
+
+class ChainChannel:
+    def __init__(self) -> None:
+        self.id = 600
+        self.sent: list = []
+
+    async def send(self, content: Any = None, embed: Any = None, allowed_mentions: Any = None) -> None:
+        self.sent.append(content if embed is None else embed)
+
+
+@pytest.mark.asyncio
+async def test_a_word_chain_takes_moves_lets_the_bot_step_in_and_records_points(
+    cog: GamesCog, store: CommunityStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    asked: list = []
+
+    async def fake_word(orchestrator: Any, guild_id: str, language: str, start: str, used: Any, max_length: int) -> str:
+        asked.append(start)
+        return "「汁液」"
+
+    monkeypatch.setitem(GamesCog.bot_word.__globals__, "write_chain_word", fake_word)
+    cog.chain_idle_seconds = 0.2
+    channel, guild = ChainChannel(), SimpleNamespace(id=GUILD_ID)
+    game = asyncio.create_task(cog.run_chain(channel, guild, WordChain("蘋果")))
+    await asyncio.sleep(0)
+
+    chat = ChainMessage(channel, 10, "大家好 今天吃什麼")
+    first = ChainMessage(channel, 10, "果汁")
+    again = ChainMessage(channel, 10, "汁液")
+    wrong = ChainMessage(channel, 11, "蛋糕")
+    assert await cog.handle_message(chat) is False
+    assert await cog.handle_message(first) is True
+    assert await cog.handle_message(again) is True
+    assert await cog.handle_message(wrong) is True
+    assert (first.reactions, again.reactions, wrong.reactions) == (["✅"], ["⏳"], ["❌"])
+
+    chain = await game
+
+    assert chain.words == ["蘋果", "果汁", "汁液"]
+    assert chain.players == [BOT_PLAYER, 10, BOT_PLAYER]
+    assert asked == ["the character 汁"]
+    assert channel.sent[:2] == ["chain_first|word=蘋果", "chain_bot_move|word=汁液"]
+    result = channel.sent[-1]
+    assert result.description == "chain_over|count=2|last=汁液"
+    assert {f.name: f.value for f in result.fields}["standings|"] == "chain_player|count=1|user=<@10>"
+    assert store.game_points(GUILD_ID) == [(10, WORD_POINTS)]
+    assert await cog.handle_message(ChainMessage(channel, 10, "液體")) is False  # the game is over

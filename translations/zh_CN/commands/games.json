@@ -4,7 +4,7 @@
         "unavailable": "问答需要服务器记忆和 AI 模型，目前其中一个无法使用。",
         "preparing": "🧠 {user} 开了一场 {rounds} 题的服务器知识问答，正在出题…",
         "no_memories": "出不了题：这个服务器的记忆还不够多（或指定的范围内没有）。",
-        "failed": "出了点问题，问答中止了。",
+        "failed": "出了点问题，游戏中止了。",
         "question_title": "❓ 第 {number}/{total} 题",
         "question_footer": "{seconds} 秒内选 A–D，越快答对分数越高。",
         "answered": "你的答案：{letter}",
@@ -16,6 +16,16 @@
         "source_link": "原消息",
         "standings": "目前排名",
         "final_title": "🏁 最终成绩",
-        "final_none": "这次没有人得分。"
+        "final_none": "这次没有人得分。",
+        "chain_rules": "🔗 {user} 开了一局文字接龙！发一个词，开头要接上一个词的最后一个字。同一个人不能连续接，词也不能重复。{seconds} 秒没人接就结束（过一半时我会帮忙接一次）。",
+        "chain_rules_homophones": "🔗 {user} 开了一局文字接龙！发一个词，开头要接上一个词的最后一个字，同音字也算。同一个人不能连续接，词也不能重复。{seconds} 秒没人接就结束（过一半时我会帮忙接一次）。",
+        "chain_no_homophones": "（这个机器人没有安装同音判断，只算同一个字。）",
+        "chain_first": "第一个词：**{word}**",
+        "chain_bot_move": "没人接吗？那我来：**{word}**",
+        "chain_over_title": "🔗 接龙结束",
+        "chain_over": "这局一共接了 {count} 个词，最后一个是 **{last}**。",
+        "chain_words": "这局的接龙",
+        "chain_player": "{user} · {count} 个词",
+        "chain_starters": "苹果,电脑,太阳,音乐,学校,花园,火车,月亮,咖啡,朋友"
     }
 }

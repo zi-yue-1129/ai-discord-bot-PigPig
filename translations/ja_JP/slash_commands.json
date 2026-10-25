@@ -226,5 +226,7 @@
     "A quiz about things that happened on this server": "このサーバーで起きたことのクイズ",
     "How many questions (3-10)": "問題数（3-10）",
     "Only use memories from the last this many days": "直近この日数の記憶だけを使う",
-    "Only use memories from this channel": "このチャンネルの記憶だけを使う"
+    "Only use memories from this channel": "このチャンネルの記憶だけを使う",
+    "Word chain: start each word with the last character of the one before": "しりとり：前の言葉の最後の文字から始める",
+    "Also accept a character with the same pronunciation (Chinese)": "同じ読みの漢字も可（中国語）"
 }
