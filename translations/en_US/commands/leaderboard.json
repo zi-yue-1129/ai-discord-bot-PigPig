@@ -25,7 +25,8 @@
         "needs_streak_days": "talk {value} days in a row",
         "needs_gap_days": "come back after {value} days of silence",
         "needs_night_ratio": "send {value} of your messages between midnight and 5 am",
-        "needs_membership_days": "be here {value} days since your first message"
+        "needs_membership_days": "be here {value} days since your first message",
+        "profile_titles": "Titles: {titles}"
     },
     "achievements": {
         "msg_100": "Chatterbox",

@@ -32,6 +32,7 @@ from .community_lib.achievements import (
 )
 from .community_lib.dates import local_now
 from .community_lib.limits import CommunityLimits
+from .community_lib.recap import TITLES
 from .community_lib.store import CommunityStore
 from .language_manager import LanguageManager
 
@@ -97,6 +98,13 @@ class LeaderboardCog(commands.Cog):
             value = f"{minimum:.0%}" if stat == "night_ratio" else f"{minimum:,.0f}"
             parts.append(self._r(guild_id, f"needs_{stat}", value=value))
         return self._r(guild_id, "needs_joiner").join(parts)
+
+    def _title(self, guild_id: int, title_id: str) -> str:
+        """A rotating title (from the weekly recap) with its emoji."""
+        emoji = dict(TITLES).get(title_id, "🏷️")
+        if self.lang_manager is None:
+            return f"{emoji} {title_id}"
+        return f"{emoji} " + self.lang_manager.translate(str(guild_id), "commands", "community", "responses", f"title_{title_id}")
 
     def _label(self, guild_id: int, achievement: Achievement) -> str:
         return f"{achievement.emoji} **{self.achievement_name(guild_id, achievement)}**"
@@ -281,6 +289,10 @@ class LeaderboardCog(commands.Cog):
             place = next((place for place, (m, _) in enumerate(ranked, start=1) if m.id == member.id), None)
             if place is not None:
                 lines.append(self._r(guild.id, "profile_rank", rank=place, total=len(ranked)))
+        titles = self.store.titles_of(guild.id, member.id)
+        if titles:
+            names = self._r(guild.id, "list_joiner").join(self._title(guild.id, title_id) for title_id in titles)
+            lines.append(self._r(guild.id, "profile_titles", titles=names))
         unlocked = [self._by_id[i] for i, _ in self.store.achievements(guild.id, member.id) if i in self._by_id]
         if unlocked:
             badges = " ".join(a.emoji for a in unlocked)

@@ -242,6 +242,33 @@ class StatsCollector:
             )
             return [(row[0], row[1]) for row in await cursor.fetchall()]
 
+    async def message_counts_by_channel(self, guild_id: str, since: float, until: float) -> list[tuple[str, int]]:
+        """Counts a guild's messages per channel between ``since`` (inclusive) and ``until`` (exclusive), most first."""
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                "SELECT channel_id, COUNT(*) AS cnt FROM message_events WHERE guild_id = ? AND timestamp >= ? AND timestamp < ? "
+                "GROUP BY channel_id ORDER BY cnt DESC, channel_id",
+                (guild_id, since, until),
+            )
+            return [(row[0], row[1]) for row in await cursor.fetchall()]
+
+    async def night_counts_by_user(
+        self, guild_id: str, since: float, until: float, utc_offset_seconds: float, last_hour: int = 4
+    ) -> list[tuple[str, int]]:
+        """Counts each user's messages sent between 0:00 and ``last_hour``:59 local time, most first.
+
+        Args:
+            utc_offset_seconds: The local time zone's offset from UTC.
+        """
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                "SELECT user_id, COUNT(*) AS cnt FROM message_events WHERE guild_id = ? AND timestamp >= ? AND timestamp < ? "
+                "AND CAST(strftime('%H', timestamp + ?, 'unixepoch') AS INTEGER) <= ? "
+                "GROUP BY user_id ORDER BY cnt DESC, user_id",
+                (guild_id, since, until, utc_offset_seconds, last_hour),
+            )
+            return [(row[0], row[1]) for row in await cursor.fetchall()]
+
     async def _get_accurate_total(self, guild_id: Optional[str] = None) -> int:
         """Get accurate message count from procedural.db."""
         if not os.path.exists(_PROCEDURAL_DB):

@@ -25,7 +25,8 @@
         "needs_streak_days": "连续 {value} 天都有发言",
         "needs_gap_days": "沉默 {value} 天后再次发言",
         "needs_night_ratio": "{value} 的消息在凌晨 0 到 5 点发送",
-        "needs_membership_days": "第一次发言满 {value} 天"
+        "needs_membership_days": "第一次发言满 {value} 天",
+        "profile_titles": "称号：{titles}"
     },
     "achievements": {
         "msg_100": "话匣子",
