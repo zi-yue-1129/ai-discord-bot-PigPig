@@ -42,7 +42,7 @@ Announcements are **off** until an admin picks a mode with `/community achieveme
 
 A member gets at most one announcement a day (several unlocks are combined), and hidden members are never announced. The first time a member is checked, achievements they had already earned before this feature existed are recorded quietly, so turning the feature on does not flood the server; only "came back after a long silence" ones, which that very message earned, are announced.
 
-Rotating weekly titles (本週話王, 夜貓王, and so on) come with the weekly recap.
+Rotating weekly titles (本週話王, 夜貓王, 笑點製造機, 本週 DJ) are handed out by the [weekly recap](community.md#weekly-recap) and shown on `/profile`.
 
 ## Owner settings (`base.yaml`)
 

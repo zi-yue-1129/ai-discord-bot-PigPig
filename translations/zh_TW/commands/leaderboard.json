@@ -25,7 +25,8 @@
         "needs_streak_days": "連續 {value} 天都有發言",
         "needs_gap_days": "沉默 {value} 天後再次發言",
         "needs_night_ratio": "{value} 的訊息在凌晨 0 到 5 點發送",
-        "needs_membership_days": "第一次發言滿 {value} 天"
+        "needs_membership_days": "第一次發言滿 {value} 天",
+        "profile_titles": "稱號：{titles}"
     },
     "achievements": {
         "msg_100": "話匣子",

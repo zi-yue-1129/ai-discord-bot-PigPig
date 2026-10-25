@@ -198,6 +198,16 @@ class TasteStore:
                 (guild_id, since, until, limit),
             ).fetchall()
 
+    def top_requesters(self, guild_id: int, since: float, until: float, limit: int = 10) -> List[Tuple[int, int]]:
+        """Returns who requested the most songs in a guild in a time range, as ``(user_id, plays)``."""
+        with self._session() as connection:
+            return connection.execute(
+                "SELECT requester_id, COUNT(*) AS plays FROM play_events "
+                "WHERE guild_id = ? AND played_at >= ? AND played_at < ? AND requester_id IS NOT NULL AND autoplay = 0 "
+                "GROUP BY requester_id ORDER BY plays DESC, requester_id LIMIT ?",
+                (guild_id, since, until, limit),
+            ).fetchall()
+
     def history_row_count(self, guild_id: int) -> int:
         """Returns how many played songs are stored for a guild."""
         with self._session() as connection:

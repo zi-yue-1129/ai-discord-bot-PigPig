@@ -403,10 +403,12 @@ async def test_profiles_show_rank_and_badges(
     stats_storage.rows["total"] = [("11", 9), ("10", 5)]
     stats_storage.stats["10"] = {"total_messages": 5, "streak_days": 1}
     store.unlock(GUILD_ID, 10, ["diver", "msg_100"], NOW.timestamp())
+    store.set_titles(GUILD_ID, "2026-10-19", {"talker": 10, "dj": 10})
 
     text = await cog.profile_text(guild, member)
 
     assert "profile_rank|rank=2|total=2" in text
+    assert "profile_titles|titles=🎧 title_dj|list_joiner|🎤 title_talker|" in text
     assert f"profile_badges|badges=🤿 💬|done=2|total={len(DEFAULT_ACHIEVEMENTS)}" in text
     assert (await cog.profile_text(guild, guild.get_member(11))) == "no_stats|name=user11"
 

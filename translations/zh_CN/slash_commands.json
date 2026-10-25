@@ -212,5 +212,11 @@
     "Choose how unlocked achievements are announced": "选择解锁成就时怎么公告",
     "Off keeps them in /profile and /achievements only": "关闭时只在 /profile 和 /achievements 显示",
     "Reply to the message": "回复那条消息",
-    "Announcement channel": "公告频道"
+    "Announcement channel": "公告频道",
+    "Post a weekly recap of the server's week": "每周发一份服务器回顾",
+    "Turn the weekly recap on or off": "开启或关闭每周回顾",
+    "Where to post it (defaults to the announcement channel)": "要发在哪里（默认为公告频道）",
+    "Local weekday to post it (default Sunday)": "在星期几发（默认星期日）",
+    "Local hour (0-23) to post it (default 20)": "几点发（0-23，默认 20）",
+    "Preview this week's recap so far (only you see it)": "预览本周到目前为止的回顾（只有你看得到）"
 }

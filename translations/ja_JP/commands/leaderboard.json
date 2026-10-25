@@ -25,7 +25,8 @@
         "needs_streak_days": "{value} 日連続で発言する",
         "needs_gap_days": "{value} 日沈黙したあとに発言する",
         "needs_night_ratio": "発言の {value} を 0 時から 5 時に送る",
-        "needs_membership_days": "初めての発言から {value} 日たつ"
+        "needs_membership_days": "初めての発言から {value} 日たつ",
+        "profile_titles": "称号：{titles}"
     },
     "achievements": {
         "msg_100": "おしゃべりさん",

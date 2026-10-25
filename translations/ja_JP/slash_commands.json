@@ -212,5 +212,11 @@
     "Choose how unlocked achievements are announced": "実績解除のお知らせ方法を選ぶ",
     "Off keeps them in /profile and /achievements only": "オフにすると /profile と /achievements にだけ表示",
     "Reply to the message": "メッセージに返信",
-    "Announcement channel": "お知らせチャンネル"
+    "Announcement channel": "お知らせチャンネル",
+    "Post a weekly recap of the server's week": "サーバーの一週間をまとめて毎週投稿",
+    "Turn the weekly recap on or off": "週間まとめのオン・オフ",
+    "Where to post it (defaults to the announcement channel)": "投稿先（省略時はお知らせチャンネル）",
+    "Local weekday to post it (default Sunday)": "投稿する曜日（既定は日曜）",
+    "Local hour (0-23) to post it (default 20)": "投稿する時刻（0-23、既定は 20）",
+    "Preview this week's recap so far (only you see it)": "今週ここまでのまとめをプレビュー（自分にだけ表示）"
 }

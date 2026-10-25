@@ -1,4 +1,5 @@
-"""Community features: welcoming new members, birthdays, yearly join anniversaries and achievement announcements.
+"""Community features: welcoming new members, birthdays, yearly join anniversaries, the weekly recap
+and achievement announcements.
 
 Every feature is off until a server admin turns it on with ``/community``; the bot owner
 sets the limits in the ``community:`` block of base.yaml. Messages are written by the
@@ -34,6 +35,7 @@ from .community_lib.dates import (
 )
 from .community_lib.joins import JoinTracker
 from .community_lib.limits import CommunityLimits
+from .community_lib.recap import RecapBuilder, format_recap, recap_facts, recap_week_due
 from .community_lib.store import CommunityStore, GuildSettings
 from .language_manager import LanguageManager
 
@@ -48,6 +50,14 @@ _ANNIVERSARY_TASK = (
     "Today is the yearly anniversary of the day the members below joined this server. Congratulate "
     "them and say how many years each has been here, mentioning each of them."
 )
+_WEEKLY_TASK = (
+    "Write this week's server news report: a funny, warm news-style paragraph of at most {chars} "
+    "characters about the numbers below. Use names as given, without mentions; do not list every number."
+)
+_WEEKDAYS = [
+    app_commands.Choice(name=name, value=index)
+    for index, name in enumerate(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"])
+]
 
 
 class CommunityCog(commands.Cog):
@@ -224,13 +234,17 @@ class CommunityCog(commands.Cog):
             await asyncio.sleep(self.CHECK_SECONDS)
 
     async def run_daily_jobs(self) -> None:
-        """Posts today's birthday and anniversary messages that are due, and takes back expired birthday roles."""
+        """Posts the birthday, anniversary and weekly recap messages that are due, and takes back expired birthday roles."""
         await self._remove_expired_birthday_roles()
         for settings in self.store.guilds_with_daily_jobs():
             guild = self.bot.get_guild(settings.guild_id)
             if guild is None:
                 continue
             local = self._local_now(settings)
+            if settings.weekly_enabled:
+                monday = recap_week_due(local, settings.weekly_day, settings.weekly_hour)
+                if monday is not None and self.store.claim_run(guild.id, "weekly", monday.date().isoformat()):
+                    await self.post_weekly_recap(guild, settings, monday, min(local, monday + timedelta(days=7)))
             if local.hour < settings.birthday_hour:
                 continue
             today = local.date().isoformat()
@@ -303,6 +317,40 @@ class CommunityCog(commands.Cog):
             text = self._t(guild.id, "anniversary", lines=lines)
         await self._send(channel, text, members)
 
+    # ------------------------------------------------------------ weekly recap
+    def title_name(self, guild_id: Any, title_id: str) -> str:
+        return self._t(guild_id, f"title_{title_id}")
+
+    async def post_weekly_recap(
+        self, guild: discord.Guild, settings: GuildSettings, start: datetime, end: datetime, *, preview_channel: Any = None
+    ) -> Optional[discord.Embed]:
+        """Builds the recap of ``[start, end)`` and posts it (or, for a preview, only returns it).
+
+        A quiet week (fewer than ``weekly_min_messages``) is skipped, except in a preview.
+        Posting also hands this week's rotating titles to their new holders.
+        """
+        recap = await RecapBuilder(self.bot, self.limits).build(guild, start, end, self.store.optouts(guild.id))
+        if recap is None:
+            return None
+        if preview_channel is None and recap.total < self.limits.weekly_min_messages:
+            self.logger.info(f"community: skipping the weekly recap of guild {guild.id} ({recap.total} messages)")
+            return None
+        channel = preview_channel or self._channel_for(guild, settings, settings.weekly_channel_id)
+        if channel is None:
+            return None
+        title_name = lambda title_id: self.title_name(guild.id, title_id)  # noqa: E731
+        task = _WEEKLY_TASK.format(chars=self.limits.weekly_max_report_chars)
+        report = await self._write(channel, task, recap_facts(recap, title_name), [], self.limits.weekly_use_ai)
+        embed = format_recap(recap, lambda key, **kw: self._t(guild.id, key, **kw), title_name, guild.name, report)
+        if preview_channel is None:
+            try:
+                await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            except discord.HTTPException:
+                self.logger.warning(f"community: could not post the weekly recap in guild {guild.id}", exc_info=True)
+                return None
+            self.store.set_titles(guild.id, recap.week, {title_id: member.id for title_id, (member, _) in recap.titles.items()})
+        return embed
+
     # ------------------------------------------------------------ admin commands
     async def _can_manage(self, interaction: discord.Interaction) -> bool:
         """Checks Manage Server (or bot owner) and answers the user when they lack it."""
@@ -333,6 +381,10 @@ class CommunityCog(commands.Cog):
             role=f"<@&{settings.birthday_role_id}>" if settings.birthday_role_id else self._t(guild.id, "not_set"),
             anniversary=on_off(settings.anniversary_enabled),
             achievements=self._t(guild.id, f"achievement_mode_{settings.achievement_mode}"),
+            weekly=on_off(settings.weekly_enabled),
+            weekly_day=self._t(guild.id, f"weekday_{settings.weekly_day}"),
+            weekly_hour=settings.weekly_hour,
+            weekly_channel=channel(settings.weekly_channel_id),
         )
 
     @community.command(name="status", description="Show which community features are on")
@@ -455,6 +507,60 @@ class CommunityCog(commands.Cog):
         if mode == "channel" and self._channel_for(interaction.guild, settings) is None:
             text += "\n" + self._t(interaction.guild_id, "no_channel")
         await interaction.response.send_message(text, ephemeral=True)
+
+    @community.command(name="weekly", description="Post a weekly recap of the server's week")
+    @app_commands.describe(
+        enabled="Turn the weekly recap on or off",
+        channel="Where to post it (defaults to the announcement channel)",
+        day="Local weekday to post it (default Sunday)",
+        hour="Local hour (0-23) to post it (default 20)",
+    )
+    @app_commands.choices(day=_WEEKDAYS)
+    async def weekly_command(
+        self,
+        interaction: discord.Interaction,
+        enabled: bool,
+        channel: Optional[discord.TextChannel] = None,
+        day: Optional[int] = None,
+        hour: Optional[app_commands.Range[int, 0, 23]] = None,
+    ) -> None:
+        if not await self._can_manage(interaction):
+            return
+        changes: Dict[str, Any] = {"weekly_enabled": enabled}
+        if channel is not None:
+            changes["weekly_channel_id"] = channel.id
+        if day is not None:
+            changes["weekly_day"] = day
+        if hour is not None:
+            changes["weekly_hour"] = hour
+        settings = self.store.update_settings(interaction.guild_id, **changes)
+        if not enabled:
+            await interaction.response.send_message(self._t(interaction.guild_id, "weekly_off"), ephemeral=True)
+            return
+        text = self._t(
+            interaction.guild_id,
+            "weekly_on",
+            day=self._t(interaction.guild_id, f"weekday_{settings.weekly_day}"),
+            hour=settings.weekly_hour,
+            count=self.limits.weekly_min_messages,
+        )
+        if self._channel_for(interaction.guild, settings, settings.weekly_channel_id) is None:
+            text += "\n" + self._t(interaction.guild_id, "no_channel")
+        await interaction.response.send_message(text, ephemeral=True)
+
+    @community.command(name="weekly_preview", description="Preview this week's recap so far (only you see it)")
+    async def weekly_preview(self, interaction: discord.Interaction) -> None:
+        if not await self._can_manage(interaction):
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        settings = self.store.get_settings(interaction.guild_id)
+        local = self._local_now(settings)
+        monday = local.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=local.weekday())
+        embed = await self.post_weekly_recap(interaction.guild, settings, monday, local, preview_channel=interaction.channel)
+        if embed is None:
+            await interaction.followup.send(self._t(interaction.guild_id, "weekly_unavailable"), ephemeral=True)
+        else:
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ------------------------------------------------------------ member commands
     @birthday.command(name="set", description="Save your birthday on this server (no year needed)")

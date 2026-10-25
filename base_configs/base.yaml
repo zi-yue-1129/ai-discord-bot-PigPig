@@ -37,6 +37,13 @@ community:
   birthday:
     use_ai: true              # false: birthday and anniversary messages use the fixed text
     max_mentions: 20          # at most this many people are named in one celebration message
+  weekly:
+    min_messages: 50          # weeks with fewer messages get no recap
+    use_ai: true              # false: no AI-written news paragraph, only the numbers
+    max_report_chars: 300     # length asked of the AI paragraph
+    missing_after_days: 30    # former regulars silent this long are listed as missing...
+    missing_min_messages: 50  # ...if they sent at least this many messages
+    missing_max: 3            # at most this many in one recap (0 turns the list off)
   # Achievements members unlock from their message stats. Leave this out to use the built-in
   # list; a list here replaces it. Each "when" stat is a minimum and all must be reached:
   # total_messages, streak_days, gap_days (silence before a message), night_ratio (0-1 share

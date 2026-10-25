@@ -1,0 +1,317 @@
+"""The weekly server recap: when it is due, what goes in it, rotating titles and who is left out."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, List, Optional
+from zoneinfo import ZoneInfo
+
+import discord
+import pytest
+
+from cogs import community as community_module
+from cogs.community import CommunityCog
+from cogs.community_lib.limits import CommunityLimits
+from cogs.community_lib.recap import Recap, format_recap, recap_week_due
+from cogs.community_lib.store import CommunityStore
+from cogs.memory.db.connection import DatabaseConnection
+from cogs.memory.db.schema import create_tables
+from cogs.memory.db.stats_storage import StatsStorage
+from cogs.music_lib.taste_store import TasteStore
+from dashboard.services.stats_collector import StatsCollector
+
+GUILD_ID = 42
+TAIPEI = ZoneInfo("Asia/Taipei")
+MONDAY = datetime(2026, 10, 19, tzinfo=TAIPEI)
+SUNDAY_EVENING = datetime(2026, 10, 25, 20, 0, tzinfo=TAIPEI)
+
+
+# ------------------------------------------------------------------ timing
+
+
+def test_a_recap_is_due_from_its_hour_for_a_day() -> None:
+    assert recap_week_due(datetime(2026, 10, 25, 19, 59, tzinfo=TAIPEI), 6, 20) is None
+    assert recap_week_due(SUNDAY_EVENING, 6, 20) == MONDAY
+    # The bot was down on Sunday evening: Monday morning still posts last week's recap.
+    assert recap_week_due(datetime(2026, 10, 26, 9, 0, tzinfo=TAIPEI), 6, 20) == MONDAY
+    assert recap_week_due(datetime(2026, 10, 26, 20, 1, tzinfo=TAIPEI), 6, 20) is None
+    # A Monday 9:00 recap is due on Monday itself.
+    assert recap_week_due(datetime(2026, 10, 26, 9, 0, tzinfo=TAIPEI), 0, 9) == datetime(2026, 10, 26, tzinfo=TAIPEI)
+
+
+def test_the_owner_sets_the_recap_limits() -> None:
+    limits = CommunityLimits.from_config({"weekly": {"min_messages": 10, "use_ai": False, "missing_max": 0}})
+
+    assert (limits.weekly_min_messages, limits.weekly_use_ai, limits.missing_max) == (10, False, 0)
+    assert CommunityLimits.from_config(None).weekly_max_report_chars == 300
+
+
+# ------------------------------------------------------------------ queries
+
+
+@pytest.mark.asyncio
+async def test_channel_and_night_counts(tmp_path: Path) -> None:
+    collector = StatsCollector(str(tmp_path / "stats.db"))
+    await collector.initialize()
+    noon = datetime(2026, 10, 20, 12, 0, tzinfo=TAIPEI).timestamp()
+    night = datetime(2026, 10, 21, 2, 30, tzinfo=TAIPEI).timestamp()
+    for user_id, channel_id, moment in [("1", "a", noon), ("1", "a", night), ("2", "b", night), ("2", "b", night + 60)]:
+        await collector.record_message(str(GUILD_ID), user_id, channel_id, moment)
+
+    since, until = MONDAY.timestamp(), SUNDAY_EVENING.timestamp()
+    assert await collector.message_counts_by_channel(str(GUILD_ID), since, until) == [("a", 2), ("b", 2)]
+    assert await collector.night_counts_by_user(str(GUILD_ID), since, until, 8 * 3600) == [("2", 2), ("1", 1)]
+
+
+@pytest.fixture
+def storage(tmp_path: Path) -> StatsStorage:
+    db = DatabaseConnection(tmp_path / "procedural.db")
+    with db.get_connection() as conn:
+        create_tables(conn)
+    return StatsStorage(db)
+
+
+@pytest.mark.asyncio
+async def test_reactions_are_summed_per_author_and_regulars_listed(storage: StatsStorage) -> None:
+    await storage.record_reaction("1", str(GUILD_ID), "5", "10", 100.0, 1)
+    await storage.record_reaction("1", str(GUILD_ID), "5", "10", 100.0, 1)
+    await storage.record_reaction("2", str(GUILD_ID), "5", "10", 150.0, 1)
+    await storage.record_reaction("3", str(GUILD_ID), "5", "11", 120.0, 1)
+    await storage.record_reaction("4", str(GUILD_ID), "5", "11", 900.0, 1)  # outside the range
+    for _ in range(3):
+        await storage.upsert_user_stats("10", str(GUILD_ID), "hi", "5", "2026-09-01T00:00:00+00:00")
+    await storage.upsert_user_stats("11", str(GUILD_ID), "hi", "5", "2026-09-01T00:00:00+00:00")
+
+    assert await storage.reactions_by_author(str(GUILD_ID), 0, 500) == [("10", 3), ("11", 1)]
+    regulars = await storage.get_regulars(str(GUILD_ID), 2)
+    assert [(row["user_id"], row["total_messages"]) for row in regulars] == [("10", 3)]
+
+
+def test_requesters_are_counted_without_autoplay(tmp_path: Path) -> None:
+    taste = TasteStore(tmp_path / "taste.db")
+    for requester, autoplay in [(5, False), (5, False), (6, False), (None, True)]:
+        taste.add_play_event(GUILD_ID, "a", "A", requester_id=requester, autoplay=autoplay, played_at=100)
+
+    assert taste.top_requesters(GUILD_ID, 0, 200) == [(5, 2), (6, 1)]
+
+
+def test_titles_are_replaced_each_week(tmp_path: Path) -> None:
+    store = CommunityStore(tmp_path / "community.db")
+    store.set_titles(GUILD_ID, "2026-10-12", {"talker": 10, "dj": 11})
+    store.set_titles(GUILD_ID, "2026-10-19", {"talker": 11, "funny": 11})
+
+    assert store.titles_of(GUILD_ID, 10) == []
+    assert store.titles_of(GUILD_ID, 11) == ["funny", "talker"]
+    settings = store.get_settings(GUILD_ID)
+    assert (settings.weekly_enabled, settings.weekly_day, settings.weekly_hour) == (False, 6, 20)
+
+
+# ------------------------------------------------------------------ cog
+
+
+class FakeLang:
+    def translate(self, guild_id: str, *keys: str, **kwargs: Any) -> str:
+        return f"{keys[-1]}|" + "|".join(f"{k}={v}" for k, v in sorted(kwargs.items()))
+
+
+class FakeMessage:
+    def __init__(self, content: str) -> None:
+        self.content = content
+        self.jump_url = "https://discord.com/channels/42/500/1"
+
+
+class FakeChannel:
+    def __init__(self, channel_id: int, messages: Optional[dict] = None) -> None:
+        self.id = channel_id
+        self.name = f"chan{channel_id}"
+        self.mention = f"<#{channel_id}>"
+        self.messages = messages or {}
+        self.sent: List[dict] = []
+
+    async def send(self, content: Any = None, **kwargs: Any) -> None:
+        self.sent.append(kwargs)
+
+    async def fetch_message(self, message_id: int) -> FakeMessage:
+        if message_id not in self.messages:
+            raise discord.NotFound(SimpleNamespace(status=404, reason="Not Found"), "gone")
+        return self.messages[message_id]
+
+
+class FakeMember:
+    def __init__(self, member_id: int, bot: bool = False) -> None:
+        self.id = member_id
+        self.bot = bot
+        self.display_name = f"user{member_id}"
+        self.mention = f"<@{member_id}>"
+
+
+class FakeGuild:
+    def __init__(self) -> None:
+        self.id = GUILD_ID
+        self.name = "Pig Land"
+        self.system_channel = None
+        self.channel = FakeChannel(500, {2: FakeMessage("best joke ever")})
+        self.channels = {500: self.channel, 501: FakeChannel(501)}
+        self.members = {i: FakeMember(i) for i in (10, 11, 12, 13)}
+        self.members[99] = FakeMember(99, bot=True)
+
+    def get_channel(self, channel_id: int) -> Optional[FakeChannel]:
+        return self.channels.get(channel_id)
+
+    def get_member(self, member_id: int) -> Optional[FakeMember]:
+        return self.members.get(member_id)
+
+
+class FakeCollector:
+    def __init__(self, week: list, last_week: list) -> None:
+        self.week, self.last_week = week, last_week
+
+    async def message_counts_by_user(self, guild_id: str, since: float, until: float) -> list:
+        return self.week if since >= MONDAY.timestamp() else self.last_week
+
+    async def message_counts_by_channel(self, guild_id: str, since: float, until: float) -> list:
+        return [("501", 40), ("missing", 5), ("500", 20)]
+
+    async def night_counts_by_user(self, guild_id: str, since: float, until: float, offset: float) -> list:
+        assert offset == 8 * 3600
+        return [("13", 9), ("12", 4)]
+
+
+class FakeStorage:
+    async def get_weekly_terms(self, guild_id: str, week: str, kind: str, limit: int) -> list:
+        assert week == "2026-10-19"
+        return [("😂", 12)] if kind == "emoji" else [("pizza", 8), ("exam", 3)]
+
+    async def reactions_by_author(self, guild_id: str, since: float, until: float) -> list:
+        return [("13", 7), ("11", 5)]
+
+    async def get_top_reacted_messages(self, guild_id: str, since: float, until: float, limit: int) -> list:
+        return [
+            {"message_id": "1", "channel_id": "500", "author_id": "13", "count": 9},  # hidden author
+            {"message_id": "3", "channel_id": "500", "author_id": "11", "count": 6},  # deleted
+            {"message_id": "2", "channel_id": "500", "author_id": "11", "count": 5},
+        ]
+
+    async def get_regulars(self, guild_id: str, min_messages: int) -> list:
+        return [
+            {"user_id": "12", "total_messages": 900, "last_active_at": "2026-09-01T00:00:00+00:00"},
+            {"user_id": "11", "total_messages": 500, "last_active_at": "2026-10-24T00:00:00+00:00"},
+            {"user_id": "77", "total_messages": 400, "last_active_at": "2026-01-01T00:00:00+00:00"},  # left
+        ]
+
+
+class FakeTaste:
+    def top_played(self, guild_id: int, since: float, until: float, limit: int) -> list:
+        return [("skipme", "Skipped a lot", 4, 3), ("vid", "Theme Song", 3, 1)]
+
+    def top_requesters(self, guild_id: int, since: float, until: float, limit: int) -> list:
+        return [(99, 8), (12, 3)]
+
+
+@pytest.fixture
+def guild() -> FakeGuild:
+    return FakeGuild()
+
+
+@pytest.fixture
+def store(tmp_path: Path) -> CommunityStore:
+    return CommunityStore(tmp_path / "community.db")
+
+
+@pytest.fixture
+def cog(store: CommunityStore, guild: FakeGuild) -> CommunityCog:
+    cogs = {"StatsCog": SimpleNamespace(stats_storage=FakeStorage()), "YTMusic": SimpleNamespace(_taste_store=FakeTaste())}
+    bot = SimpleNamespace(
+        user=SimpleNamespace(id=1),
+        orchestrator=None,
+        stats_collector=FakeCollector([("13", 50), ("11", 30), ("99", 20), ("10", 5)], [("11", 80)]),
+        get_cog=cogs.get,
+        get_guild=lambda guild_id: guild if guild_id == GUILD_ID else None,
+    )
+    instance = CommunityCog(bot, store=store)
+    instance.lang_manager = FakeLang()
+    instance.limits = CommunityLimits(default_timezone="Asia/Taipei", weekly_min_messages=50)
+    store.update_settings(GUILD_ID, announce_channel_id=500)
+    store.set_optout(GUILD_ID, 13, True)
+    return instance
+
+
+@pytest.mark.asyncio
+async def test_the_recap_is_posted_once_with_titles_and_without_hidden_members(
+    cog: CommunityCog, guild: FakeGuild, store: CommunityStore
+) -> None:
+    store.update_settings(GUILD_ID, weekly_enabled=True, weekly_channel_id=501)
+    cog._now = lambda: SUNDAY_EVENING.timestamp()
+
+    await cog.run_daily_jobs()
+    await cog.run_daily_jobs()
+
+    assert len(guild.channels[501].sent) == 1
+    sent = guild.channels[501].sent[0]
+    embed = sent["embed"]
+    fields = {field.name: field.value for field in embed.fields}
+    assert sent["allowed_mentions"].users is False
+    assert embed.title == "weekly_title|guild=Pig Land"
+    assert embed.description == "weekly_intro|total=105"
+    assert fields["weekly_messages|"] == "**105** weekly_trend|change=+31%|previous=80"
+    assert fields["weekly_channels|"] == "<#501> · 40\n<#500> · 20"
+    assert fields["weekly_talkers|"] == "<@11> · 30\n<@10> · 5"
+    assert "best joke ever" in fields["weekly_quote|count=5"] and "<@11>" in fields["weekly_quote|count=5"]
+    assert fields["weekly_song|"].startswith("[Theme Song](https://www.youtube.com/watch?v=vid)")
+    assert fields["weekly_titles|"] == "🎤 title_talker|：<@11>\n🌙 title_night_owl|：<@12>\n😂 title_funny|：<@11>\n🎧 title_dj|：<@12>"
+    assert fields["weekly_missing|"] == "weekly_missing_line|days=54|name=<@12>"
+    assert "13" not in str(fields)
+    assert store.titles_of(GUILD_ID, 11) == ["funny", "talker"]
+    assert store.titles_of(GUILD_ID, 12) == ["dj", "night_owl"]
+
+
+@pytest.mark.asyncio
+async def test_a_quiet_week_is_skipped_but_can_still_be_previewed(
+    cog: CommunityCog, guild: FakeGuild, store: CommunityStore
+) -> None:
+    cog.bot.stats_collector.week = [("11", 10)]
+    settings = store.update_settings(GUILD_ID, weekly_enabled=True)
+
+    assert await cog.post_weekly_recap(guild, settings, MONDAY, SUNDAY_EVENING) is None
+    preview = await cog.post_weekly_recap(guild, settings, MONDAY, SUNDAY_EVENING, preview_channel=guild.channel)
+
+    assert preview is not None and guild.channel.sent == []
+    assert store.titles_of(GUILD_ID, 11) == []
+
+
+@pytest.mark.asyncio
+async def test_the_model_writes_the_news_paragraph_when_available(
+    cog: CommunityCog, guild: FakeGuild, store: CommunityStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list = []
+
+    async def fake_compose(orchestrator: Any, bot: Any, channel: Any, task: str, facts: str, mentions: Any) -> str:
+        seen.append(facts)
+        return "Breaking news: pizza wins again."
+
+    # Patch the globals the cog really uses (other test files may re-import cogs modules).
+    monkeypatch.setitem(CommunityCog._write.__globals__, "compose_announcement", fake_compose)
+    cog.bot.orchestrator = object()
+    settings = store.get_settings(GUILD_ID)
+
+    embed = await cog.post_weekly_recap(guild, settings, MONDAY, SUNDAY_EVENING)
+
+    assert embed.description == "Breaking news: pizza wins again."
+    assert "<<<user11>>>" in seen[0] and "<<<best joke ever>>>" in seen[0] and "user13" not in seen[0]
+
+
+def test_an_empty_recap_shows_only_the_message_count() -> None:
+    recap = Recap(week="2026-10-19", start=MONDAY, end=SUNDAY_EVENING, total=60)
+
+    embed = format_recap(recap, lambda key, **kw: key, lambda title_id: title_id, "Pig Land", None)
+
+    assert [field.name for field in embed.fields] == ["weekly_messages"]
+    assert embed.fields[0].value == "**60**"
+
+
+def test_weekday_choices_cover_the_week() -> None:
+    assert [choice.value for choice in community_module._WEEKDAYS] == list(range(7))
+    assert timedelta(days=6) + MONDAY == datetime(2026, 10, 25, tzinfo=TAIPEI)
+    assert SUNDAY_EVENING.astimezone(timezone.utc).hour == 12

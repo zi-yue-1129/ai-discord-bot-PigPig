@@ -7,7 +7,7 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
-from typing import Any, Iterator, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Union
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS guild_settings (
@@ -22,7 +22,11 @@ CREATE TABLE IF NOT EXISTS guild_settings (
     birthday_hour INTEGER NOT NULL DEFAULT 9,
     birthday_role_id INTEGER,
     anniversary_enabled INTEGER NOT NULL DEFAULT 0,
-    achievement_mode TEXT NOT NULL DEFAULT 'off'
+    achievement_mode TEXT NOT NULL DEFAULT 'off',
+    weekly_enabled INTEGER NOT NULL DEFAULT 0,
+    weekly_channel_id INTEGER,
+    weekly_day INTEGER NOT NULL DEFAULT 6,
+    weekly_hour INTEGER NOT NULL DEFAULT 20
 );
 CREATE TABLE IF NOT EXISTS birthdays (
     guild_id INTEGER NOT NULL,
@@ -49,6 +53,13 @@ CREATE TABLE IF NOT EXISTS user_achievements (
     unlocked_at REAL NOT NULL,
     PRIMARY KEY (guild_id, user_id, achievement_id)
 );
+CREATE TABLE IF NOT EXISTS titles (
+    guild_id INTEGER NOT NULL,
+    title_id TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    period TEXT NOT NULL,
+    PRIMARY KEY (guild_id, title_id)
+);
 CREATE TABLE IF NOT EXISTS achievement_checked (
     guild_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
@@ -66,6 +77,10 @@ CREATE TABLE IF NOT EXISTS birthday_roles (
 # Columns added after a table first shipped: (table, column, definition).
 _ADDED_COLUMNS = [
     ("guild_settings", "achievement_mode", "TEXT NOT NULL DEFAULT 'off'"),
+    ("guild_settings", "weekly_enabled", "INTEGER NOT NULL DEFAULT 0"),
+    ("guild_settings", "weekly_channel_id", "INTEGER"),
+    ("guild_settings", "weekly_day", "INTEGER NOT NULL DEFAULT 6"),
+    ("guild_settings", "weekly_hour", "INTEGER NOT NULL DEFAULT 20"),
 ]
 
 
@@ -88,6 +103,10 @@ class GuildSettings:
         achievement_mode: How unlocked achievements are announced: ``"off"`` (only shown
             in /profile and /achievements), ``"reply"`` (a reaction and a short reply to the
             message that unlocked it) or ``"channel"`` (a line in the announcement channel).
+        weekly_enabled: Whether a weekly recap is posted.
+        weekly_channel_id: Channel for the recap; None uses the announcement channel.
+        weekly_day: Local weekday the recap is posted (0 Monday ... 6 Sunday).
+        weekly_hour: Local hour (0-23) the recap is posted.
     """
 
     guild_id: int
@@ -102,6 +121,10 @@ class GuildSettings:
     birthday_role_id: Optional[int] = None
     anniversary_enabled: bool = False
     achievement_mode: str = "off"
+    weekly_enabled: bool = False
+    weekly_channel_id: Optional[int] = None
+    weekly_day: int = 6
+    weekly_hour: int = 20
 
 
 _COLUMNS = [f.name for f in fields(GuildSettings)]
@@ -167,12 +190,13 @@ class CommunityStore:
         return settings
 
     def guilds_with_daily_jobs(self) -> List[GuildSettings]:
-        """Returns the settings of every guild that celebrates birthdays or anniversaries."""
+        """Returns the settings of every guild with birthdays, anniversaries or the weekly recap on."""
         with self._session() as connection:
             ids = [
                 guild_id
                 for (guild_id,) in connection.execute(
-                    "SELECT guild_id FROM guild_settings WHERE birthday_enabled = 1 OR anniversary_enabled = 1"
+                    "SELECT guild_id FROM guild_settings "
+                    "WHERE birthday_enabled = 1 OR anniversary_enabled = 1 OR weekly_enabled = 1"
                 )
             ]
         return [self.get_settings(guild_id) for guild_id in ids]
@@ -276,6 +300,26 @@ class CommunityStore:
                 "ORDER BY unlocked_at, achievement_id",
                 (guild_id, user_id),
             ).fetchall()
+
+    # ------------------------------------------------------------ titles
+    def set_titles(self, guild_id: int, period: str, holders: Dict[str, int]) -> None:
+        """Replaces a guild's rotating titles with this period's ``{title_id: user_id}``."""
+        with self._session() as connection:
+            connection.execute("DELETE FROM titles WHERE guild_id = ?", (guild_id,))
+            connection.executemany(
+                "INSERT INTO titles (guild_id, title_id, user_id, period) VALUES (?, ?, ?, ?)",
+                [(guild_id, title_id, user_id, period) for title_id, user_id in holders.items()],
+            )
+
+    def titles_of(self, guild_id: int, user_id: int) -> List[str]:
+        """Returns the rotating titles a member holds now."""
+        with self._session() as connection:
+            return [
+                title_id
+                for (title_id,) in connection.execute(
+                    "SELECT title_id FROM titles WHERE guild_id = ? AND user_id = ? ORDER BY title_id", (guild_id, user_id)
+                )
+            ]
 
     # ------------------------------------------------------------ birthday roles
     def add_birthday_role(self, guild_id: int, user_id: int, role_id: int, remove_at: float) -> None:

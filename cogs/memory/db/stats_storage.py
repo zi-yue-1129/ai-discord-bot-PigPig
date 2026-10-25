@@ -409,6 +409,34 @@ class StatsStorage:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    async def reactions_by_author(self, guild_id: str, since: float, until: float) -> List[tuple[str, int]]:
+        """Sums the reactions each author's messages sent in a time range received, most first."""
+        return await asyncio.to_thread(self._reactions_by_author_sync, guild_id, since, until)
+
+    def _reactions_by_author_sync(self, guild_id: str, since: float, until: float) -> List[tuple[str, int]]:
+        with self.db.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT author_id, SUM(count) AS total FROM message_reactions "
+                "WHERE guild_id = ? AND created_at >= ? AND created_at < ? AND count > 0 AND author_id IS NOT NULL "
+                "GROUP BY author_id ORDER BY total DESC, author_id",
+                (guild_id, since, until),
+            ).fetchall()
+            return [(row["author_id"], row["total"]) for row in rows]
+
+    async def get_regulars(self, guild_id: str, min_messages: int) -> List[Dict[str, Any]]:
+        """Returns users with at least ``min_messages`` messages, with ``user_id``, ``total_messages``
+        and ``last_active_at``, most messages first."""
+        return await asyncio.to_thread(self._get_regulars_sync, guild_id, min_messages)
+
+    def _get_regulars_sync(self, guild_id: str, min_messages: int) -> List[Dict[str, Any]]:
+        with self.db.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT user_id, total_messages, last_active_at FROM user_stats "
+                "WHERE guild_id = ? AND total_messages >= ? ORDER BY total_messages DESC, user_id",
+                (guild_id, min_messages),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
     async def prune_activity_history(self, now: Optional[datetime] = None) -> None:
         """Deletes weekly term counts and reaction counts that are too old to be shown.
 
