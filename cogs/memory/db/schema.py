@@ -103,6 +103,7 @@ def create_tables(conn: sqlite3.Connection) -> None:
     # The earlier per-guild table had no channel, so its counts could not be kept out of
     # public summaries; it only ever held a few days of data.
     cursor.execute("DROP TABLE IF EXISTS guild_weekly_terms")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_channel_weekly_terms_week ON channel_weekly_terms (week_start)")
 
     # Net reaction count per message, for "most reacted message" style rankings
     cursor.execute(

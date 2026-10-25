@@ -328,11 +328,16 @@ class CommunityCog(commands.Cog):
         return members[: self.limits.birthday_max_mentions]
 
     async def celebrate_birthdays(self, guild: discord.Guild, settings: GuildSettings, local: datetime) -> bool:
-        """Posts one message for everyone whose birthday is today; False when it could not be posted."""
+        """Posts one message for everyone whose birthday is today; False when it could not be posted.
+
+        With nowhere to post yet it also gives False, so a channel set later that day still gets it.
+        """
         members = self._birthday_members(guild, local)
-        channel = self._channel_for(guild, settings)
-        if not members or channel is None:
+        if not members:
             return True
+        channel = self._channel_for(guild, settings)
+        if channel is None:
+            return False
         mentions = [m.mention for m in members]
         facts = "Birthday members: " + ", ".join(f"<<<{m.display_name}>>> (mention as {m.mention})" for m in members)
         text = await self._write(channel, _BIRTHDAY_TASK, facts, mentions, self.limits.birthday_use_ai)
@@ -374,8 +379,11 @@ class CommunityCog(commands.Cog):
             if not self._may_retry(key):
                 continue
             guild = self.bot.get_guild(guild_id)
-            member = guild.get_member(user_id) if guild is not None else None
-            role = guild.get_role(role_id) if guild is not None else None
+            if guild is None or getattr(guild, "unavailable", False):
+                continue  # not loaded yet (or an outage): the entry waits until the guild is back
+            member = guild.get_member(user_id)
+            role = guild.get_role(role_id)
+            # A member who left or a deleted role has nothing to take back.
             if member is not None and role is not None and given_by_bot:
                 try:
                     await member.remove_roles(role, reason="Birthday is over")
@@ -399,7 +407,7 @@ class CommunityCog(commands.Cog):
             return True
         channel = self._channel_for(guild, settings)
         if channel is None:
-            return True
+            return False  # tried again later, in case a channel is set
         members = [m for m, _ in found]
         mentions = [m.mention for m in members]
         facts = "Members: " + ", ".join(
@@ -445,6 +453,11 @@ class CommunityCog(commands.Cog):
         return embed
 
     async def _weekly_job(self, guild: discord.Guild, settings: GuildSettings, start: datetime, end: datetime) -> bool:
+        """Posts the recap; False (tried again later) while there is no channel or no message stats."""
+        if self._channel_for(guild, settings, settings.weekly_channel_id) is None:
+            return False
+        if getattr(self.bot, "stats_collector", None) is None:
+            return False
         await self.post_weekly_recap(guild, settings, start, end)
         return True
 

@@ -32,7 +32,7 @@ from .community_lib.achievements import (
 )
 from .community_lib.dates import local_now
 from .community_lib.limits import CommunityLimits
-from .community_lib.recap import TITLES
+from .community_lib.recap import TITLES, public_channel_ids
 from .community_lib.store import CommunityStore
 from .language_manager import LanguageManager
 
@@ -289,7 +289,7 @@ class LeaderboardCog(commands.Cog):
         stats = await storage.get_user_stats(str(member.id), str(guild.id)) if storage else None
         if not stats:
             return self._r(guild.id, "no_stats", name=member.display_name)
-        lines = [_format_text_card(member.display_name, stats, _make_t(self.bot, str(guild.id)))]
+        lines = [_format_text_card(member.display_name, _public_stats(guild, stats), _make_t(self.bot, str(guild.id)))]
         if not self.store.is_opted_out(guild.id, member.id):
             ranked = await self.rankings(guild, "messages", "all") or []
             place = next((place for place, (m, _) in enumerate(ranked, start=1) if m.id == member.id), None)
@@ -330,6 +330,22 @@ class LeaderboardCog(commands.Cog):
             else:
                 lines.append(f"🔒 {self._label(guild_id, achievement)} — {description}")
         return "\n".join(lines)
+
+
+def _public_stats(guild: Any, stats: Dict[str, Any]) -> Dict[str, Any]:
+    """The part of a member's all-time stats that may be shown to anyone in the server.
+
+    The all-time word and emoji counts do not say which channel they came from, so they are
+    left out; channels are only listed when everyone can read them.
+    """
+    public = set(public_channel_ids(guild))
+    channels = stats.get("top_channels") or {}
+    return {
+        **stats,
+        "top_words": {},
+        "top_emojis": {},
+        "top_channels": {channel: count for channel, count in channels.items() if str(channel) in public},
+    }
 
 
 async def setup(bot: commands.Bot) -> None:

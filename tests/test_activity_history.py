@@ -231,3 +231,16 @@ def test_very_long_words_are_not_counted() -> None:
 
     words = _segment_words("pizza " + "a" * (MAX_WORD_CHARS + 1))
     assert "pizza" in words and all(len(w) <= MAX_WORD_CHARS for w in words)
+
+
+@pytest.mark.asyncio
+async def test_words_used_once_in_settled_weeks_are_pruned(storage: StatsStorage) -> None:
+    now = datetime(2026, 10, 25, 12, 0).astimezone()
+    for word in ("pizza pizza", "spamaa", "spambb"):
+        await storage.upsert_user_stats(USER, GUILD, word, "1", "2026-09-29T04:00:00Z")  # 4 weeks ago
+    await storage.upsert_user_stats(USER, GUILD, "lastweek", "1", "2026-10-13T04:00:00Z")  # last full week
+
+    await storage.prune_activity_history(now)
+
+    assert await storage.get_weekly_terms(GUILD, "2026-09-28", "word") == [("pizza", 2)]
+    assert await storage.get_weekly_terms(GUILD, "2026-10-12", "word") == [("lastweek", 1)]

@@ -464,9 +464,13 @@ class StatsStorage:
 
     def _prune_activity_history_sync(self, now: datetime) -> None:
         oldest_week = (now - timedelta(days=WEEKLY_TERMS_KEEP_DAYS)).strftime("%Y-%m-%d")
+        # Weeks before last week are no longer recapped: terms used only once there are noise
+        # (and spam of many distinct words), so only the repeated ones are kept.
+        settled_week = week_start(now - timedelta(days=7))
         oldest_reaction = now.timestamp() - REACTIONS_KEEP_DAYS * 86400
         with self.db.get_connection() as conn:
             conn.execute("DELETE FROM channel_weekly_terms WHERE week_start < ?", (oldest_week,))
+            conn.execute("DELETE FROM channel_weekly_terms WHERE week_start < ? AND count <= 1", (settled_week,))
             conn.execute("DELETE FROM message_reactions WHERE created_at < ?", (oldest_reaction,))
             conn.commit()
 

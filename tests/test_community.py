@@ -706,3 +706,40 @@ async def test_an_older_welcome_task_does_not_drop_the_newer_one(cog: CommunityC
     await task
     assert cog._flushes[GUILD_ID] is newer
     newer.cancel()
+
+
+@pytest.mark.asyncio
+async def test_a_removal_waits_while_the_guild_is_unavailable(
+    cog: CommunityCog, guild: FakeGuild, store: CommunityStore
+) -> None:
+    store.update_settings(GUILD_ID, birthday_enabled=True, birthday_hour=9, birthday_role_id=77)
+    member = guild.add(10)
+    store.set_birthday(GUILD_ID, 10, 10, 25)
+    _at(cog, datetime(2026, 10, 25, 9, 0, tzinfo=TAIPEI))
+    await cog.run_daily_jobs()
+
+    guild.unavailable = True
+    _at(cog, datetime(2026, 10, 26, 0, 1, tzinfo=TAIPEI))
+    await cog._remove_expired_birthday_roles()
+    assert len(store.due_birthday_roles(cog._now())) == 1
+
+    guild.unavailable = False
+    await cog._remove_expired_birthday_roles()
+    assert member.roles == [] and store.due_birthday_roles(cog._now()) == []
+
+
+@pytest.mark.asyncio
+async def test_a_birthday_is_still_posted_when_a_channel_is_set_later_that_day(
+    cog: CommunityCog, guild: FakeGuild, store: CommunityStore
+) -> None:
+    store.update_settings(GUILD_ID, birthday_enabled=True, birthday_hour=9, announce_channel_id=None)
+    guild.add(10)
+    store.set_birthday(GUILD_ID, 10, 10, 25)
+    _at(cog, datetime(2026, 10, 25, 9, 0, tzinfo=TAIPEI))
+    await cog.run_daily_jobs()
+    assert not store.has_run(GUILD_ID, "birthday", "2026-10-25")
+
+    store.update_settings(GUILD_ID, announce_channel_id=guild.channel.id)
+    _at(cog, datetime(2026, 10, 25, 15, 0, tzinfo=TAIPEI))
+    await cog.run_daily_jobs()
+    assert [text for text, _ in guild.channel.sent] == ["birthday|mentions=<@10>"]

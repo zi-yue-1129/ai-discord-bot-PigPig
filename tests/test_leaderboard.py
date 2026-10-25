@@ -481,3 +481,25 @@ async def test_a_hidden_member_sees_their_own_profile_and_achievements_privately
     await LeaderboardCog.achievements_command.callback(cog, interaction)
 
     assert [kwargs["ephemeral"] for _, kwargs in interaction.response.sent] == [False, True, True]
+
+
+@pytest.mark.asyncio
+async def test_a_public_profile_shows_no_words_emojis_or_private_channels(
+    cog: LeaderboardCog, guild: FakeGuild, stats_storage: FakeStorage
+) -> None:
+    member = guild.add(10)
+    stats_storage.stats["10"] = {
+        "total_messages": 5,
+        "streak_days": 1,
+        "top_words": {"secretproject": 40},
+        "top_emojis": {"🤫": 9},
+        "top_channels": {"500": 3, "666": 40},
+    }
+    guild.default_role = "@everyone"
+    guild.channel.permissions_for = lambda role: SimpleNamespace(view_channel=True, read_message_history=True)
+    private = SimpleNamespace(id=666, permissions_for=lambda role: SimpleNamespace(view_channel=False, read_message_history=False))
+    guild.channels = [guild.channel, private]
+
+    text = await cog.profile_text(guild, member)
+
+    assert "secretproject" not in text and "🤫" not in text and "666" not in text
