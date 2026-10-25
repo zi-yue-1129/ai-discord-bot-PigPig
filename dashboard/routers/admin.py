@@ -93,7 +93,7 @@ _ALLOWED_CONFIGS = {"base", "llm", "memory", "music"}
 _CONFIG_ALLOWED_KEYS: dict[str, set[str]] = {
     "base": {
         "prefix", "activity", "ipc_server", "version", "logging", "dashboard",
-        "rate_limits", "auto_response",
+        "rate_limits", "auto_response", "community",
     },
     "llm": {
         "model_priorities", "google_search_agent",
