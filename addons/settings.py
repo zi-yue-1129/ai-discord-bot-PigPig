@@ -171,6 +171,9 @@ class LLMConfig:
         self.model_priorities: list = self.data.get("model_priorities", [])
         self.google_search_agent: str = self.data.get("google_search_agent", "gemini-2.0-flash")
         self.vllm_url: Optional[str] = self.data.get("vllm_url", self.data.get("ollama_url", "http://localhost:11434"))
+        # Named OpenAI-compatible servers: ``name: {base_url, api_key_env}``; a model string
+        # ``name:model`` in model_priorities is served by that server.
+        self.openai_endpoints: dict = self.data.get("openai_endpoints", {}) or {}
         # Ollama server URL (defaults to localhost:11434)
         self.ollama_url: Optional[str] = self.data.get("ollama_url", "http://localhost:11434")
         self.llm_call_timeout: float = float(self.data.get("llm_call_timeout", 60))

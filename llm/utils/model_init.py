@@ -1,6 +1,7 @@
 """Create instrumented chat models, including OpenAI-compatible vLLM models."""
 from __future__ import annotations
 
+import os
 import time
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -131,9 +132,23 @@ def _output_limit_options(model_name: str) -> dict[str, Any]:
         return {}
     if model_name.startswith("google_genai:"):
         return {"max_output_tokens": cap}
-    if model_name.startswith(("vllm:", "openai:", "anthropic:")):
+    if model_name.startswith(("vllm:", "openai:", "anthropic:")) or _endpoint_name(model_name):
         return {"max_tokens": cap}
     return {}
+
+
+def _endpoint_name(model_name: str) -> str | None:
+    """Return the configured OpenAI-compatible endpoint that serves a model string, if any.
+
+    Args:
+        model_name: Provider-qualified identifier, such as ``steak:qwen``.
+
+    Returns:
+        The endpoint name from ``openai_endpoints`` in llm.yaml, or None when the
+        provider prefix is not a configured endpoint.
+    """
+    provider = model_name.split(":", 1)[0]
+    return provider if provider in llm_config.openai_endpoints else None
 
 
 def create_model_instance(
@@ -162,6 +177,7 @@ def create_model_instance(
     if limit_output:
         for option, value in _output_limit_options(model_name).items():
             kwargs.setdefault(option, value)
+    endpoint_name = _endpoint_name(model_name)
     if model_name.startswith("vllm:"):
         provider_options: dict[str, Any] = {
             "base_url": f"{llm_config.vllm_url}/v1",
@@ -170,6 +186,19 @@ def create_model_instance(
         provider_options.update(kwargs)
         model = init_chat_model(
             f"openai:{model_name[len('vllm:'):]}", **provider_options,
+        )
+    elif endpoint_name is not None:
+        endpoint = llm_config.openai_endpoints[endpoint_name]
+        key_variable = endpoint["api_key_env"]
+        api_key = os.environ.get(key_variable)
+        if not api_key:
+            raise ValueError(
+                f"Endpoint '{endpoint_name}' needs the API key in the {key_variable} environment variable"
+            )
+        provider_options = {"base_url": endpoint["base_url"], "api_key": api_key}
+        provider_options.update(kwargs)
+        model = init_chat_model(
+            f"openai:{model_name[len(endpoint_name) + 1:]}", **provider_options,
         )
     else:
         model = init_chat_model(model_name, **kwargs)
