@@ -112,3 +112,12 @@ def test_without_the_leaderboard_cog_the_stored_opt_outs_are_read(tmp_path: Any,
 
     assert _is_hidden(runtime, GUILD_ID, str(HIDDEN_ID)) is True
     assert _is_hidden(runtime, GUILD_ID, str(AUTHOR_ID)) is False
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_user_id_is_refused() -> None:
+    storage = FakeStorage()
+
+    reply = await _tool(storage)(user_id="abc")
+
+    assert "not a Discord user ID" in reply and storage.asked == []

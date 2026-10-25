@@ -129,7 +129,9 @@ class UserStatsTools:
             if not message or not message.guild:
                 return "No server context available."
 
-            effective_id = user_id or str(message.author.id)
+            effective_id = str(user_id or message.author.id).strip()
+            if not effective_id.isdigit():
+                return f"{effective_id!r} is not a Discord user ID; ask for the member's numeric ID or mention."
             guild_id = str(message.guild.id)
 
             # The reply is posted in the channel for everyone to see.
