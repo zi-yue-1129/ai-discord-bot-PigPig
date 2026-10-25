@@ -1,4 +1,5 @@
 {
     "permission_denied": "你沒有權限使用此指令。",
-    "cooldown": "⏳ 請稍後再試，此指令冷卻中，還需等待 {retry_after} 秒。"
+    "cooldown": "⏳ 請稍後再試，此指令冷卻中，還需等待 {retry_after} 秒。",
+    "rate_limited": "⏳ 你用得有點快，請在 {retry_after} 秒後再試。"
 }

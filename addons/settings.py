@@ -64,6 +64,8 @@ class BaseConfig:
         self.activity: list = data.get("activity", [])
         self.ipc_server: dict = data.get("ipc_server", {})
         self.version: str = data.get("version", "")
+        # Per-user usage limits (see addons/rate_limiter.py); empty means the defaults apply.
+        self.rate_limits: dict = data.get("rate_limits", {}) or {}
 
         # Dashboard web interface settings
         self.dashboard: dict = data.get("dashboard", {

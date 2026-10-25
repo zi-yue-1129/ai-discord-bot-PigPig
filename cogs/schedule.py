@@ -1,11 +1,12 @@
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 import yaml
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 import pytz
 import os
-from typing import Optional
+from typing import Dict, List, Optional, Set, Tuple
 from .language_manager import LanguageManager
 from addons.logging import get_logger
 from function import func
@@ -13,16 +14,159 @@ from addons.discord_text import reply_in_chunks
 
 logger = get_logger(server_id="Bot", source="schedule")
 
+SCHEDULE_TZ = pytz.timezone('Asia/Taipei')
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+DAY_CHOICES = [
+    app_commands.Choice(name="Monday", value="monday"),
+    app_commands.Choice(name="Tuesday", value="tuesday"),
+    app_commands.Choice(name="Wednesday", value="wednesday"),
+    app_commands.Choice(name="Thursday", value="thursday"),
+    app_commands.Choice(name="Friday", value="friday"),
+    app_commands.Choice(name="Saturday", value="saturday"),
+    app_commands.Choice(name="Sunday", value="sunday"),
+]
+_TIME_RANGE = re.compile(r"^\s*([01]?\d|2[0-3]):([0-5]\d)\s*-\s*([01]?\d|2[0-3]):([0-5]\d)\s*$")
+
+
+def normalize_time_range(text: str) -> Optional[str]:
+    """Returns "HH:MM-HH:MM" for a valid time range, otherwise None."""
+    match = _TIME_RANGE.match(text or "")
+    if not match:
+        return None
+    h1, m1, h2, m2 = (int(g) for g in match.groups())
+    return f"{h1:02d}:{m1:02d}-{h2:02d}:{m2:02d}"
+
+
+def events_starting_at(schedule: dict, moment: datetime) -> List[Tuple[str, str]]:
+    """The (time range, description) of every event whose start is ``moment`` (same weekday, hour and minute)."""
+    weekday = WEEKDAYS[moment.weekday()]
+    found = []
+    for day, events in (schedule or {}).items():
+        if str(day).strip().casefold() != weekday or not isinstance(events, list):
+            continue
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            time_range = normalize_time_range(str(event.get("time", "")))
+            description = str(event.get("description") or "").strip()
+            if not time_range or not description:
+                continue
+            if time_range[:5] == moment.strftime("%H:%M"):
+                found.append((time_range, description))
+    return found
+
 class ScheduleManager(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.schedule_dir = "data/schedule"
         os.makedirs(self.schedule_dir, exist_ok=True)
         self.lang_manager: Optional[LanguageManager] = None
+        # (user id, event start) already announced, so a restart or a slow tick does not repeat one.
+        self._notified: Set[Tuple[int, str]] = set()
 
     async def cog_load(self):
         """當 Cog 載入時初始化語言管理器"""
         self.lang_manager = LanguageManager.get_instance(self.bot)
+        self.notify_upcoming.start()
+
+    async def cog_unload(self):
+        self.notify_upcoming.cancel()
+
+    def _load_user_schedule(self, user_id: int) -> Optional[dict]:
+        filepath = os.path.join(self.schedule_dir, f"{user_id}.yaml")
+        if not os.path.exists(filepath):
+            return None
+        with open(filepath, "r", encoding='utf-8') as f:
+            return yaml.safe_load(f) or {}
+
+    def _save_user_schedule(self, user_id: int, data: dict) -> None:
+        with open(os.path.join(self.schedule_dir, f"{user_id}.yaml"), "w", encoding='utf-8') as f:
+            yaml.dump(data, f, allow_unicode=True)
+
+    @tasks.loop(minutes=1)
+    async def notify_upcoming(self):
+        """Pings users whose schedule has an event starting in their chosen number of minutes."""
+        now = datetime.now(SCHEDULE_TZ).replace(second=0, microsecond=0)
+        for name in os.listdir(self.schedule_dir):
+            if not name.endswith(".yaml") or not name[:-5].isdigit():
+                continue
+            user_id = int(name[:-5])
+            try:
+                data = self._load_user_schedule(user_id) or {}
+                notify = data.get("notify") or {}
+                if not isinstance(notify, dict) or not notify.get("enabled"):
+                    continue
+                lead = int(notify.get("minutes_before", 10))
+                start = now + timedelta(minutes=lead)
+                for time_range, description in events_starting_at(data.get("schedule", {}), start):
+                    key = (user_id, start.strftime("%Y-%m-%d %H:%M"))
+                    if key in self._notified:
+                        continue
+                    self._notified.add(key)
+                    await self._send_event_notice(user_id, data.get("channel_id", 0), time_range, description, lead)
+            except Exception as e:
+                await func.report_error(e, f"schedule notify for user {user_id}")
+        # Keep only today's keys.
+        today = now.strftime("%Y-%m-%d")
+        self._notified = {k for k in self._notified if k[1].startswith(today)}
+
+    @notify_upcoming.before_loop
+    async def _wait_until_ready(self):
+        await self.bot.wait_until_ready()
+
+    async def _send_event_notice(self, user_id: int, channel_id: int, time_range: str, description: str, lead: int):
+        channel = self.bot.get_channel(channel_id) if channel_id else None
+        guild_id = str(channel.guild.id) if channel is not None and getattr(channel, "guild", None) else "0"
+        text = self.lang_manager.translate(
+            guild_id, "commands", "schedule_notify", "notice",
+            user=f"<@{user_id}>", minutes=lead, time=time_range, description=description,
+        )
+        allowed = discord.AllowedMentions(everyone=False, roles=False, users=[discord.Object(id=user_id)])
+        if channel is not None:
+            try:
+                await channel.send(text, allowed_mentions=allowed)
+                return
+            except discord.HTTPException:
+                logger.warning("schedule: could not post notice in channel %s", channel_id)
+        user = self.bot.get_user(user_id)
+        if user is not None:
+            try:
+                await user.send(text, allowed_mentions=allowed)
+            except discord.HTTPException:
+                logger.warning("schedule: could not DM notice to user %s", user_id)
+
+    @app_commands.command(name="schedule_notify", description="Get pinged before each event in your schedule")
+    @app_commands.describe(
+        enabled="Turn the reminders on or off",
+        minutes_before="How many minutes before each event (default 10)",
+    )
+    async def schedule_notify_command(
+        self,
+        interaction: discord.Interaction,
+        enabled: bool,
+        minutes_before: Optional[app_commands.Range[int, 0, 120]] = None,
+    ) -> None:
+        guild_id = str(interaction.guild_id) if interaction.guild_id else "0"
+        data = self._load_user_schedule(interaction.user.id)
+        if data is None:
+            await interaction.response.send_message(
+                self.lang_manager.translate(guild_id, "commands", "query_schedule", "responses", "no_schedule"),
+                ephemeral=True,
+            )
+            return
+        data, _ = self._sanitize_schedule_data(data, interaction.channel_id)
+        previous = data.get("notify") if isinstance(data.get("notify"), dict) else {}
+        lead = minutes_before if minutes_before is not None else int(previous.get("minutes_before", 10))
+        data["notify"] = {"enabled": enabled, "minutes_before": lead}
+        # Notices go to the channel where the user last turned them on.
+        if enabled and interaction.channel_id:
+            data["channel_id"] = interaction.channel_id
+        self._save_user_schedule(interaction.user.id, data)
+        key = "enabled" if enabled else "disabled"
+        await interaction.response.send_message(
+            self.lang_manager.translate(guild_id, "commands", "schedule_notify", "responses", key, minutes=lead),
+            ephemeral=True,
+        )
 
     def _sanitize_schedule_data(self, data, fallback_channel_id: int):
         """Ensure schedule_data has required keys and types. Returns (data, repaired)."""
@@ -41,7 +185,7 @@ class ScheduleManager(commands.Cog):
             repaired = True
         return data, repaired
 
-    @app_commands.command(name="upload_schedule", description="上傳行程表YAML檔案")
+    @app_commands.command(name="upload_schedule", description="Upload your schedule as a YAML file")
     async def upload_schedule_command(self, interaction: discord.Interaction, file: discord.Attachment):
         await interaction.response.defer(thinking=True)
         guild_id = str(interaction.guild_id) if interaction.guild_id else "0"
@@ -75,20 +219,20 @@ class ScheduleManager(commands.Cog):
             raise Exception(error_msg)
 
     @app_commands.guild_only()
-    @app_commands.command(name="query_schedule", description="查詢行程表")
+    @app_commands.command(name="query_schedule", description="Look up a schedule")
     @app_commands.choices(query_type=[
-        app_commands.Choice(name="完整行程表", value="full"),
-        app_commands.Choice(name="特定時間", value="specific_time"),
-        app_commands.Choice(name="下一個行程", value="next")
+        app_commands.Choice(name="Full schedule", value="full"),
+        app_commands.Choice(name="At a specific time", value="specific_time"),
+        app_commands.Choice(name="Next event", value="next")
     ])
     @app_commands.choices(day=[
-        app_commands.Choice(name="星期一", value="Monday"),
-        app_commands.Choice(name="星期二", value="Tuesday"),
-        app_commands.Choice(name="星期三", value="Wednesday"),
-        app_commands.Choice(name="星期四", value="Thursday"),
-        app_commands.Choice(name="星期五", value="Friday"),
-        app_commands.Choice(name="星期六", value="Saturday"),
-        app_commands.Choice(name="星期日", value="Sunday")
+        app_commands.Choice(name="Monday", value="Monday"),
+        app_commands.Choice(name="Tuesday", value="Tuesday"),
+        app_commands.Choice(name="Wednesday", value="Wednesday"),
+        app_commands.Choice(name="Thursday", value="Thursday"),
+        app_commands.Choice(name="Friday", value="Friday"),
+        app_commands.Choice(name="Saturday", value="Saturday"),
+        app_commands.Choice(name="Sunday", value="Sunday")
     ])
     async def query_schedule_command(self, interaction: discord.Interaction, query_type: app_commands.Choice[str], time: str = None, day: app_commands.Choice[str] = None, target_user: discord.Member = None):
         await interaction.response.defer(thinking=True)
@@ -302,13 +446,22 @@ class ScheduleManager(commands.Cog):
                 guild_id, "system", "schedule", "format", "no_next_event"
             ) if self.lang_manager else "沒有找到下一個行程。"
 
-    @app_commands.command(name="update_schedule", description="更新或創建行程表")
-    async def update_schedule_command(self, interaction: discord.Interaction, day: str, time: str, description: str):
-        await interaction.response.defer(thinking=True)
+    @app_commands.command(name="update_schedule", description="Add or change an event in your schedule")
+    @app_commands.describe(day="Day of the week", time="Time range, e.g. 09:00-10:30", description="What happens then")
+    @app_commands.choices(day=DAY_CHOICES)
+    async def update_schedule_command(self, interaction: discord.Interaction, day: app_commands.Choice[str], time: str, description: str):
         guild_id = str(interaction.guild_id) if interaction.guild_id else "0"
+        time_range = normalize_time_range(time)
+        if time_range is None:
+            await interaction.response.send_message(
+                self.lang_manager.translate(guild_id, "commands", "update_schedule", "responses", "invalid_time"),
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(thinking=True)
         
         try:
-            await self._core_update_schedule(interaction.user.id, day, time, description)
+            await self._core_update_schedule(interaction.user.id, day.value, time_range, description, interaction.channel_id)
             success_msg = self.lang_manager.translate(
                 guild_id, "commands", "update_schedule", "responses", "success"
             ) if self.lang_manager else "行程表已成功更新或創建！"
@@ -320,11 +473,11 @@ class ScheduleManager(commands.Cog):
             ) if self.lang_manager else f"更新或創建行程表時發生錯誤：{str(e)}"
             await interaction.edit_original_response(content=error_msg)
 
-    async def _core_update_schedule(self, user_id: int, day: str, time: str, description: str):
+    async def _core_update_schedule(self, user_id: int, day: str, time: str, description: str, channel_id: int = 0):
         filepath = os.path.join(self.schedule_dir, f"{user_id}.yaml")
         if not os.path.exists(filepath):
             with open(filepath, 'w', encoding='utf-8') as f:
-                yaml.dump({"channel_id": 0, "schedule": {}}, f)
+                yaml.dump({"channel_id": channel_id or 0, "schedule": {}}, f)
 
         with open(filepath, "r", encoding='utf-8') as f:
             schedule_data = yaml.safe_load(f)
@@ -336,15 +489,22 @@ class ScheduleManager(commands.Cog):
                 yaml.dump(schedule_data, fw, allow_unicode=True)
         schedule = schedule_data.get("schedule", {})
 
-        if day not in schedule:
-            schedule[day] = []
-        schedule[day].append({"time": time, "description": description})
+        # Reuse the existing key for this day whatever its case ("Monday" vs "monday").
+        day_key = next((k for k in schedule if str(k).strip().casefold() == day.strip().casefold()), day)
+        events = schedule.setdefault(day_key, [])
+        # Fill the slot with the same time if there is one (as in the template), else add a new one.
+        for event in events:
+            if isinstance(event, dict) and normalize_time_range(str(event.get("time", ""))) == normalize_time_range(time):
+                event["description"] = description
+                break
+        else:
+            events.append({"time": time, "description": description})
 
         schedule_data["schedule"] = schedule
         with open(filepath, "w", encoding='utf-8') as f:
             yaml.dump(schedule_data, f, allow_unicode=True)
 
-    @app_commands.command(name="show_template", description="顯示行程表範本")
+    @app_commands.command(name="show_template", description="Show the schedule template")
     async def show_template_command(self, interaction: discord.Interaction) -> None:
         guild_id = str(interaction.guild_id) if interaction.guild_id else "0"
         with open(os.path.join(self.schedule_dir, "template.yaml"), "r", encoding='utf-8') as f:

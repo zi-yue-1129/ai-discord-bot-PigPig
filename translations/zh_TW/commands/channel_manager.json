@@ -43,6 +43,16 @@
     "auto_response": {
         "responses": {
             "success": "頻道 {channel} 自動回覆設定為：{enabled}"
+        },
+        "choices": {
+            "off": "關閉",
+            "all": "每則訊息都回覆",
+            "chance": "依機率回覆",
+            "relevant": "話題相關時才回覆"
+        },
+        "details": {
+            "chance": "回覆機率：{chance}%",
+            "keywords": "額外關鍵字：{keywords}"
         }
     }
 }

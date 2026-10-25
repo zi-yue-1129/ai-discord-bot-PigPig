@@ -1,0 +1,7 @@
+{
+    "notice": "⏰ {user} {minutes} 分鐘後有行程：{time} {description}",
+    "responses": {
+        "enabled": "已開啟行程提醒，每個行程開始前 {minutes} 分鐘會在這個頻道通知你。",
+        "disabled": "已關閉行程提醒。"
+    }
+}

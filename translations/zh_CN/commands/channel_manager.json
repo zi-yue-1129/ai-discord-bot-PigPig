@@ -43,6 +43,16 @@
     "auto_response": {
         "responses": {
             "success": "频道 {channel} 自动回复设定为：{enabled}"
+        },
+        "choices": {
+            "off": "关闭",
+            "all": "每条消息都回复",
+            "chance": "按概率回复",
+            "relevant": "话题相关时才回复"
+        },
+        "details": {
+            "chance": "回复概率：{chance}%",
+            "keywords": "额外关键字：{keywords}"
         }
     }
 }

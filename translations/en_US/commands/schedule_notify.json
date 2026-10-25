@@ -1,0 +1,7 @@
+{
+    "notice": "⏰ {user} coming up in {minutes} min: {time} {description}",
+    "responses": {
+        "enabled": "Schedule reminders are on. I'll ping you in this channel {minutes} min before each event.",
+        "disabled": "Schedule reminders are off."
+    }
+}

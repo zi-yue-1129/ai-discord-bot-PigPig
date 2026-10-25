@@ -116,6 +116,7 @@ class EpisodicMemoryService(commands.Cog):
         return text
 
     @app_commands.check(lambda interaction: interaction.user.id == tokens.bot_owner_id)
+    @app_commands.default_permissions(administrator=True)
     @app_commands.command(name="force_update_memory", description="Force update this channel's episodic memory.")
     async def force_update_memory(self, interaction: discord.Interaction):
         """Force update the memory for the current channel. Owner only."""
@@ -176,6 +177,7 @@ class EpisodicMemoryService(commands.Cog):
                 pass
 
     @app_commands.check(lambda interaction: interaction.user.id == tokens.bot_owner_id)
+    @app_commands.default_permissions(administrator=True)
     @app_commands.command(name="search_episodic_memory", description="Search episodic memory with vector and keyword queries.")
     async def search_episodic_memory(
         self,

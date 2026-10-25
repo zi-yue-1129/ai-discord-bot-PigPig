@@ -1,8 +1,10 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
+import copy
 import json
 import os
+import random
 import time
 from addons.logging import get_logger
 from datetime import datetime
@@ -15,6 +17,58 @@ import asyncio
 # Module-level logger. Use "Bot" as default server_id for module-level events.
 log = get_logger(server_id="Bot", source=__name__)
 
+# Auto-response modes for a channel whose auto-response is on.
+AUTO_RESPONSE_MODES = ("all", "chance", "relevant")
+DEFAULT_AUTO_RESPONSE_CHANCE = 20
+# How long the bot counts as "in a conversation" with someone after replying to them.
+CONVERSATION_WINDOW_SECONDS = 180
+
+
+def get_auto_response_settings(config: Dict[str, Any], channel_id: str) -> Dict[str, Any]:
+    """Returns the channel's auto-response mode, chance (%) and keywords; mode is "off" when disabled."""
+    if not config.get("auto_response", {}).get(channel_id, False):
+        return {"mode": "off", "chance": 0, "keywords": []}
+    raw = config.get("auto_response_settings", {}).get(channel_id) or {}
+    mode = raw.get("mode", "all")
+    if mode not in AUTO_RESPONSE_MODES:
+        mode = "all"
+    try:
+        chance = int(raw.get("chance", DEFAULT_AUTO_RESPONSE_CHANCE))
+    except (TypeError, ValueError):
+        chance = DEFAULT_AUTO_RESPONSE_CHANCE
+    keywords = [str(k).strip() for k in raw.get("keywords", []) if str(k).strip()]
+    return {"mode": mode, "chance": max(0, min(chance, 100)), "keywords": keywords}
+
+
+def decide_auto_response(
+    settings: Dict[str, Any],
+    content: str,
+    bot_names: List[str],
+    in_conversation: bool,
+    roll: Optional[float] = None,
+) -> bool:
+    """Whether an unprompted message in an auto-response channel gets a reply.
+
+    - all: every message.
+    - chance: each message with probability ``chance`` percent.
+    - relevant: messages that name the bot or one of the channel's keywords,
+      or that come from someone the bot was just talking with.
+    """
+    mode = settings.get("mode", "off")
+    if mode == "all":
+        return True
+    if mode == "chance":
+        roll = random.random() if roll is None else roll
+        return roll * 100 < settings.get("chance", 0)
+    if mode == "relevant":
+        if in_conversation:
+            return True
+        text = (content or "").casefold()
+        terms = [n for n in bot_names if n] + list(settings.get("keywords", []))
+        return any(term.casefold() in text for term in terms)
+    return False
+
+
 class ChannelManager(commands.Cog):
     """Cog for managing server-wide and channel-specific response modes and permissions."""
 
@@ -23,6 +77,10 @@ class ChannelManager(commands.Cog):
         self.data_dir = "data/channel_configs"
         self.lang_manager: Optional[LanguageManager] = None
         self.tokens = tokens
+        # guild_id -> (file mtime, config); re-read only when the file changes (the dashboard writes it too).
+        self._config_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+        # (channel_id, user_id) -> when the bot last replied to that user there.
+        self._last_reply_at: Dict[Tuple[int, int], float] = {}
         os.makedirs(self.data_dir, exist_ok=True)
 
     async def cog_load(self):
@@ -34,24 +92,30 @@ class ChannelManager(commands.Cog):
         return os.path.join(self.data_dir, f"{guild_id}.json")
 
     def load_config(self, guild_id: str) -> Dict[str, Any]:
-        """Load configuration for a specific guild."""
+        """Load configuration for a specific guild (cached until the file changes)."""
         config_path = self.get_config_path(guild_id)
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, "r", encoding="utf-8") as f:
-                    config = json.load(f)
-                # Ensure necessary keys exist
-                if "auto_response" not in config:
-                    config["auto_response"] = {}
-                if "channel_modes" not in config:
-                    config["channel_modes"] = {}
-                if "mode" not in config:
-                    config["mode"] = "unrestricted"
-                return config
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                return self._get_default_config()
-        else:
+        try:
+            mtime = os.path.getmtime(config_path)
+        except OSError:
+            self._config_cache.pop(guild_id, None)
             return self._get_default_config()
+
+        cached = self._config_cache.get(guild_id)
+        if cached and cached[0] == mtime:
+            return copy.deepcopy(cached[1])
+
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+            return self._get_default_config()
+        # Ensure necessary keys exist
+        config.setdefault("auto_response", {})
+        config.setdefault("auto_response_settings", {})
+        config.setdefault("channel_modes", {})
+        config.setdefault("mode", "unrestricted")
+        self._config_cache[guild_id] = (mtime, config)
+        return copy.deepcopy(config)
 
     def _get_default_config(self) -> Dict[str, Any]:
         """Provide a default configuration template."""
@@ -60,6 +124,7 @@ class ChannelManager(commands.Cog):
             "whitelist": [],
             "blacklist": [],
             "auto_response": {},
+            "auto_response_settings": {},  # channel_id -> {"mode", "chance", "keywords"}
             "channel_modes": {} # Per-channel mode overrides
         }
 
@@ -69,6 +134,7 @@ class ChannelManager(commands.Cog):
         try:
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=4, ensure_ascii=False)
+            self._config_cache[guild_id] = (os.path.getmtime(config_path), copy.deepcopy(config))
         except Exception as e:
             # Report it, then let the command fail instead of telling the user the setting was saved.
             asyncio.create_task(func.report_error(e, f"saving config for guild {guild_id}"))
@@ -99,6 +165,7 @@ class ChannelManager(commands.Cog):
         return False
 
     @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
     @app_commands.command(name="set_server_mode", description="Set the server-wide response mode (Whitelist/Blacklist)")
     @app_commands.choices(mode=[
         app_commands.Choice(name="Unrestricted", value="unrestricted"),
@@ -128,6 +195,7 @@ class ChannelManager(commands.Cog):
         await interaction.edit_original_response(content=response)
 
     @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
     @app_commands.command(name="set_channel_mode", description="Set a special mode for a specific channel (e.g., Story Mode)")
     @app_commands.describe(channel="The channel to set", mode="The mode to set for this channel")
     @app_commands.choices(mode=[
@@ -175,6 +243,7 @@ class ChannelManager(commands.Cog):
         await interaction.edit_original_response(content=message)
 
     @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
     @app_commands.command(name="add_channel", description="Add channel to whitelist or blacklist")
     @app_commands.choices(list_type=[
         app_commands.Choice(name="Whitelist", value="whitelist"),
@@ -219,6 +288,7 @@ class ChannelManager(commands.Cog):
             await interaction.edit_original_response(content=exists_message)
 
     @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
     @app_commands.command(name="remove_channel", description="Remove channel from whitelist or blacklist")
     @app_commands.choices(list_type=[
         app_commands.Choice(name="Whitelist", value="whitelist"),
@@ -263,26 +333,91 @@ class ChannelManager(commands.Cog):
             await interaction.edit_original_response(content=not_found_message)
 
     @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
     @app_commands.command(name="auto_response", description="Set channel auto-response")
-    async def auto_response_command(self, interaction: discord.Interaction, channel: Union[discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.Thread], enabled: bool):
-        """Enable or disable automatic bot responses in a specific channel."""
+    @app_commands.describe(
+        channel="The channel to set",
+        mode="Off, reply to every message, reply by chance, or reply only when the topic is relevant",
+        chance="For the chance mode: the percent of messages that get a reply (1-100)",
+        keywords="For the relevant mode: extra comma-separated words that count as relevant",
+    )
+    @app_commands.choices(mode=[
+        app_commands.Choice(name="Off", value="off"),
+        app_commands.Choice(name="Every message", value="all"),
+        app_commands.Choice(name="By chance", value="chance"),
+        app_commands.Choice(name="Only when relevant", value="relevant"),
+    ])
+    async def auto_response_command(
+        self,
+        interaction: discord.Interaction,
+        channel: Union[discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.Thread],
+        mode: app_commands.Choice[str],
+        chance: Optional[app_commands.Range[int, 1, 100]] = None,
+        keywords: Optional[str] = None,
+    ):
+        """Set how the bot replies, unprompted, to messages in a channel."""
         if not await self.check_admin_permissions(interaction, defer=True):
             return
-            
+
         guild_id = str(interaction.guild_id)
         config = self.load_config(guild_id)
         channel_id = str(channel.id)
-        config["auto_response"][channel_id] = enabled
-        self.save_config(guild_id, config)
-        
-        if self.lang_manager:
-            success_message = self.lang_manager.translate(
-                guild_id, "commands", "channel_manager", "auto_response", "responses", "success", channel=f"<#{channel_id}>", enabled=str(enabled)
-            )
+        config["auto_response"][channel_id] = mode.value != "off"
+        if mode.value == "off":
+            config["auto_response_settings"].pop(channel_id, None)
         else:
-            success_message = f"Set auto-response for <#{channel_id}> to: {enabled}"
-        
+            previous = config["auto_response_settings"].get(channel_id, {})
+            settings = {"mode": mode.value}
+            if mode.value == "chance":
+                settings["chance"] = chance or previous.get("chance", DEFAULT_AUTO_RESPONSE_CHANCE)
+            if mode.value == "relevant":
+                if keywords is not None:
+                    settings["keywords"] = [k.strip() for k in keywords.split(",") if k.strip()]
+                else:
+                    settings["keywords"] = previous.get("keywords", [])
+            config["auto_response_settings"][channel_id] = settings
+        self.save_config(guild_id, config)
+
+        effective = get_auto_response_settings(config, channel_id)
+        if self.lang_manager:
+            mode_name = self.lang_manager.translate(
+                guild_id, "commands", "channel_manager", "auto_response", "choices", mode.value
+            )
+            detail = ""
+            if effective["mode"] == "chance":
+                detail = self.lang_manager.translate(
+                    guild_id, "commands", "channel_manager", "auto_response", "details", "chance", chance=effective["chance"]
+                )
+            elif effective["mode"] == "relevant" and effective["keywords"]:
+                detail = self.lang_manager.translate(
+                    guild_id, "commands", "channel_manager", "auto_response", "details", "keywords", keywords=", ".join(effective["keywords"])
+                )
+            success_message = self.lang_manager.translate(
+                guild_id, "commands", "channel_manager", "auto_response", "responses", "success", channel=f"<#{channel_id}>", enabled=mode_name
+            ) + (f"\n{detail}" if detail else "")
+        else:
+            success_message = f"Set auto-response for <#{channel_id}> to: {mode.name}"
+
         await interaction.edit_original_response(content=success_message)
+
+    def record_bot_reply(self, channel_id: int, user_id: int) -> None:
+        """Remember that the bot just replied to this user in this channel."""
+        now = time.monotonic()
+        self._last_reply_at[(int(channel_id), int(user_id))] = now
+        if len(self._last_reply_at) > 5000:
+            cutoff = now - CONVERSATION_WINDOW_SECONDS
+            self._last_reply_at = {k: t for k, t in self._last_reply_at.items() if t >= cutoff}
+
+    def should_auto_respond(self, message: discord.Message, guild_id: str) -> bool:
+        """Whether an unprompted message in this channel gets a reply under its auto-response mode."""
+        settings = get_auto_response_settings(self.load_config(guild_id), str(message.channel.id))
+        if settings["mode"] == "off":
+            return False
+        last = self._last_reply_at.get((message.channel.id, message.author.id))
+        in_conversation = last is not None and time.monotonic() - last < CONVERSATION_WINDOW_SECONDS
+        me = message.guild.me if message.guild else None
+        bot_names = [getattr(self.bot.user, "name", ""), getattr(me, "display_name", "")]
+        return decide_auto_response(settings, message.content, bot_names, in_conversation)
 
     def is_allowed_channel(self, channel: Union[discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.Thread], guild_id: str) -> Tuple[bool, bool, Optional[str]]:
         """

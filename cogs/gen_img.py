@@ -35,6 +35,7 @@ from llm.utils.media import image_to_base64
 from .language_manager import LanguageManager
 from llm.utils.send_message import safe_edit_message
 from function import func
+from addons.rate_limiter import format_wait
 from addons.logging import get_logger
 
 # The Gemini SDK call has no timeout of its own.
@@ -193,12 +194,21 @@ class ImageGenerationCog(commands.Cog, name="ImageGenerationCog"):
             self.logger.error(f"Image generation process error: {str(e)}")
             return {"error": error_message}
 
-    @app_commands.command(name="generate_image", description="生成或編輯圖片")
-    @app_commands.describe(prompt="用於生成或編輯圖片的提示文字")
+    @app_commands.command(name="generate_image", description="Generate or edit an image")
+    @app_commands.describe(prompt="What to generate, or how to change the image")
     async def generate_image_command(self, interaction: discord.Interaction, prompt: str):
+        guild_id = str(interaction.guild_id)
+        limiter = getattr(self.bot, "rate_limiter", None)
+        retry_after = limiter.hit("image", interaction.user.id) if limiter else 0
+        if retry_after:
+            await interaction.response.send_message(
+                self.lang_manager.translate(guild_id, "errors", "rate_limited", retry_after=format_wait(retry_after)),
+                ephemeral=True,
+            )
+            return
+
         await interaction.response.defer(thinking=True)
         
-        guild_id = str(interaction.guild_id)
         channel_id = interaction.channel_id
         
         input_images = []

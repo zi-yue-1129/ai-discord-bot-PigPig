@@ -12,7 +12,7 @@ import discord
 import pytest
 
 from cogs.remind import ReminderCog
-from cogs.remind_lib.store import ReminderStore
+from cogs.remind_lib.store import ReminderStore, next_occurrence
 from llm import reminder_writer
 from llm.reminder_writer import ReminderRequest, compose_reminder, format_history
 
@@ -598,3 +598,72 @@ async def test_a_reminder_can_be_cancelled_by_its_creator_only(tmp_path: Path) -
     assert stranger.sent[0]["content"].startswith("commands/remind/responses/cancel_not_found")
     assert owner.sent[0]["content"].startswith("commands/remind/responses/cancel_success")
     assert cog.store.pending() == []
+
+
+# --------------------------------------------------------------- repeating
+
+
+def test_next_occurrence_is_the_first_one_after_now() -> None:
+    day = 24 * 3600
+    assert next_occurrence(NOW, "none", NOW + 5) is None
+    assert next_occurrence(NOW, "daily", NOW + 5) == NOW + day
+    # Missed three days while the bot was down: the next one is still in the future, at the same time of day.
+    assert next_occurrence(NOW, "daily", NOW + 3 * day + 60) == NOW + 4 * day
+    assert next_occurrence(NOW, "weekly", NOW) == NOW + 7 * day
+
+
+def test_an_old_database_gains_the_repeat_column(tmp_path: Path) -> None:
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        "CREATE TABLE reminders (id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, channel_id INTEGER NOT NULL,"
+        " creator_id INTEGER NOT NULL, target_id INTEGER NOT NULL, message TEXT NOT NULL, created_at REAL NOT NULL,"
+        " due_at REAL NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'pending');"
+        "INSERT INTO reminders (guild_id, channel_id, creator_id, target_id, message, created_at, due_at)"
+        " VALUES ('7', 70, 1, 2, 'old one', 0, 10);"
+    )
+    connection.commit()
+    connection.close()
+
+    store = ReminderStore(path)
+
+    assert [(r.message, r.repeat) for r in store.pending()] == [("old one", "none")]
+
+
+def test_an_unknown_repeat_is_refused(store: ReminderStore) -> None:
+    with pytest.raises(ValueError):
+        store.add(guild_id="7", channel_id=70, creator_id=1, target_id=2, message="x", created_at=NOW, due_at=NOW, repeat="hourly")
+
+
+@pytest.mark.asyncio
+async def test_a_daily_reminder_moves_to_tomorrow_after_it_is_sent(
+    tmp_path: Path, writer_text: Dict[str, Any]
+) -> None:
+    channel = _Channel()
+    cog = _make_cog(tmp_path, channel)
+    cog.store.add(guild_id="7", channel_id=70, creator_id=1, target_id=2, message="stretch",
+                  created_at=NOW, due_at=NOW, repeat="daily")
+
+    await cog._deliver_due(NOW + 5)
+
+    assert len(channel.sent) == 1
+    [pending] = cog.store.pending()
+    assert pending.due_at == NOW + 24 * 3600 and pending.repeat == "daily"
+
+
+@pytest.mark.asyncio
+async def test_a_repeating_reminder_that_cannot_be_delivered_skips_to_the_next_time(
+    tmp_path: Path, writer_text: Dict[str, Any]
+) -> None:
+    cog = _make_cog(tmp_path, channel=None, dm=_Dm(fail=True))
+    cog.store.add(guild_id="7", channel_id=70, creator_id=1, target_id=2, message="stretch",
+                  created_at=NOW, due_at=NOW, repeat="weekly")
+
+    for attempt in range(cog.MAX_DELIVERY_ATTEMPTS):
+        for reminder in cog.store.pending():
+            await cog._deliver_one(reminder, NOW + attempt * 60)
+
+    [pending] = cog.store.pending()
+    assert pending.due_at == NOW + 7 * 24 * 3600 and pending.attempts == 0

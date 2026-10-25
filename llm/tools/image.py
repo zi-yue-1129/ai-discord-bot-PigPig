@@ -37,6 +37,7 @@ from PIL import Image
 from langchain_core.tools import tool
 
 from function import func
+from addons.rate_limiter import format_wait
 
 if TYPE_CHECKING:
     from cogs.gen_img import ImageGenerationCog
@@ -110,6 +111,17 @@ class ImageTools:
             if not cog:
                 logger.error("ImageGenerationCog not found.")
                 return "Error: Image generation cog is not available."
+
+            # Per-user image limit set by the bot owner (base.yaml rate_limits.image)
+            limiter = getattr(bot, "rate_limiter", None)
+            requester = getattr(getattr(runtime, "message", None), "author", None)
+            if limiter and requester is not None:
+                retry_after = limiter.hit("image", requester.id)
+                if retry_after:
+                    return (
+                        "Error: This user has reached their image generation limit. "
+                        f"Tell them they can try again in about {format_wait(retry_after)} seconds."
+                    )
 
             # Download input image if URL is provided
             input_images = []

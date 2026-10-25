@@ -1,7 +1,7 @@
 {
     "responses": {
         "received": "Reminder received",
-        "confirm_setup": "Confirm setting reminder",
+        "confirm_setup": "✅ Reminder set: in {duration} I'll remind {user} about \"{message}\"",
         "future_time_required": "Future time required",
         "invalid_format": "Invalid format",
         "reminder_message": "Reminder: {message}",
@@ -16,7 +16,17 @@
         "cancel_not_found": "No reminder #{id} of yours was found (it may have been sent already, or you did not set it)."
     },
     "time_units": {
-        "seconds": "seconds",
-        "unit_key": "time unit"
+        "seconds": "s",
+        "unit_key": "time unit",
+        "years": "y",
+        "months": "mo",
+        "weeks": "w",
+        "days": "d",
+        "hours": "h",
+        "minutes": "m"
+    },
+    "repeat": {
+        "daily": "(repeats daily)",
+        "weekly": "(repeats weekly)"
     }
 }

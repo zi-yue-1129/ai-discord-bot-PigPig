@@ -67,7 +67,8 @@ class UpdateManagerCog(commands.Cog):
             self.logger.error(f"翻譯錯誤: {e}")
             return "Translation error"
     
-    @app_commands.command(name="update_check", description="檢查是否有可用更新")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.command(name="update_check", description="Check for available updates")
     async def check_update(self, interaction: discord.Interaction):
         """檢查更新命令"""
         guild_id = str(interaction.guild_id) if interaction.guild_id else "0"
@@ -154,7 +155,8 @@ class UpdateManagerCog(commands.Cog):
             )
             await interaction.edit_original_response(embed=embed)
     
-    @app_commands.command(name="update_now", description="立即執行更新（僅限擁有者）")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.command(name="update_now", description="Update now (owner only)")
     async def update_now(self, interaction: discord.Interaction, force: bool = False):
         """
         立即更新命令
@@ -249,7 +251,8 @@ class UpdateManagerCog(commands.Cog):
             )
             await interaction.edit_original_response(embed=embed)
     
-    @app_commands.command(name="update_status", description="查看更新系統狀態")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.command(name="update_status", description="Show the update system status")
     async def update_status(self, interaction: discord.Interaction):
         """更新狀態查詢"""
         guild_id = str(interaction.guild_id) if interaction.guild_id else "0"
@@ -281,7 +284,8 @@ class UpdateManagerCog(commands.Cog):
             )
             await interaction.response.send_message(embed=embed)
     
-    @app_commands.command(name="update_config", description="配置自動更新設定（僅限擁有者）")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.command(name="update_config", description="Configure automatic updates (owner only)")
     async def configure_update(self, interaction: discord.Interaction):
         """更新配置命令"""
         guild_id = str(interaction.guild_id) if interaction.guild_id else "0"

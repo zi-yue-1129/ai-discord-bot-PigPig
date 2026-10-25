@@ -43,6 +43,16 @@
     "auto_response": {
         "responses": {
             "success": "Channel {channel} auto response set to: {enabled}"
+        },
+        "choices": {
+            "off": "Off",
+            "all": "Every message",
+            "chance": "By chance",
+            "relevant": "Only when relevant"
+        },
+        "details": {
+            "chance": "Reply chance: {chance}%",
+            "keywords": "Extra keywords: {keywords}"
         }
     }
 }

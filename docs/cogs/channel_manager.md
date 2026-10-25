@@ -66,11 +66,17 @@ Removes a channel from the whitelist or blacklist.
 **Permissions**: Administrator only
 
 ### `/auto_response`
-Enables or disables automatic bot responses for a specific channel.
+Sets how the bot replies, unprompted, to messages in a channel.
 
 **Parameters**:
 - `channel`: Target Discord text channel
-- `enabled`: Boolean to enable/disable auto-response
+- `mode`: `off`, `all` (every message), `chance` (a share of messages) or `relevant` (only when the topic is relevant)
+- `chance`: For `chance`, the percent of messages that get a reply (1-100, default 20)
+- `keywords`: For `relevant`, extra comma-separated words that count as relevant
+
+In `relevant` mode the bot replies when a message names it (its username or server nickname) or one of the
+keywords, and keeps replying for 3 minutes to someone it has just answered. Unprompted replies count toward the
+per-user chat limit in `base.yaml` (`rate_limits`); a user who is over it is skipped quietly.
 
 **Permissions**: Administrator only
 
@@ -91,7 +97,7 @@ class ChannelManager(commands.Cog):
     async def set_channel_mode(self, interaction: discord.Interaction, channel: discord.TextChannel, mode: app_commands.Choice[str])
     async def add_channel_command(self, interaction: discord.Interaction, channel: discord.TextChannel, list_type: app_commands.Choice[str])
     async def remove_channel_command(self, interaction: discord.Interaction, channel: discord.TextChannel, list_type: app_commands.Choice[str])
-    async def auto_response_command(self, interaction: discord.Interaction, channel: discord.TextChannel, enabled: bool)
+    async def auto_response_command(self, interaction, channel, mode, chance=None, keywords=None)
 ```
 
 ### Configuration System
@@ -102,7 +108,8 @@ class ChannelManager(commands.Cog):
   "mode": "unrestricted",  // Server-wide mode
   "whitelist": [],         // Array of channel IDs
   "blacklist": [],         // Array of channel IDs
-  "auto_response": {},     // Channel ID -> boolean mapping
+  "auto_response": {},     // Channel ID -> boolean mapping (on/off; the dashboard toggles this)
+  "auto_response_settings": {},  // Channel ID -> {"mode", "chance", "keywords"}; missing = "all"
   "channel_modes": {}      // Channel ID -> mode string mapping
 }
 ```

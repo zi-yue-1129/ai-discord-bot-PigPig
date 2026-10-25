@@ -106,7 +106,7 @@ class SystemPromptCommands(commands.Cog):
         """取得系統提示管理器實例"""
         return self.manager
     
-    @app_commands.command(name="system_prompt", description="系統提示管理 - 統一管理介面")
+    @app_commands.command(name="system_prompt", description="Manage the bot's system prompt")
     @handle_system_prompt_error
     async def system_prompt(self, interaction: discord.Interaction):
         """統一的系統提示管理命令 - 主選單介面"""
