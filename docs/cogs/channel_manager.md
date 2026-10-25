@@ -73,6 +73,7 @@ Sets how the bot replies, unprompted, to messages in a channel.
 - `mode`: `off`, `all` (every message), `chance` (a share of messages) or `relevant` (only when the topic is relevant)
 - `chance`: For `chance`, the percent of messages that get a reply (1-100, default 20)
 - `keywords`: For `relevant`, extra comma-separated words that count as relevant
+- `reaction_chance`: The percent of unprompted replies that are just one emoji reaction instead of a message (0-100, default 0 = off). The emoji is one of the server's most used emojis this week, or a common one; it does not count toward the chat rate limit. Mentions and replies to the bot always get a real answer
 
 In `relevant` mode the bot first checks cheap rules: the message names it (its username or server nickname) or one
 of the keywords, or comes from someone it answered in the last 3 minutes. If none matches, a small model
@@ -102,7 +103,7 @@ class ChannelManager(commands.Cog):
     async def set_channel_mode(self, interaction: discord.Interaction, channel: discord.TextChannel, mode: app_commands.Choice[str])
     async def add_channel_command(self, interaction: discord.Interaction, channel: discord.TextChannel, list_type: app_commands.Choice[str])
     async def remove_channel_command(self, interaction: discord.Interaction, channel: discord.TextChannel, list_type: app_commands.Choice[str])
-    async def auto_response_command(self, interaction, channel, mode, chance=None, keywords=None)
+    async def auto_response_command(self, interaction, channel, mode, chance=None, keywords=None, reaction_chance=None)
 ```
 
 ### Configuration System
@@ -114,7 +115,7 @@ class ChannelManager(commands.Cog):
   "whitelist": [],         // Array of channel IDs
   "blacklist": [],         // Array of channel IDs
   "auto_response": {},     // Channel ID -> boolean mapping (on/off; the dashboard toggles this)
-  "auto_response_settings": {},  // Channel ID -> {"mode", "chance", "keywords"}; missing = "all"
+  "auto_response_settings": {},  // Channel ID -> {"mode", "chance", "keywords", "reaction_chance"}; missing = "all"
   "channel_modes": {}      // Channel ID -> mode string mapping
 }
 ```

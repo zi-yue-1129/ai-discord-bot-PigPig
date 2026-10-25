@@ -218,5 +218,6 @@
     "Where to post it (defaults to the announcement channel)": "投稿先（省略時はお知らせチャンネル）",
     "Local weekday to post it (default Sunday)": "投稿する曜日（既定は日曜）",
     "Local hour (0-23) to post it (default 20)": "投稿する時刻（0-23、既定は 20）",
-    "Preview this week's recap so far (only you see it)": "今週ここまでのまとめをプレビュー（自分にだけ表示）"
+    "Preview this week's recap so far (only you see it)": "今週ここまでのまとめをプレビュー（自分にだけ表示）",
+    "Percent of unprompted replies that are just an emoji reaction (0 turns it off)": "自発的な返信のうち絵文字リアクションだけにする割合（0 でオフ）"
 }

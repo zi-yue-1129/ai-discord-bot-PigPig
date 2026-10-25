@@ -7,7 +7,9 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
-from cogs.channel_manager import ChannelManager, decide_auto_response, get_auto_response_settings
+import pytest
+
+from cogs.channel_manager import GENERIC_REACTIONS, ChannelManager, decide_auto_response, get_auto_response_settings
 
 
 def test_a_channel_that_is_off_has_mode_off() -> None:
@@ -232,3 +234,76 @@ async def test_the_relevance_check_uses_its_own_model_list(monkeypatch) -> None:
 async def test_without_its_own_list_it_falls_back_to_the_chat_models(monkeypatch) -> None:
     used = await _judge_with(monkeypatch, {"message_model": ["g:chat"]})
     assert used == ["g:chat"]
+
+
+# ------------------------------------------------------------ reaction-only replies
+
+
+def test_the_reaction_chance_is_off_unless_set_and_kept_between_0_and_100() -> None:
+    on = {"auto_response": {"1": True}, "auto_response_settings": {"1": {"mode": "all", "reaction_chance": 250}}}
+
+    assert get_auto_response_settings({"auto_response": {"1": True}}, "1")["reaction_chance"] == 0
+    assert get_auto_response_settings(on, "1")["reaction_chance"] == 100
+    assert get_auto_response_settings({}, "1")["reaction_chance"] == 0
+
+
+class _ReactMessage:
+    def __init__(self, refuse: tuple = ()) -> None:
+        self.channel = SimpleNamespace(id=1)
+        self.guild = SimpleNamespace(id=9, emojis=[_Emoji("<:pig:5>")])
+        self.refuse = refuse
+        self.reactions: list = []
+
+    async def add_reaction(self, emoji: str) -> None:
+        if emoji in self.refuse:
+            import discord
+
+            raise discord.HTTPException(SimpleNamespace(status=400, reason="Unknown Emoji"), "unknown emoji")
+        self.reactions.append(emoji)
+
+
+class _Emoji:
+    available = True
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def __str__(self) -> str:
+        return self.text
+
+
+def _reacting_manager(tmp_path: Path, chance: int, terms: list) -> ChannelManager:
+    async def get_weekly_terms(guild_id: str, week: str, kind: str, limit: int) -> list:
+        assert kind == "emoji"
+        return terms
+
+    storage = SimpleNamespace(get_weekly_terms=get_weekly_terms)
+    bot = SimpleNamespace(get_cog=lambda name: SimpleNamespace(stats_storage=storage) if name == "StatsCog" else None)
+    manager = ChannelManager(bot)
+    manager.data_dir = str(tmp_path)
+    config = manager._get_default_config()
+    config["auto_response"]["1"] = True
+    config["auto_response_settings"]["1"] = {"mode": "all", "reaction_chance": chance}
+    manager.save_config("9", config)
+    return manager
+
+
+@pytest.mark.asyncio
+async def test_some_unprompted_replies_are_a_favourite_emoji(tmp_path: Path) -> None:
+    manager = _reacting_manager(tmp_path, 30, [("<:pig:5>", 40), ("<:gone:6>", 30)])
+    message = _ReactMessage()
+
+    assert await manager.react_instead(message, "9", roll=0.31) is False
+    assert message.reactions == []
+    assert await manager.react_instead(message, "9", roll=0.29) is True
+    # The server's own emoji comes first; one from another server or a deleted one is never tried.
+    assert message.reactions == ["<:pig:5>"]
+
+
+@pytest.mark.asyncio
+async def test_an_unusable_emoji_falls_back_to_a_generic_one(tmp_path: Path) -> None:
+    manager = _reacting_manager(tmp_path, 100, [("<:pig:5>", 40)])
+    message = _ReactMessage(refuse=("<:pig:5>",))
+
+    assert await manager.react_instead(message, "9") is True
+    assert len(message.reactions) == 1 and message.reactions[0] in GENERIC_REACTIONS
