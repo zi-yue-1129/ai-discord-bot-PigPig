@@ -6,7 +6,7 @@ ipc_server:
   port: 8000
   enable: false
 
-version: "v3.5.0"
+version: "v3.6.0"
 
 # Per-user usage limits, set by the bot owner.
 # Each limit allows max_requests uses per per_seconds seconds; max_requests: 0 turns it off.
