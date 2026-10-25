@@ -111,7 +111,11 @@ class FakeChannel:
         self.history_readers: Optional[set] = None  # None: everyone who sees it may read the history
         self.viewer_ids: Optional[set] = None  # None: every member sees the channel
         self.type = discord.ChannelType.text
-        self.guild = SimpleNamespace(members=[SimpleNamespace(id=i) for i in range(1, 10)])
+        # Each member has a role of their own, so permissions are worked out per member.
+        self.guild = SimpleNamespace(
+            chunked=True, owner_id=None, members=[SimpleNamespace(id=i, roles=[SimpleNamespace(id=1000 + i)]) for i in range(1, 10)]
+        )
+        self.overwrites: dict = {}
 
     def permissions_for(self, who: Any) -> Any:
         who_id = getattr(who, "id", None)
@@ -287,7 +291,16 @@ def test_mentions_fit_discord_limits() -> None:
 
 
 def _events_cog(store: EventStore, channel: FakeChannel) -> EventsCog:
-    bot = SimpleNamespace(get_channel=lambda channel_id: channel if channel_id == channel.id else None, get_cog=lambda name: None)
+    async def fetch_channel(channel_id: int) -> Any:
+        raise discord.NotFound(SimpleNamespace(status=404, reason="gone"), "gone")
+
+    async def wait_until_ready() -> None:
+        return None
+
+    bot = SimpleNamespace(
+        get_channel=lambda channel_id: channel if channel_id == channel.id else None, get_cog=lambda name: None,
+        fetch_channel=fetch_channel, wait_until_ready=wait_until_ready,
+    )
     cog = EventsCog(bot, store=store)
     cog.lang_manager = FakeLang()
     cog._now = lambda: NOW
@@ -991,3 +1004,97 @@ async def test_a_join_queued_across_the_start_time_is_refused(store: EventStore)
 
     assert interaction.followups[0]["content"] == "event_started|"
     assert store.roster(store.get(event.id)).going == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_message_edit_still_confirms_and_announces_the_promotion(store: EventStore) -> None:
+    channel = FakeChannel()
+    cog = _events_cog(store, channel)
+    event = _event(store, capacity=1)
+    store.sign_up(event.id, 1, GOING, NOW)
+    store.sign_up(event.id, 2, GOING, NOW)
+    leaving = FakeInteraction(user_id=1, message=SimpleNamespace(id=event.message_id))
+    leaving.channel = channel
+
+    async def broken_edit(**kwargs: Any) -> None:
+        raise discord.HTTPException(SimpleNamespace(status=500, reason="boom"), "boom")
+
+    leaving.edit_original_response = broken_edit
+    await cog.answer(leaving, None)
+
+    assert leaving.followups[-1]["content"] == "you_left|"
+    assert "<@2>" in channel.sent[-1][0]
+
+
+@pytest.mark.asyncio
+async def test_reminders_wait_for_the_bot_to_be_ready(store: EventStore) -> None:
+    cog = _events_cog(store, FakeChannel())
+    ready = asyncio.Event()
+    cog.bot.wait_until_ready = ready.wait
+    rounds: list = []
+
+    async def deliver(now: float) -> None:
+        rounds.append(now)
+
+    cog._deliver_due = deliver
+    cog._wake = asyncio.Event()
+    task = asyncio.create_task(cog._run_scheduler())
+    await asyncio.sleep(0.01)
+    assert rounds == []
+    ready.set()
+    await asyncio.sleep(0.01)
+    assert rounds
+    task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_an_uncached_channel_is_fetched_and_only_a_deleted_one_ends_the_reminder(store: EventStore) -> None:
+    archived = FakeChannel(channel_id=700)
+    cog = _events_cog(store, FakeChannel())
+    fetches: list = []
+
+    async def fetch_channel(channel_id: int) -> Any:
+        fetches.append(channel_id)
+        if channel_id == 700:
+            return archived
+        if channel_id == 701:
+            raise discord.HTTPException(SimpleNamespace(status=503, reason="down"), "down")
+        raise discord.NotFound(SimpleNamespace(status=404, reason="gone"), "gone")
+
+    cog.bot.fetch_channel = fetch_channel
+    events = {}
+    for channel_id in (700, 701, 702):
+        event_id = store.add(GUILD_ID, channel_id, 1, "x", NOW + 3600, 0, 15, NOW)
+        store.set_message(event_id, 9000 + channel_id)
+        store.sign_up(event_id, 1, GOING, NOW)
+        events[channel_id] = event_id
+        await cog._remind(store.get(event_id), NOW + 3000)
+
+    assert fetches == [700, 701, 702]
+    assert "<@1>" in archived.sent[0][0] and store.get(events[700]).status == REMINDED
+    assert store.get(events[701]).status == OPEN and store.get(events[701]).attempts == 1
+    assert store.get(events[702]).status == REMINDED and store.get(events[702]).attempts == 0
+
+
+def test_reminders_recorded_on_sign_ups_by_an_earlier_version_are_kept(tmp_path: Any) -> None:
+    import sqlite3
+
+    path = tmp_path / "events.db"
+    old = sqlite3.connect(path)
+    old.executescript(
+        """
+        CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL, channel_id INTEGER NOT NULL,
+            message_id INTEGER, creator_id INTEGER NOT NULL, title TEXT NOT NULL, starts_at REAL NOT NULL,
+            capacity INTEGER NOT NULL DEFAULT 0, remind_minutes INTEGER NOT NULL DEFAULT 15,
+            status TEXT NOT NULL DEFAULT 'open', attempts INTEGER NOT NULL DEFAULT 0, next_try_at REAL, created_at REAL NOT NULL);
+        CREATE TABLE event_signups (event_id INTEGER NOT NULL, user_id INTEGER NOT NULL, status TEXT NOT NULL,
+            joined_at REAL NOT NULL, seq INTEGER NOT NULL, reminded INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (event_id, user_id));
+        INSERT INTO events (id, guild_id, channel_id, message_id, creator_id, title, starts_at, created_at)
+            VALUES (1, 42, 500, 1001, 1, 'x', 1800003600, 1800000000);
+        INSERT INTO event_signups VALUES (1, 1, 'going', 0, 1, 1), (1, 2, 'going', 0, 2, 0);
+        """
+    )
+    old.commit()
+    old.close()
+
+    assert EventStore(path).reminded_users(1) == [1]

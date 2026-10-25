@@ -217,7 +217,11 @@ class EventsCog(commands.Cog):
                 changed = True
             after = self.store.roster(event)
             if changed:
-                await interaction.edit_original_response(embed=self.render(event, after), view=self._localised_view(guild_id))
+                try:
+                    await interaction.edit_original_response(embed=self.render(event, after), view=self._localised_view(guild_id))
+                except discord.HTTPException:
+                    # The answer is saved either way; the confirmation and the promotion notice still go out.
+                    self.logger.warning(f"events: could not update the message of event {event.id}", exc_info=True)
         await interaction.followup.send(self._answer_text(guild_id, user_id, status, after), ephemeral=True)
         promoted = [user for user in after.going if user in before.waiting]
         if promoted:
@@ -366,6 +370,8 @@ class EventsCog(commands.Cog):
     # ------------------------------------------------------------- reminders
     async def _run_scheduler(self) -> None:
         """Sends due reminders, then sleeps until the next one or until an event is created."""
+        # Before the bot is ready its channel cache is empty: every event would look like its channel was gone.
+        await self.bot.wait_until_ready()
         while True:
             try:
                 await self._deliver_due(self._now())
@@ -402,9 +408,8 @@ class EventsCog(commands.Cog):
                 # Nobody (left) to remind, or the bot was off long past the start.
                 self.store.mark_reminded(event.id)
                 return
-            channel = self.bot.get_channel(event.channel_id)
+            channel = await self._resolve_channel(event, now)
             if channel is None:
-                self._fail(event, now)
                 return
             key = "reminder" if event.starts_at > now else "reminder_now"
             prefix = self._t(event.guild_id, key, title=self._shown_title(event, channel), when=f"<t:{int(event.starts_at)}:R>")
@@ -421,6 +426,24 @@ class EventsCog(commands.Cog):
                     self._fail(event, now)
                     return
             self.store.mark_reminded(event.id)
+
+    async def _resolve_channel(self, event: Event, now: float) -> Any:
+        """The event's channel, fetched when it is not cached (e.g. an archived thread).
+
+        Only a channel that no longer exists ends the reminder; other errors count as a failed attempt.
+        """
+        channel = self.bot.get_channel(event.channel_id)
+        if channel is not None:
+            return channel
+        try:
+            return await self.bot.fetch_channel(event.channel_id)
+        except discord.NotFound:
+            self.logger.info(f"events: channel of event {event.id} is gone; no reminder")
+            self.store.mark_reminded(event.id)
+        except discord.HTTPException:
+            self.logger.warning(f"events: could not fetch the channel of event {event.id}", exc_info=True)
+            self._fail(event, now)
+        return None
 
     def _fail(self, event: Event, now: float) -> None:
         """Counts a failed reminder; after the last attempt the event is not tried again."""

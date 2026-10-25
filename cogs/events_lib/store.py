@@ -101,6 +101,13 @@ class EventStore:
             columns = {row[1] for row in db.execute("PRAGMA table_info(events)")}
             if "next_try_at" not in columns:
                 db.execute("ALTER TABLE events ADD COLUMN next_try_at REAL")
+            # Reminders were once recorded on the sign-up; keep them, so nobody is mentioned twice.
+            signup_columns = {row[1] for row in db.execute("PRAGMA table_info(event_signups)")}
+            if "reminded" in signup_columns:
+                db.execute(
+                    "INSERT OR IGNORE INTO event_reminded (event_id, user_id)"
+                    " SELECT event_id, user_id FROM event_signups WHERE reminded = 1"
+                )
 
     @contextmanager
     def _session(self) -> Iterator[sqlite3.Connection]:
