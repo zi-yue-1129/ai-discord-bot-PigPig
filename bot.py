@@ -317,14 +317,15 @@ class PigPig(commands.Bot):
                 )
                 wants_reply = directly_asked or auto_reply
                 if is_allowed and wants_reply:
-                    # Some unprompted replies are just an emoji reaction (per-channel reaction chance).
-                    if auto_reply and await channel_manager.react_instead(message, guild_id):
-                        return
                     retry_after = self.rate_limiter.hit("chat", message.author.id)
                     if retry_after:
                         # Unprompted auto-replies are skipped quietly; a direct ask gets told why.
                         if is_mentioned or is_reply_to_bot:
                             await self._tell_rate_limited(message, "chat", retry_after)
+                        return
+                    # Some unprompted replies are just an emoji reaction (per-channel reaction chance);
+                    # a reaction counts as a reply for the rate limit above.
+                    if auto_reply and await channel_manager.react_instead(message, guild_id):
                         return
 
                     # Check if this is the first guild message after a version update.

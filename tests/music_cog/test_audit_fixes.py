@@ -72,6 +72,22 @@ async def test_single_loop_replays_the_song_while_audio_is_still_playing(
     assert cog.state_manager.get_state(GUILD_ID).consecutive_failures == 0
 
 
+@pytest.mark.asyncio
+async def test_each_single_loop_repeat_is_counted_as_a_play(
+    cog: YTMusic, ctx: PlaybackContext, voice_client: FakeVoiceClient, wired_player: List[Any]
+) -> None:
+    song = make_song(1)
+    cog.state_manager.update_state(GUILD_ID, current_song=song)
+
+    await cog._handle_single_loop(ctx, cog.state_manager.get_state(GUILD_ID), voice_client)
+    first = song["play_event_id"]
+    cog.state_manager.update_state(GUILD_ID, current_song=song)
+    await cog._handle_single_loop(ctx, cog.state_manager.get_state(GUILD_ID), voice_client)
+
+    assert song["play_event_id"] != first
+    assert [plays for _, _, plays, _ in cog._taste_store.top_played(GUILD_ID, 0, 1e12)] == [2]
+
+
 # ------------------------------------------------------- idle timer against play()
 
 

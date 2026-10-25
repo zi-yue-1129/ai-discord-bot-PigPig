@@ -307,3 +307,33 @@ async def test_an_unusable_emoji_falls_back_to_a_generic_one(tmp_path: Path) -> 
 
     assert await manager.react_instead(message, "9") is True
     assert len(message.reactions) == 1 and message.reactions[0] in GENERIC_REACTIONS
+
+
+@pytest.mark.asyncio
+async def test_a_failed_emoji_lookup_means_a_normal_reply_and_lookups_are_cached(tmp_path: Path) -> None:
+    calls: list = []
+
+    async def broken(guild_id: str, week: str, kind: str, limit: int) -> list:
+        calls.append(guild_id)
+        raise RuntimeError("database is locked")
+
+    manager = _reacting_manager(tmp_path, 100, [])
+    manager.bot.get_cog("StatsCog").stats_storage.get_weekly_terms = broken
+    message = _ReactMessage()
+
+    # The lookup failure gives no favourites, so a generic emoji is used instead.
+    assert await manager.react_instead(message, "9") is True
+    assert await manager.react_instead(message, "9") is True
+    assert calls == ["9"]
+
+
+@pytest.mark.asyncio
+async def test_an_unexpected_error_never_stops_the_reply(tmp_path: Path) -> None:
+    manager = _reacting_manager(tmp_path, 100, [])
+
+    def explode(guild_id: str) -> dict:
+        raise ValueError("bad config")
+
+    manager.load_config = explode
+
+    assert await manager.react_instead(_ReactMessage(), "9") is False

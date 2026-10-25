@@ -27,6 +27,8 @@ DEFAULT_AUTO_RESPONSE_CHANCE = 20
 GENERIC_REACTIONS = ("😂", "👍", "❤️", "👀", "🤣", "😮", "🔥", "🥹")
 # How many of the server's most used emojis this week a reaction is picked from.
 FAVOURITE_REACTIONS = 8
+# A server's favourite emojis are looked up again after this long, not for every reaction.
+FAVOURITES_CACHE_SECONDS = 600
 
 
 @dataclass(frozen=True)
@@ -134,6 +136,8 @@ class ChannelManager(commands.Cog):
         self._last_reply_at: Dict[Tuple[int, int], float] = {}
         # channel_id -> when the model last judged a message there ("relevant" mode).
         self._last_judged_at: Dict[int, float] = {}
+        # guild id -> (looked up at, favourite emojis); see _favourite_emojis.
+        self._favourites: Dict[int, Tuple[float, List[str]]] = {}
         self.tuning = AutoResponseTuning.from_config(getattr(base_config, "auto_response", None))
         os.makedirs(self.data_dir, exist_ok=True)
 
@@ -474,37 +478,59 @@ class ChannelManager(commands.Cog):
     async def react_instead(self, message: discord.Message, guild_id: str, roll: Optional[float] = None) -> bool:
         """For an unprompted reply: maybe just add one emoji reaction instead of writing a message.
 
+        Never raises: when anything goes wrong the bot simply writes its normal reply.
+
         Returns:
             True when the bot reacted, so no text reply should be written.
         """
-        chance = get_auto_response_settings(self.load_config(guild_id), str(message.channel.id))["reaction_chance"]
-        roll = random.random() if roll is None else roll
-        if roll * 100 >= chance:
-            return False
-        for emoji in await self._reaction_candidates(message.guild):
-            try:
-                await message.add_reaction(emoji)
-                return True
-            except discord.HTTPException:
-                # Unknown or unusable emoji (deleted, from another server): try the next one.
-                log.debug(f"Could not react with {emoji!r}; trying another emoji")
+        try:
+            chance = get_auto_response_settings(self.load_config(guild_id), str(message.channel.id))["reaction_chance"]
+            roll = random.random() if roll is None else roll
+            if roll * 100 >= chance:
+                return False
+            for emoji in await self._reaction_candidates(message.guild):
+                try:
+                    await message.add_reaction(emoji)
+                    return True
+                except discord.HTTPException:
+                    # Unknown or unusable emoji (deleted, from another server): try the next one.
+                    log.debug(f"Could not react with {emoji!r}; trying another emoji")
+        except Exception:
+            log.warning("Could not decide on an emoji reaction; replying normally", exc_info=True)
         return False
 
     async def _reaction_candidates(self, guild: Optional[discord.Guild]) -> List[str]:
         """Emojis to try, in order: one of the server's favourites this week, then generic ones."""
-        favourites: List[str] = []
-        stats_cog = self.bot.get_cog("StatsCog") if guild is not None and hasattr(self.bot, "get_cog") else None
-        storage = getattr(stats_cog, "stats_storage", None)
-        if storage is not None:
-            from cogs.memory.db.stats_storage import week_start
-
-            usable = {str(e) for e in getattr(guild, "emojis", []) if getattr(e, "available", True)}
-            terms = await storage.get_weekly_terms(str(guild.id), week_start(datetime.now()), "emoji", FAVOURITE_REACTIONS)
-            favourites = [term for term, _ in terms if not term.startswith("<") or term in usable]
+        favourites = list(await self._favourite_emojis(guild)) if guild is not None else []
         generic = list(GENERIC_REACTIONS)
         random.shuffle(favourites)
         random.shuffle(generic)
         return favourites[:1] + generic[:2]
+
+    async def _favourite_emojis(self, guild: discord.Guild) -> List[str]:
+        """The server's most used emojis this week that the bot can use, cached for a while.
+
+        A failed lookup (e.g. the database is busy) gives no favourites rather than an error.
+        """
+        now = time.monotonic()
+        cached = self._favourites.get(guild.id)
+        if cached is not None and now - cached[0] < FAVOURITES_CACHE_SECONDS:
+            return cached[1]
+        favourites: List[str] = []
+        stats_cog = self.bot.get_cog("StatsCog") if hasattr(self.bot, "get_cog") else None
+        storage = getattr(stats_cog, "stats_storage", None)
+        if storage is not None:
+            from cogs.memory.db.stats_storage import week_start
+
+            try:
+                terms = await storage.get_weekly_terms(str(guild.id), week_start(datetime.now()), "emoji", FAVOURITE_REACTIONS)
+            except Exception:
+                log.warning(f"Could not look up favourite emojis in guild {guild.id}", exc_info=True)
+                terms = []
+            usable = {str(e) for e in getattr(guild, "emojis", []) if getattr(e, "available", True)}
+            favourites = [term for term, _ in terms if not term.startswith("<") or term in usable]
+        self._favourites[guild.id] = (now, favourites)
+        return favourites
 
     async def should_auto_respond(self, message: discord.Message, guild_id: str) -> bool:
         """Whether an unprompted message in this channel gets a reply under its auto-response mode.

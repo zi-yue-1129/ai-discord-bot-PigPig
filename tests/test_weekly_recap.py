@@ -123,14 +123,23 @@ class FakeMessage:
 
 
 class FakeChannel:
-    def __init__(self, channel_id: int, messages: Optional[dict] = None) -> None:
+    def __init__(self, channel_id: int, messages: Optional[dict] = None, public: bool = True) -> None:
         self.id = channel_id
         self.name = f"chan{channel_id}"
         self.mention = f"<#{channel_id}>"
         self.messages = messages or {}
+        self.public = public
         self.sent: List[dict] = []
+        self.fail_sends = 0
+
+    def permissions_for(self, role: Any) -> SimpleNamespace:
+        assert role == "@everyone"
+        return SimpleNamespace(view_channel=self.public, read_message_history=self.public)
 
     async def send(self, content: Any = None, **kwargs: Any) -> None:
+        if self.fail_sends:
+            self.fail_sends -= 1
+            raise discord.HTTPException(SimpleNamespace(status=503, reason="Service Unavailable"), "try again")
         self.sent.append(kwargs)
 
     async def fetch_message(self, message_id: int) -> FakeMessage:
@@ -147,15 +156,24 @@ class FakeMember:
         self.mention = f"<@{member_id}>"
 
 
+class ChannelMap(dict):
+    """Channels by id, iterated like ``guild.channels`` (the channels themselves)."""
+
+    def __iter__(self) -> Any:
+        return iter(list(self.values()))
+
+
 class FakeGuild:
     def __init__(self) -> None:
         self.id = GUILD_ID
         self.name = "Pig Land"
         self.system_channel = None
+        self.default_role = "@everyone"
         self.channel = FakeChannel(500, {2: FakeMessage("best joke ever")})
-        self.channels = {500: self.channel, 501: FakeChannel(501)}
+        self.channels = ChannelMap({500: self.channel, 501: FakeChannel(501)})
         self.members = {i: FakeMember(i) for i in (10, 11, 12, 13)}
         self.members[99] = FakeMember(99, bot=True)
+        self.threads: list = []
 
     def get_channel(self, channel_id: int) -> Optional[FakeChannel]:
         return self.channels.get(channel_id)
@@ -180,8 +198,10 @@ class FakeCollector:
 
 
 class FakeStorage:
-    async def get_weekly_terms(self, guild_id: str, week: str, kind: str, limit: int) -> list:
+    async def get_weekly_terms(self, guild_id: str, week: str, kind: str, limit: int, channel_ids: Any = None) -> list:
         assert week == "2026-10-19"
+        if channel_ids is not None and "500" not in channel_ids:
+            return []
         return [("😂", 12)] if kind == "emoji" else [("pizza", 8), ("exam", 3)]
 
     async def reactions_by_author(self, guild_id: str, since: float, until: float) -> list:
@@ -315,3 +335,85 @@ def test_weekday_choices_cover_the_week() -> None:
     assert [choice.value for choice in community_module._WEEKDAYS] == list(range(7))
     assert timedelta(days=6) + MONDAY == datetime(2026, 10, 25, tzinfo=TAIPEI)
     assert SUNDAY_EVENING.astimezone(timezone.utc).hour == 12
+
+
+@pytest.mark.asyncio
+async def test_private_channels_are_never_named_or_quoted(cog: CommunityCog, guild: FakeGuild, store: CommunityStore) -> None:
+    secret = FakeChannel(502, {4: FakeMessage("staff only secret")}, public=False)
+    guild.channels[502] = secret
+    cog.bot.stats_collector.message_counts_by_channel = lambda *args: _rows([("502", 90), ("500", 20)])
+
+    async def top_reacted(*args: Any) -> list:
+        return [
+            {"message_id": "4", "channel_id": "502", "author_id": "11", "count": 9},
+            {"message_id": "2", "channel_id": "500", "author_id": "11", "count": 5},
+        ]
+
+    cog.bot.get_cog("StatsCog").stats_storage.get_top_reacted_messages = top_reacted
+    embed = await cog.post_weekly_recap(guild, store.get_settings(GUILD_ID), MONDAY, SUNDAY_EVENING)
+
+    fields = {field.name: field.value for field in embed.fields}
+    assert fields["weekly_channels|"] == "<#500> · 20"
+    assert "best joke ever" in fields["weekly_quote|count=5"]
+    assert "secret" not in str(fields) and "502" not in str(fields)
+
+
+@pytest.mark.asyncio
+async def test_hot_words_and_emojis_only_count_public_channels(cog: CommunityCog, guild: FakeGuild, store: CommunityStore) -> None:
+    guild.channels[502] = FakeChannel(502, public=False)
+    seen: list = []
+
+    async def terms(guild_id: str, week: str, kind: str, limit: int, channel_ids: Any = None) -> list:
+        seen.append(channel_ids)
+        return []
+
+    cog.bot.get_cog("StatsCog").stats_storage.get_weekly_terms = terms
+    await cog.post_weekly_recap(guild, store.get_settings(GUILD_ID), MONDAY, SUNDAY_EVENING)
+
+    assert seen and all(sorted(ids) == ["500", "501"] for ids in seen)
+
+
+async def _rows(rows: list) -> list:
+    return rows
+
+
+@pytest.mark.asyncio
+async def test_spam_words_are_left_out_and_fields_fit_discord(cog: CommunityCog, guild: FakeGuild, store: CommunityStore) -> None:
+    async def terms(guild_id: str, week: str, kind: str, limit: int, channel_ids: Any = None) -> list:
+        return [("😂", 12)] if kind == "emoji" else [("哈" * 1100, 50), ("pizza", 8)]
+
+    cog.bot.get_cog("StatsCog").stats_storage.get_weekly_terms = terms
+    embed = await cog.post_weekly_recap(guild, store.get_settings(GUILD_ID), MONDAY, SUNDAY_EVENING)
+
+    fields = {field.name: field.value for field in embed.fields}
+    assert fields["weekly_words|"] == "pizza"
+    long = Recap(week="2026-10-19", start=MONDAY, end=SUNDAY_EVENING, total=60, words=[("x" * 30, 1)] * 60)
+    embed = format_recap(long, lambda key, **kw: key, lambda title_id: title_id, "Pig Land", None)
+    assert all(len(field.value) <= 1024 for field in embed.fields)
+
+
+@pytest.mark.asyncio
+async def test_a_recap_that_could_not_be_posted_is_retried(cog: CommunityCog, guild: FakeGuild, store: CommunityStore) -> None:
+    store.update_settings(GUILD_ID, weekly_enabled=True, weekly_channel_id=501)
+    cog._now = lambda: SUNDAY_EVENING.timestamp()
+    guild.channels[501].fail_sends = 1
+
+    await cog.run_daily_jobs()
+    assert guild.channels[501].sent == [] and store.titles_of(GUILD_ID, 11) == []
+    cog._now = lambda: SUNDAY_EVENING.timestamp() + CommunityCog.CHECK_SECONDS
+    await cog.run_daily_jobs()
+    await cog.run_daily_jobs()
+
+    assert len(guild.channels[501].sent) == 1
+    assert store.titles_of(GUILD_ID, 11) == ["funny", "talker"]
+
+
+def test_a_thread_whose_parent_is_not_cached_is_left_out(guild: FakeGuild) -> None:
+    from cogs.community_lib.recap import public_channel_ids
+
+    def no_parent(role: Any) -> Any:
+        raise discord.ClientException("Parent channel not found")
+
+    guild.threads = [SimpleNamespace(id=900, type=discord.ChannelType.public_thread, permissions_for=no_parent)]
+
+    assert sorted(public_channel_ids(guild)) == ["500", "501"]
