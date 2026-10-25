@@ -91,10 +91,14 @@ async def list_guilds(
 _ALLOWED_CONFIGS = {"base", "llm", "memory", "music"}
 
 _CONFIG_ALLOWED_KEYS: dict[str, set[str]] = {
-    "base": {"prefix", "activity", "ipc_server", "version", "logging", "dashboard"},
+    "base": {
+        "prefix", "activity", "ipc_server", "version", "logging", "dashboard",
+        "rate_limits", "auto_response", "community",
+    },
     "llm": {
         "model_priorities", "google_search_agent",
         "llm_call_timeout", "reasoning_optimization_prompt", "ollama_url", "vllm_url",
+        "max_output_tokens", "openai_endpoints",
     },
     "memory": {
         "enabled", "procedural_cache_ttl", "procedural_data_path", "episodic_data_path",
@@ -103,8 +107,12 @@ _CONFIG_ALLOWED_KEYS: dict[str, set[str]] = {
         "ollama_url", "vllm_url", "provider_options", "vector_search_k", "keyword_search_k",
         "fetch_batch_size", "process_batch_size",
         "message_threshold", "time_threshold", "processing_concurrency", "processing_delay",
+        "procedural_max_cache_size",
     },
-    "music": {"music_temp_base", "ffmpeg", "youtube_cookies_path"},
+    "music": {
+        "music_temp_base", "ffmpeg", "youtube_cookies_path",
+        "ai", "autoplay", "library", "lyrics", "sources", "streaming",
+    },
 }
 
 
@@ -194,11 +202,15 @@ async def write_config(
 
 
 def _mask_secrets(data: Any, depth: int = 0) -> None:
-    """Recursively mask values that look like API keys."""
+    """Recursively mask values that look like API keys.
+
+    Fields ending in ``_env`` hold the name of an environment variable, not a secret, so
+    they stay readable (masking them would corrupt the name when the page saves it back).
+    """
     if depth > 10 or not isinstance(data, dict):
         return
     for key, value in data.items():
-        if isinstance(value, str) and any(
+        if isinstance(value, str) and not key.lower().endswith("_env") and any(
             kw in key.lower() for kw in ("key", "secret", "token", "password")
         ):
             if len(value) > 8:
