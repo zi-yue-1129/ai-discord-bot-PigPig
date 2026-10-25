@@ -85,7 +85,13 @@ def _visible(guild: Any, rows: Sequence[Tuple[Any, int]], hidden: Set[int], limi
 
 
 def is_public(guild: Any, channel: Any) -> bool:
-    """Whether every member (the @everyone role) can see ``channel`` and read its history."""
+    """Whether every member (the @everyone role) can see ``channel`` and read its history.
+
+    A private thread is never public: its permissions are inherited from its (maybe public)
+    parent, but only the people added to it can read it.
+    """
+    if getattr(channel, "type", None) == discord.ChannelType.private_thread:
+        return False
     try:
         permissions = channel.permissions_for(guild.default_role)
     except (AttributeError, TypeError, discord.ClientException):
@@ -96,10 +102,7 @@ def is_public(guild: Any, channel: Any) -> bool:
 def public_channel_ids(guild: Any) -> List[str]:
     """The ids of the channels and (public) threads every member can read."""
     found = [c for c in getattr(guild, "channels", []) if is_public(guild, c)]
-    found += [
-        t for t in getattr(guild, "threads", [])
-        if getattr(t, "type", None) != discord.ChannelType.private_thread and is_public(guild, t)
-    ]
+    found += [t for t in getattr(guild, "threads", []) if is_public(guild, t)]
     return [str(c.id) for c in found]
 
 

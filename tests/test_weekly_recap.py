@@ -417,3 +417,14 @@ def test_a_thread_whose_parent_is_not_cached_is_left_out(guild: FakeGuild) -> No
     guild.threads = [SimpleNamespace(id=900, type=discord.ChannelType.public_thread, permissions_for=no_parent)]
 
     assert sorted(public_channel_ids(guild)) == ["500", "501"]
+
+
+def test_a_private_thread_under_a_public_channel_is_not_public(guild: FakeGuild) -> None:
+    from cogs.community_lib.recap import is_public
+
+    everyone_can = lambda role: SimpleNamespace(view_channel=True, read_message_history=True)
+    private = SimpleNamespace(id=901, type=discord.ChannelType.private_thread, permissions_for=everyone_can)
+    public = SimpleNamespace(id=902, type=discord.ChannelType.public_thread, permissions_for=everyone_can)
+
+    assert is_public(guild, private) is False
+    assert is_public(guild, public) is True
