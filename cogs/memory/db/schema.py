@@ -84,6 +84,39 @@ def create_tables(conn: sqlite3.Connection) -> None:
         """
     )
 
+    # Per-guild word and emoji counts for each local week (Monday ``YYYY-MM-DD``),
+    # since user_stats only keeps all-time totals.
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS guild_weekly_terms (
+            guild_id TEXT NOT NULL,
+            week_start TEXT NOT NULL,
+            kind TEXT NOT NULL, -- 'word' or 'emoji'
+            term TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (guild_id, week_start, kind, term)
+        );
+        """
+    )
+
+    # Net reaction count per message, for "most reacted message" style rankings
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS message_reactions (
+            message_id TEXT PRIMARY KEY,
+            guild_id TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            author_id TEXT NOT NULL,
+            created_at REAL NOT NULL, -- UNIX time the message was sent
+            count INTEGER NOT NULL DEFAULT 0
+        );
+        """
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_message_reactions_guild_time "
+        "ON message_reactions (guild_id, created_at)"
+    )
+
     # Table for tracking historical log migration progress
     cursor.execute(
         """

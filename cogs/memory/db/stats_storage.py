@@ -60,6 +60,10 @@ _MAX_TOP_WORDS = 200
 # config-table key: first log day (UTC, YYYYMMDD) whose messages were counted live
 _LIVE_SINCE_KEY = "stats.live_since"
 
+# How long weekly word/emoji counts and per-message reaction counts are kept
+WEEKLY_TERMS_KEEP_DAYS = 84
+REACTIONS_KEEP_DAYS = 90
+
 
 class StatsStorage:
     """Handles user_stats and log_migration_state table operations.
@@ -245,6 +249,141 @@ class StatsStorage:
             return live_since
 
 
+    # ------------------------------------------------------------------
+    # guild_weekly_terms / message_reactions
+    # ------------------------------------------------------------------
+
+    async def get_weekly_terms(
+        self, guild_id: str, week: str, kind: str, limit: int = 10
+    ) -> List[tuple[str, int]]:
+        """Returns a guild's most used words or emojis in one week.
+
+        Args:
+            guild_id: The guild.
+            week: The week's Monday as ``YYYY-MM-DD`` (see ``week_start``).
+            kind: ``"word"`` or ``"emoji"``.
+            limit: How many terms to return.
+
+        Returns:
+            ``(term, count)`` pairs, most used first.
+        """
+        return await asyncio.to_thread(self._get_weekly_terms_sync, guild_id, week, kind, limit)
+
+    def _get_weekly_terms_sync(self, guild_id: str, week: str, kind: str, limit: int) -> List[tuple[str, int]]:
+        with self.db.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT term, count FROM guild_weekly_terms WHERE guild_id = ? AND week_start = ? AND kind = ? "
+                "ORDER BY count DESC, term LIMIT ?",
+                (guild_id, week, kind, limit),
+            ).fetchall()
+            return [(row["term"], row["count"]) for row in rows]
+
+    async def record_reaction(
+        self,
+        message_id: str,
+        guild_id: str,
+        channel_id: str,
+        author_id: Optional[str],
+        created_at: float,
+        delta: int,
+        reactor_id: Optional[str] = None,
+    ) -> None:
+        """Adds or removes one reaction from a message's net reaction count.
+
+        Args:
+            message_id: The reacted message.
+            guild_id: Its guild.
+            channel_id: Its channel.
+            author_id: Who wrote it; ``None`` when unknown (a removal), in which case
+                only an already counted message is updated.
+            created_at: When the message was sent (UNIX time).
+            delta: ``1`` for an added reaction, ``-1`` for a removed one.
+            reactor_id: Who reacted; a removal by the message's own author is ignored,
+                as their reaction was never counted.
+        """
+        try:
+            await asyncio.to_thread(
+                self._record_reaction_sync, message_id, guild_id, channel_id, author_id, created_at, delta, reactor_id
+            )
+        except Exception as e:
+            await func.report_error(e, f"record_reaction failed (message={message_id})")
+
+    def _record_reaction_sync(
+        self,
+        message_id: str,
+        guild_id: str,
+        channel_id: str,
+        author_id: Optional[str],
+        created_at: float,
+        delta: int,
+        reactor_id: Optional[str] = None,
+    ) -> None:
+        with self.db.get_connection() as conn:
+            if author_id is None:
+                conn.execute(
+                    "UPDATE message_reactions SET count = MAX(0, count + ?) WHERE message_id = ? AND author_id != ?",
+                    (delta, message_id, reactor_id or ""),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO message_reactions (message_id, guild_id, channel_id, author_id, created_at, count)
+                    VALUES (?, ?, ?, ?, ?, MAX(0, ?))
+                    ON CONFLICT(message_id) DO UPDATE SET count = MAX(0, count + excluded.count)
+                    """,
+                    (message_id, guild_id, channel_id, author_id, created_at, delta),
+                )
+            conn.commit()
+
+    async def get_top_reacted_messages(
+        self, guild_id: str, since: float, until: float, limit: int = 5
+    ) -> List[Dict[str, Any]]:
+        """Returns a guild's most reacted messages sent in a time range.
+
+        Args:
+            guild_id: The guild.
+            since: Range start (UNIX time, inclusive).
+            until: Range end (UNIX time, exclusive).
+            limit: How many messages to return.
+
+        Returns:
+            Rows with ``message_id``, ``channel_id``, ``author_id``, ``created_at`` and
+            ``count``, most reacted first; messages without reactions are left out.
+        """
+        return await asyncio.to_thread(self._get_top_reacted_messages_sync, guild_id, since, until, limit)
+
+    def _get_top_reacted_messages_sync(
+        self, guild_id: str, since: float, until: float, limit: int
+    ) -> List[Dict[str, Any]]:
+        with self.db.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT message_id, channel_id, author_id, created_at, count FROM message_reactions "
+                "WHERE guild_id = ? AND created_at >= ? AND created_at < ? AND count > 0 "
+                "ORDER BY count DESC, created_at LIMIT ?",
+                (guild_id, since, until, limit),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def prune_activity_history(self, now: Optional[datetime] = None) -> None:
+        """Deletes weekly term counts and reaction counts that are too old to be shown.
+
+        Args:
+            now: The current time (defaults to now).
+        """
+        try:
+            await asyncio.to_thread(self._prune_activity_history_sync, now or datetime.now().astimezone())
+        except Exception as e:
+            await func.report_error(e, "prune_activity_history failed")
+
+    def _prune_activity_history_sync(self, now: datetime) -> None:
+        oldest_week = (now - timedelta(days=WEEKLY_TERMS_KEEP_DAYS)).strftime("%Y-%m-%d")
+        oldest_reaction = now.timestamp() - REACTIONS_KEEP_DAYS * 86400
+        with self.db.get_connection() as conn:
+            conn.execute("DELETE FROM guild_weekly_terms WHERE week_start < ?", (oldest_week,))
+            conn.execute("DELETE FROM message_reactions WHERE created_at < ?", (oldest_reaction,))
+            conn.commit()
+
+
 # ======================================================================
 # Helper functions (module-private)
 # ======================================================================
@@ -271,6 +410,43 @@ def _local_time(timestamp: str) -> datetime:
     return parsed.astimezone()
 
 
+def week_start(moment: datetime) -> str:
+    """Returns the Monday of the week containing ``moment`` (its own date), as ``YYYY-MM-DD``.
+
+    Args:
+        moment: A datetime, already in the time zone the week is counted in.
+
+    Returns:
+        The week's key in ``guild_weekly_terms``.
+    """
+    return (moment.date() - timedelta(days=moment.weekday())).isoformat()
+
+
+def _add_weekly_terms(
+    conn: sqlite3.Connection, guild_id: str, week: str, emojis: List[str], words: List[str]
+) -> None:
+    """Adds one message's emojis and words to its guild's counts for the week (without committing).
+
+    Args:
+        conn: Open connection to the procedural database.
+        guild_id: Guild the message was sent in.
+        week: The week's key (see ``week_start``).
+        emojis: Emojis in the message.
+        words: Segmented words in the message.
+    """
+    counts = [("emoji", term, n) for term, n in Counter(emojis).items()]
+    counts += [("word", term, n) for term, n in Counter(words).items()]
+    if not counts:
+        return
+    conn.executemany(
+        """
+        INSERT INTO guild_weekly_terms (guild_id, week_start, kind, term, count) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(guild_id, week_start, kind, term) DO UPDATE SET count = count + excluded.count
+        """,
+        [(guild_id, week, kind, term, n) for kind, term, n in counts],
+    )
+
+
 def _apply_message(
     conn: sqlite3.Connection,
     user_id: str,
@@ -294,6 +470,7 @@ def _apply_message(
     today_str = local_time.strftime("%Y-%m-%d")
     emojis = _extract_emojis(message_content)
     words = _segment_words(message_content)
+    _add_weekly_terms(conn, guild_id, week_start(local_time), emojis, words)
 
     existing = conn.execute(
         "SELECT * FROM user_stats WHERE user_id = ? AND guild_id = ?",

@@ -609,6 +609,15 @@ class YTMusic(commands.Cog):
         taste = self.taste_for(guild_id)
         if song.get('video_id'):
             taste.record_played(song['video_id'])
+            added_by = song.get('added_by')
+            autoplay = added_by == self.bot.user.id
+            song['play_event_id'] = self._taste_store.add_play_event(
+                guild_id,
+                song['video_id'],
+                song.get('title') or '',
+                requester_id=added_by if isinstance(added_by, int) and not autoplay else None,
+                autoplay=autoplay,
+            )
         if song.get('added_by') != self.bot.user.id and song.get('author'):
             taste.record_request(song['author'])
 

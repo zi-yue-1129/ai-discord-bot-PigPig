@@ -182,6 +182,62 @@ class StatsCog(commands.Cog):
                 "StatsCog on_message stats update failed: %s", e, exc_info=True
             )
 
+    @commands.Cog.listener()
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
+        """Counts a reaction on a guild member's message (bots and self-reactions excluded).
+
+        Args:
+            payload: The raw reaction event (works for messages outside the cache).
+        """
+        if not self.stats_storage or payload.guild_id is None:
+            return
+        author_id = payload.message_author_id
+        if author_id is None or author_id == payload.user_id:
+            return
+        if (payload.member is not None and payload.member.bot) or self._is_bot(payload.guild_id, author_id):
+            return
+        await self.stats_storage.record_reaction(
+            message_id=str(payload.message_id),
+            guild_id=str(payload.guild_id),
+            channel_id=str(payload.channel_id),
+            author_id=str(author_id),
+            created_at=discord.utils.snowflake_time(payload.message_id).timestamp(),
+            delta=1,
+        )
+
+    @commands.Cog.listener()
+    async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent) -> None:
+        """Takes a removed reaction off a counted message's total.
+
+        Args:
+            payload: The raw reaction event; it carries no message author, so only a
+                message already counted is updated.
+        """
+        if not self.stats_storage or payload.guild_id is None:
+            return
+        reactor = self._member(payload.guild_id, payload.user_id)
+        if reactor is not None and reactor.bot:
+            return
+        await self.stats_storage.record_reaction(
+            message_id=str(payload.message_id),
+            guild_id=str(payload.guild_id),
+            channel_id=str(payload.channel_id),
+            author_id=None,
+            created_at=discord.utils.snowflake_time(payload.message_id).timestamp(),
+            delta=-1,
+            reactor_id=str(payload.user_id),
+        )
+
+    def _member(self, guild_id: int, user_id: int) -> Optional[discord.Member]:
+        """Returns a cached guild member, or None when the guild or member is not cached."""
+        guild = self.bot.get_guild(guild_id) if hasattr(self.bot, "get_guild") else None
+        return guild.get_member(user_id) if guild is not None else None
+
+    def _is_bot(self, guild_id: int, user_id: int) -> bool:
+        """Returns whether a cached member is a bot (unknown members count as people)."""
+        member = self._member(guild_id, user_id)
+        return member is not None and member.bot
+
     # ------------------------------------------------------------------
     # Background historical log migration
     # ------------------------------------------------------------------
@@ -204,6 +260,7 @@ class StatsCog(commands.Cog):
 
         # Small initial delay to avoid competing with startup I/O
         await asyncio.sleep(10)
+        await self.stats_storage.prune_activity_history()
 
         logs_root = Path(ROOT_DIR) / "logs"
         if not logs_root.is_dir():
@@ -239,6 +296,8 @@ class StatsCog(commands.Cog):
                     continue
 
             logger.info("Background log migration completed for all guilds.")
+            # Imported old logs may have added weeks that are already past the kept window.
+            await self.stats_storage.prune_activity_history()
         except asyncio.CancelledError:
             logger.info("Background log migration task was cancelled.")
         except Exception as e:
