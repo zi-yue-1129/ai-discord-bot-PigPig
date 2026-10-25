@@ -144,7 +144,7 @@ class UserStatsTools:
             stats = await storage.get_user_stats(effective_id, guild_id)
             if not stats:
                 return f"No stats found for user {effective_id} in this server."
-            stats = public_stats(message.guild, stats)
+            stats = public_stats(message.guild, stats, also_visible=getattr(message.channel, "id", None))
 
             display_name = f"User {effective_id}"
             avatar_url = None
@@ -205,16 +205,24 @@ class UserStatsTools:
 
 
 def _is_hidden(runtime: Any, guild_id: int, user_id: str) -> bool:
-    """Whether the member hid themselves from rankings and stats (``/leaderboard optout``)."""
+    """Whether the member hid themselves from rankings and stats (``/leaderboard optout``).
+
+    Fails closed: when the opt-out list cannot be read, the member is treated as hidden.
+    """
     bot = getattr(runtime, "bot", None)
     cog = bot.get_cog("LeaderboardCog") if bot is not None else None
     store = getattr(cog, "store", None)
-    if store is None:
-        return False
     try:
+        if store is None:
+            # The leaderboard cog is not loaded: read its opt-out list directly.
+            from cogs.community import COMMUNITY_DB_PATH
+            from cogs.community_lib.store import CommunityStore
+
+            store = CommunityStore(COMMUNITY_DB_PATH)
         return bool(store.is_opted_out(int(guild_id), int(user_id)))
-    except (TypeError, ValueError):
-        return False
+    except Exception:
+        _logger.warning("get_user_stats: could not read the opt-out list; treating the member as hidden", exc_info=True)
+        return True
 
 
 def _is_public(guild: Any, channel: Any) -> bool:
@@ -226,13 +234,16 @@ def _is_public(guild: Any, channel: Any) -> bool:
     return bool(permissions.view_channel and permissions.read_message_history)
 
 
-def public_stats(guild: Any, stats: Dict[str, Any]) -> Dict[str, Any]:
+def public_stats(guild: Any, stats: Dict[str, Any], also_visible: Optional[int] = None) -> Dict[str, Any]:
     """The part of a member's all-time stats that may be shown to anyone in the server.
 
     The all-time word and emoji counts (and so the word cloud) do not record which channel
-    they came from, so they are left out; channels are only listed when everyone can read them.
+    they came from, so they are left out; channels are only listed when everyone can read them,
+    or when it is ``also_visible`` (the channel the answer is posted in).
     """
     public = {str(c.id) for c in getattr(guild, "channels", []) if _is_public(guild, c)}
+    if also_visible is not None:
+        public.add(str(also_visible))
     channels = stats.get("top_channels") or {}
     return {
         **stats,

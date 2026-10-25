@@ -88,3 +88,27 @@ async def test_words_emojis_and_private_channels_are_left_out(monkeypatch: pytes
 
     assert "secretproject" not in reply and "🤫" not in reply and "666" not in reply
     assert seen[0]["top_words"] == {} and seen[0]["top_channels"] == {"500": 10}
+
+
+def test_the_opt_out_list_fails_closed() -> None:
+    from llm.tools.user_stats import _is_hidden
+
+    class Broken:
+        def is_opted_out(self, guild_id: int, user_id: int) -> bool:
+            raise RuntimeError("database is locked")
+
+    runtime = SimpleNamespace(bot=SimpleNamespace(get_cog=lambda name: SimpleNamespace(store=Broken())))
+    assert _is_hidden(runtime, GUILD_ID, str(AUTHOR_ID)) is True
+
+
+def test_without_the_leaderboard_cog_the_stored_opt_outs_are_read(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from cogs.community_lib.store import CommunityStore
+    from llm.tools.user_stats import _is_hidden
+
+    path = tmp_path / "community.db"
+    CommunityStore(path).set_optout(GUILD_ID, HIDDEN_ID, True)
+    monkeypatch.setattr("cogs.community.COMMUNITY_DB_PATH", str(path))
+    runtime = SimpleNamespace(bot=SimpleNamespace(get_cog=lambda name: None))
+
+    assert _is_hidden(runtime, GUILD_ID, str(HIDDEN_ID)) is True
+    assert _is_hidden(runtime, GUILD_ID, str(AUTHOR_ID)) is False
