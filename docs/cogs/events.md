@@ -33,4 +33,4 @@ The event is marked reminded only after every message was sent. A failed reminde
 
 `/event list` shows the server's upcoming events with links (only to you), leaving out events in channels you cannot see and every event in a private thread (thread permissions follow the parent channel even though only the thread's members can read it). `/event cancel` can be used by the host or anyone with **Manage Events** who can read the event's channel (an event in a channel or private thread you cannot read is "not found"); the message is struck through and its buttons removed.
 
-Who can read a channel is decided in one place, `addons/visibility.py`: a member needs to see the channel and read its history, and for a private thread also be in it (or manage threads).
+Who can read a channel is decided in one place, `addons/visibility.py`: a member needs to see the channel and read its history, and for a private thread also be in it (or manage threads). Whether a post may repeat the title for everyone in the channel is decided from the channel's permissions alone (`@everyone` sees and reads it, no overwrite denies either), which errs towards leaving the title out.

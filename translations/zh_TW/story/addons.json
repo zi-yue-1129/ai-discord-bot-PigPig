@@ -11,5 +11,6 @@
     "card_unavailable": "生圖功能目前無法使用。",
     "card_failed": "角色卡畫不出來，稍後再試。",
     "card_rate_limited": "你的生圖次數用完了，{seconds} 秒後再試。",
-    "recap_no_history": "你沒有讀取這個頻道訊息紀錄的權限，所以不能看前情提要。"
+    "recap_no_history": "你沒有讀取這個頻道訊息紀錄的權限，所以不能看前情提要。",
+    "recap_sent_privately": "權限在產生提要時變了，前情提要改成只傳給你看。"
 }

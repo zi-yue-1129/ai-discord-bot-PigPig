@@ -85,7 +85,7 @@ def test_a_role_deny_on_history_makes_the_audience_unable_to_read() -> None:
     assert audience_can_read(channel) is False
 
 
-def test_a_role_restricted_channel_where_every_viewer_reads_the_history() -> None:
+def test_a_role_restricted_channel_counts_as_not_readable_by_its_whole_audience() -> None:
     guild = _guild(
         roles=[_role(2, discord.Permissions.none(), 1)],
         members=[_member(5, [2]), _member(6)],
@@ -93,8 +93,9 @@ def test_a_role_restricted_channel_where_every_viewer_reads_the_history() -> Non
     )
     channel = guild.get_channel(10)
 
-    assert can_read(channel, guild.get_member(6)) is False
-    assert audience_can_read(channel) is True
+    assert can_read(channel, guild.get_member(5)) is True and can_read(channel, guild.get_member(6)) is False
+    # Decided from the overwrites alone: @everyone cannot see it, so the conservative answer is no.
+    assert audience_can_read(channel) is False
 
 
 def test_a_member_overwrite_is_checked_on_its_own() -> None:
@@ -103,11 +104,29 @@ def test_a_member_overwrite_is_checked_on_its_own() -> None:
     assert audience_can_read(guild.get_channel(10)) is False
 
 
-def test_an_incomplete_member_list_fails_closed() -> None:
-    guild = _guild(members=[_member(5)], member_count=50)
+def test_the_audience_rule_needs_no_member_list() -> None:
+    open_guild = _guild(members=[_member(5)], member_count=50)
+    assert open_guild.chunked is False
+    assert audience_can_read(open_guild.get_channel(10)) is True  # nothing denies @everyone
 
-    assert guild.chunked is False
-    assert audience_can_read(guild.get_channel(10)) is False
+    denied = _guild(members=[_member(5)], member_count=50, overwrites=[_overwrite(77, 1, deny=HISTORY)])
+    assert audience_can_read(denied.get_channel(10)) is False  # an uncached member's own deny still counts
+
+
+def test_moderators_with_the_same_roles_and_one_timed_out_do_not_change_the_answer() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    later = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    mod = discord.Permissions(view_channel=True, manage_threads=True)
+    for order in ((5, 6), (6, 5)):
+        members = [_member(i, [3]) for i in order]
+        for data in members:
+            if data["user"]["id"] == 5:
+                data["communication_disabled_until"] = later
+        guild = _guild(roles=[_role(3, mod, 1)], members=members, overwrites=[_overwrite(3, 0, deny=HISTORY)])
+        thread = _private_thread(guild, owner=2, members=[])
+        assert audience_can_read(guild.get_channel(10)) is False
+        assert audience_can_read(thread) is False
 
 
 def test_private_threads_count_only_their_current_members() -> None:
@@ -116,7 +135,7 @@ def test_private_threads_count_only_their_current_members() -> None:
 
     assert can_read(thread, guild.get_member(3)) is True
     assert can_read(thread, guild.get_member(2)) is False
-    assert audience_can_read(thread) is True
+    assert audience_can_read(thread) is False  # a private thread's audience is never established
 
 
 def test_a_thread_without_its_parent_fails_closed() -> None:

@@ -11,5 +11,6 @@
     "card_unavailable": "Image generation isn't available right now.",
     "card_failed": "I couldn't draw the character card; try again later.",
     "card_rate_limited": "You've used up your image quota; try again in {seconds} seconds.",
-    "recap_no_history": "You can't read this channel's message history, so you can't see its recap."
+    "recap_no_history": "You can't read this channel's message history, so you can't see its recap.",
+    "recap_sent_privately": "Permissions changed while the recap was being written, so it was sent only to you."
 }

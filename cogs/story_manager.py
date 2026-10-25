@@ -236,6 +236,14 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
         private = not audience_can_read(interaction.channel)
         await interaction.response.defer(ephemeral=private)
         text = await self._recap_text(interaction.channel, instance, interaction.user.id)
+        # Checked again after the (slow) generation: permissions may have changed meanwhile.
+        if not can_read(interaction.channel, interaction.user):
+            await interaction.followup.send(self._t(guild_id, "story", "addons", "recap_no_history"), ephemeral=True)
+            return
+        if not private and not audience_can_read(interaction.channel):
+            # The public placeholder is replaced by a note; the recap itself goes only to the requester.
+            await interaction.followup.send(self._t(guild_id, "story", "addons", "recap_sent_privately"))
+            private = True
         if not text:
             await interaction.followup.send(self._t(guild_id, "story", "addons", "recap_empty"), ephemeral=private)
             return
@@ -259,7 +267,8 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
                 # Posted for the whole channel: skipped where anyone who sees new messages may not read the history.
                 if last_day is not None and audience_can_read(message.channel):
                     text = await self._recap_text(message.channel, instance, message.author.id, before=message)
-                    if text:
+                    # Checked again right before posting: permissions may have changed during the generation.
+                    if text and audience_can_read(message.channel):
                         await message.channel.send(
                             embed=self._recap_embed(guild_id, text), allowed_mentions=discord.AllowedMentions.none()
                         )

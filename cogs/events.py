@@ -361,11 +361,13 @@ class EventsCog(commands.Cog):
         if event.creator_id != interaction.user.id and not getattr(permissions, "manage_events", False):
             await interaction.response.send_message(self._t(guild_id, "not_yours"), ephemeral=True)
             return
+        # Acknowledge at once: waiting for the lock and the message edit must not outlast Discord's 3 seconds.
+        await interaction.response.defer(ephemeral=True)
         async with self._lock(event.id):
             self.store.cancel(event.id)
             event = self.store.get(event.id)
             await self._refresh_message(event)
-        await interaction.response.send_message(self._t(guild_id, "cancelled", title=event.title), ephemeral=True)
+        await interaction.followup.send(self._t(guild_id, "cancelled", title=event.title), ephemeral=True)
 
     # ------------------------------------------------------------- reminders
     async def _run_scheduler(self) -> None:

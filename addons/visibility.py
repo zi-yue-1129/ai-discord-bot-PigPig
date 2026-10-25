@@ -8,12 +8,12 @@ A private thread inherits its permissions from the parent channel, but only the 
 (and moderators who can manage threads) can open it, so its member list counts too.
 
 Both fail closed: whatever cannot be established (a thread whose parent is not cached, a
-member list that is not complete, a thread's members not known) counts as not readable.
+thread's members not known) counts as not readable.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import discord
 
@@ -50,40 +50,32 @@ def can_read(channel: Any, member: Any) -> bool:
     return True
 
 
-def _overwritten_member_ids(channel: Any) -> set:
-    """Members with an overwrite of their own on ``channel`` (their permissions are not their roles')."""
-    overwrites = getattr(channel, "overwrites", None) or {}
-    return {getattr(target, "id", None) for target in overwrites if not isinstance(target, discord.Role)}
+_READ = ("view_channel", "read_message_history")
 
 
 def audience_can_read(channel: Any) -> bool:
     """Whether everyone who can see ``channel`` can also read its history.
 
-    Needs the guild's complete member list (``guild.chunked``). Members are grouped by their
-    roles, so permissions are worked out once per role combination; members with an overwrite of
-    their own, the owner, and members of a private thread are checked one by one.
+    Decided from the channel's own permissions, never from a member list: ``@everyone`` must be
+    able to see the channel and read its history, and no role or member overwrite on it (for a
+    thread: on its parent) may deny either. Private threads and threads whose parent is unknown
+    are never readable by their whole audience. This errs only towards "not shown": a channel
+    restricted to a role that can read everything counts as not readable too.
     """
-    guild = getattr(channel, "guild", None)
-    if guild is None or getattr(guild, "chunked", False) is not True:
+    if channel is None or _is_private_thread(channel):
         return False
-    base = channel
-    if _is_thread(channel):
-        base = getattr(channel, "parent", None)
-        if base is None:
-            return False
-    individual = _overwritten_member_ids(base) | {getattr(guild, "owner_id", None)}
-    private = _is_private_thread(channel)
-    in_thread = _thread_member_ids(channel) if private else set()
-    cache: Dict[Tuple, Any] = {}
-    for member in getattr(guild, "members", None) or []:
-        key: Tuple = (member.id,) if member.id in individual else tuple(sorted(role.id for role in member.roles))
-        permissions: Optional[Any] = cache.get(key)
-        if permissions is None:
-            permissions = _permissions(channel, member)
-            if permissions is None:
-                return False
-            cache[key] = permissions
-        sees = permissions.view_channel and (not private or member.id in in_thread or permissions.manage_threads)
-        if sees and not permissions.read_message_history:
+    base = getattr(channel, "parent", None) if _is_thread(channel) else channel
+    guild = getattr(base, "guild", None)
+    if base is None or guild is None or getattr(guild, "default_role", None) is None:
+        return False
+    everyone = _permissions(base, guild.default_role)
+    if everyone is None or not all(getattr(everyone, name, False) for name in _READ):
+        return False
+    overwrites = getattr(base, "overwrites", None)
+    if overwrites is None:
+        return False
+    for overwrite in overwrites.values():
+        _, deny = overwrite.pair()
+        if any(getattr(deny, name, False) for name in _READ):
             return False
     return True

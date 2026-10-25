@@ -113,12 +113,21 @@ class FakeChannel:
         self.type = discord.ChannelType.text
         # Each member has a role of their own, so permissions are worked out per member.
         self.guild = SimpleNamespace(
-            chunked=True, owner_id=None, members=[SimpleNamespace(id=i, roles=[SimpleNamespace(id=1000 + i)]) for i in range(1, 10)]
+            default_role=SimpleNamespace(id=0), members=[SimpleNamespace(id=i, roles=[]) for i in range(1, 10)]
         )
-        self.overwrites: dict = {}
+
+    @property
+    def overwrites(self) -> dict:
+        """An overwrite denying the history (or the channel) to whoever is left out."""
+        if self.history_readers is None and self.viewer_ids is None:
+            return {}
+        deny = SimpleNamespace(view_channel=self.viewer_ids is not None, read_message_history=self.history_readers is not None)
+        return {discord.Object(1234): SimpleNamespace(pair=lambda: (SimpleNamespace(), deny))}
 
     def permissions_for(self, who: Any) -> Any:
         who_id = getattr(who, "id", None)
+        if who_id == 0:  # @everyone
+            return SimpleNamespace(view_channel=self.viewer_ids is None, read_message_history=self.viewer_ids is None, manage_threads=False)
         sees = self.viewer_ids is None or who_id in self.viewer_ids
         reads = sees and (self.history_readers is None or who_id in self.history_readers)
         return SimpleNamespace(view_channel=sees, read_message_history=reads, manage_threads=False)
@@ -915,7 +924,7 @@ async def test_a_recap_is_shown_only_to_the_requester_when_a_role_cannot_read_th
 
 
 @pytest.mark.asyncio
-async def test_the_daily_recap_runs_in_a_role_restricted_story_channel(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_role_restricted_story_channel_gets_no_public_daily_recap(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_write(*args: Any) -> str:
         return "recap"
 
@@ -929,7 +938,8 @@ async def test_the_daily_recap_runs_in_a_role_restricted_story_channel(monkeypat
 
     await cog.maybe_post_daily_recap(message)
 
-    assert channel.sent[0][1]["embed"].description == "recap"
+    # Decided from the channel's permissions alone, which err towards not posting.
+    assert channel.sent == []
 
 
 def test_a_database_from_an_earlier_schema_still_opens_and_reminds(tmp_path: Any) -> None:
@@ -1098,3 +1108,48 @@ def test_reminders_recorded_on_sign_ups_by_an_earlier_version_are_kept(tmp_path:
     old.close()
 
     assert EventStore(path).reminded_users(1) == [1]
+
+
+
+@pytest.mark.asyncio
+async def test_a_permission_change_during_the_recap_keeps_it_private(monkeypatch: pytest.MonkeyPatch) -> None:
+    channel_holder: list = []
+
+    async def slow_write(*args: Any) -> str:
+        channel_holder[0].history_readers = {1, 2, 3, 4, 5}  # a role loses history meanwhile
+        return "recap"
+
+    monkeypatch.setitem(StoryManagerCog._recap_text.__globals__, "write_recap", slow_write)
+    cog = _story_cog(_instance(), orchestrator=object())
+    interaction = FakeInteraction(user_id=5)
+    channel_holder.append(interaction.channel)
+
+    await StoryManagerCog.recap.callback(cog, interaction)
+
+    assert interaction.deferred == {"ephemeral": False}
+    assert interaction.followups[0]["content"] == "recap_sent_privately|"
+    assert interaction.followups[1]["ephemeral"] is True and interaction.followups[1]["embed"].description == "recap"
+
+    daily = FakeChannel()
+    channel_holder[0] = daily
+    message = SimpleNamespace(guild=SimpleNamespace(id=GUILD_ID), channel=daily, author=SimpleNamespace(id=5))
+    cog.recap_store.set_active_day(500, "2026-10-25")
+    cog._today = lambda: "2026-10-26"
+    await cog.maybe_post_daily_recap(message)
+    assert daily.sent == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_is_acknowledged_before_waiting_for_the_event(store: EventStore) -> None:
+    cog = _events_cog(store, FakeChannel())
+    event = _event(store)
+    host = FakeInteraction(user_id=1)
+
+    async with cog._lock(event.id):
+        task = asyncio.create_task(EventsCog.cancel.callback(cog, host, event.id))
+        await asyncio.sleep(0)
+        assert host.deferred == {"ephemeral": True}
+    await task
+
+    assert store.get(event.id).status == CANCELLED
+    assert host.followups[0]["content"].startswith("cancelled|")
