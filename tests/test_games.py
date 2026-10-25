@@ -462,3 +462,62 @@ async def test_guess_the_song_plays_clips_and_the_first_right_guess_wins(cog: Ga
     assert {f.name: f.value for f in last_round.fields}["result|"] == "song_nobody|"
     assert voice.playing is False
     assert [user for user, _ in store.game_points(GUILD_ID)] == [11]
+
+
+# ------------------------------------------------------------------ limits and timing (review follow-ups)
+
+
+@pytest.mark.asyncio
+async def test_question_writing_is_bounded_across_the_bot(cog: GamesCog, monkeypatch: pytest.MonkeyPatch) -> None:
+    from cogs.games import MAX_MODEL_CALLS
+
+    in_flight, peak = 0, 0
+
+    async def slow_write(orchestrator: Any, guild_id: str, memory_text: str) -> str:
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        return _reply()
+
+    monkeypatch.setitem(GamesCog.make_questions.__globals__, "write_question", slow_write)
+    cog.bot.vector_manager.store.memories = [_memory(MEMORY + str(i)) for i in range(30)]
+
+    await asyncio.gather(*(cog.make_questions(FakeGuild(), 10) for _ in range(3)))
+
+    assert peak == MAX_MODEL_CALLS
+
+
+def test_a_player_hosts_one_game_at_a_time(cog: GamesCog) -> None:
+    def interaction(user_id: int, channel_id: int) -> Any:
+        return SimpleNamespace(user=SimpleNamespace(id=user_id), channel=SimpleNamespace(id=channel_id))
+
+    cog._claim(interaction(10, 500))
+
+    assert cog._busy(interaction(10, 501)) == "hosting"
+    assert cog._busy(interaction(11, 500)) == "busy"
+    assert cog._busy(interaction(11, 501)) is None
+    cog._release(interaction(10, 500))
+    assert cog._busy(interaction(10, 501)) is None
+
+
+@pytest.mark.asyncio
+async def test_the_answer_clock_starts_once_the_question_is_posted(cog: GamesCog) -> None:
+    clock = [100.0]
+    cog._now = lambda: clock[0]
+    rounds: list = []
+
+    class SlowChannel(FakeChannel):
+        async def send(self, content: Any = None, embed: Any = None, view: Any = None, allowed_mentions: Any = None) -> FakeMessage:
+            clock[0] += 10  # Discord took 10 seconds to accept the message
+            if view is not None:
+                rounds.append(view.round)
+            return FakeMessage(embed, view)
+
+    question = parse_question(_reply(), MEMORY, META)
+    await cog.run_quiz(SlowChannel({}), SimpleNamespace(id=GUILD_ID), [question])
+
+    assert rounds[0].started_at == 110.0
+    rounds[0].answer(10, question.answer, 110.0)
+    assert rounds[0].points() == {10: BASE_POINTS * 2}

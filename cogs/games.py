@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import discord
 from discord import app_commands
@@ -49,6 +49,8 @@ LETTERS = "ABCD"
 # Memories sampled per wanted question: some are skipped (too short, unusable answer).
 CANDIDATES_PER_QUESTION = 3
 PAUSE_SECONDS = 4
+# Model calls for games in flight at once, across every server (quiz questions, chain moves).
+MAX_MODEL_CALLS = 3
 # A word chain ends when nobody continues for this long; halfway through, the bot plays a word.
 CHAIN_IDLE_SECONDS = 60
 CHAIN_MAX_SECONDS = 15 * 60
@@ -98,6 +100,9 @@ class GamesCog(commands.Cog):
         self.chain_idle_seconds: float = CHAIN_IDLE_SECONDS
         self.chain_max_seconds: float = CHAIN_MAX_SECONDS
         self._running: Dict[int, bool] = {}
+        # Players currently hosting a game: one game per player at a time, across channels.
+        self._hosts: Set[int] = set()
+        self._model_slots = asyncio.Semaphore(MAX_MODEL_CALLS)
         self._chains: Dict[int, "ChainGame"] = {}
         self._guesses: Dict[int, "GuessRound"] = {}
         self.clip_seconds: float = song_guess.CLIP_SECONDS
@@ -115,6 +120,23 @@ class GamesCog(commands.Cog):
         manager = getattr(self.bot, "vector_manager", None)
         store = getattr(manager, "store", None)
         return store if hasattr(store, "sample_memories") else None
+
+    # ------------------------------------------------------------ running games
+    def _busy(self, interaction: discord.Interaction) -> Optional[str]:
+        """Why a game cannot start here (a response key), or None."""
+        if self._running.get(interaction.channel.id):
+            return "busy"
+        if interaction.user.id in self._hosts:
+            return "hosting"
+        return None
+
+    def _claim(self, interaction: discord.Interaction) -> None:
+        self._running[interaction.channel.id] = True
+        self._hosts.add(interaction.user.id)
+
+    def _release(self, interaction: discord.Interaction) -> None:
+        self._running.pop(interaction.channel.id, None)
+        self._hosts.discard(interaction.user.id)
 
     # ------------------------------------------------------------ questions
     async def make_questions(
@@ -146,7 +168,8 @@ class GamesCog(commands.Cog):
         random.shuffle(candidates)
 
         async def one(memory: Any) -> Optional[QuizQuestion]:
-            reply = await write_question(orchestrator, str(guild.id), memory.content)
+            async with self._model_slots:
+                reply = await write_question(orchestrator, str(guild.id), memory.content)
             return parse_question(reply, memory.content, memory.metadata or {}) if reply else None
 
         questions: List[QuizQuestion] = []
@@ -237,6 +260,8 @@ class GamesCog(commands.Cog):
             message = await channel.send(
                 embed=self.question_embed(guild.id, number, len(questions), question), view=view, allowed_mentions=quiet
             )
+            # Scoring and the answer window both start once the question can be seen.
+            quiz_round.started_at = self._now()
             await asyncio.sleep(self.answer_seconds)
             view.stop()
             scoreboard.add(quiz_round.points())
@@ -265,13 +290,14 @@ class GamesCog(commands.Cog):
         this_channel: bool = False,
     ) -> None:
         guild, channel = interaction.guild, interaction.channel
-        if self._running.get(channel.id):
-            await interaction.response.send_message(self._t(guild.id, "busy"), ephemeral=True)
+        busy = self._busy(interaction)
+        if busy:
+            await interaction.response.send_message(self._t(guild.id, busy), ephemeral=True)
             return
         if self._memory_store() is None or getattr(self.bot, "orchestrator", None) is None:
             await interaction.response.send_message(self._t(guild.id, "unavailable"), ephemeral=True)
             return
-        self._running[channel.id] = True
+        self._claim(interaction)
         try:
             await interaction.response.send_message(self._t(guild.id, "preparing", user=interaction.user.mention, rounds=rounds))
             since = self._now() - days * 86400 if days else None
@@ -290,7 +316,7 @@ class GamesCog(commands.Cog):
             except discord.HTTPException:
                 pass
         finally:
-            self._running.pop(channel.id, None)
+            self._release(interaction)
 
     # ------------------------------------------------------------ word chain
     async def handle_message(self, message: discord.Message) -> bool:
@@ -331,9 +357,10 @@ class GamesCog(commands.Cog):
         start = f"the character {last_char(chain.last_word)}"
         if chain.homophones:
             start += " (or any character with the same pinyin, tones ignored)"
-        reply = await write_chain_word(
-            orchestrator, str(guild.id), self._language(guild.id), start, chain.words[-30:], MAX_CJK_LENGTH
-        )
+        async with self._model_slots:
+            reply = await write_chain_word(
+                orchestrator, str(guild.id), self._language(guild.id), start, chain.words[-30:], MAX_CJK_LENGTH
+            )
         word = normalise_word((reply or "").splitlines()[0].strip(" \"'「」『』。.!！") if reply else "")
         if word is None or chain.problem(word, BOT_PLAYER) is not None:
             return None
@@ -409,11 +436,12 @@ class GamesCog(commands.Cog):
     @app_commands.describe(homophones="Also accept a character with the same pronunciation (Chinese)")
     async def chain(self, interaction: discord.Interaction, homophones: bool = False) -> None:
         guild, channel = interaction.guild, interaction.channel
-        if self._running.get(channel.id):
-            await interaction.response.send_message(self._t(guild.id, "busy"), ephemeral=True)
+        busy = self._busy(interaction)
+        if busy:
+            await interaction.response.send_message(self._t(guild.id, busy), ephemeral=True)
             return
         use_homophones = homophones and homophones_available()
-        self._running[channel.id] = True
+        self._claim(interaction)
         try:
             key = "chain_rules_homophones" if use_homophones else "chain_rules"
             text = self._t(guild.id, key, user=interaction.user.mention, seconds=int(self.chain_idle_seconds))
@@ -429,7 +457,7 @@ class GamesCog(commands.Cog):
             except discord.HTTPException:
                 pass
         finally:
-            self._running.pop(channel.id, None)
+            self._release(interaction)
 
     # ------------------------------------------------------------ guess the song
     async def _take_guess(self, message: discord.Message, guess_round: "GuessRound") -> bool:
@@ -555,15 +583,15 @@ class GamesCog(commands.Cog):
             music.queue_manager.is_queue_empty(guild.id)
         ):
             problem = "song_music_playing"
-        elif self._running.get(channel.id):
-            problem = "busy"
+        else:
+            problem = self._busy(interaction)
         pool = self.song_pool(music, guild.id) if problem is None else []
         if problem is None and len(pool) < MIN_SONGS:
             problem = "song_not_enough"
         if problem is not None:
             await interaction.response.send_message(self._t(guild.id, problem, count=MIN_SONGS), ephemeral=True)
             return
-        self._running[channel.id] = True
+        self._claim(interaction)
         joined = False
         try:
             await interaction.response.send_message(
@@ -583,7 +611,7 @@ class GamesCog(commands.Cog):
             except discord.HTTPException:
                 pass
         finally:
-            self._running.pop(channel.id, None)
+            self._release(interaction)
             if joined and voice_client is not None and not (voice_client.is_playing() or voice_client.is_paused()):
                 try:
                     await voice_client.disconnect()

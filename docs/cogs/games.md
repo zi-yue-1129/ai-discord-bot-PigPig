@@ -23,7 +23,7 @@ How a game goes:
 5. The answer is revealed with how many got it right, the **source** (channel, day, link to the original messages) and the standings.
 6. After the last question the final standings are posted and the points are saved.
 
-Only one game runs per channel at a time. The quiz needs the memory system (Qdrant) and a working model; otherwise it says so.
+Only one game runs per channel at a time, and a player can host one game at a time. At most 3 model calls for games run at once across the bot. The quiz needs the memory system (Qdrant) and a working model; otherwise it says so.
 
 ## `/game chain [homophones]`
 

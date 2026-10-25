@@ -1,6 +1,7 @@
 {
     "responses": {
         "busy": "A game is already running in this channel.",
+        "hosting": "You're already running a game in another channel. Finish that one first.",
         "unavailable": "The quiz needs the server's memories and a model, and one of them is not available right now.",
         "preparing": "🧠 {user} started a quiz with {rounds} questions about this server. Writing the questions…",
         "no_memories": "I could not make any questions: there are not enough memories of this server yet (or none in that range).",
