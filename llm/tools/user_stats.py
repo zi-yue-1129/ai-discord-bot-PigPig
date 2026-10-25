@@ -129,12 +129,24 @@ class UserStatsTools:
             if not message or not message.guild:
                 return "No server context available."
 
-            effective_id = user_id or str(message.author.id)
+            effective_id = str(user_id or message.author.id).strip()
+            if not effective_id.isdigit():
+                return f"{effective_id!r} is not a Discord user ID; ask for the member's numeric ID or mention."
             guild_id = str(message.guild.id)
+
+            # The reply is posted in the channel for everyone to see.
+            if _is_hidden(runtime, message.guild.id, effective_id):
+                if effective_id == str(message.author.id):
+                    return (
+                        "This user hid their stats with /leaderboard optout, so they are not shown in chat. "
+                        "Tell them they can still see their own stats privately with /profile."
+                    )
+                return "This member chose to hide their stats (/leaderboard optout). Do not share or guess them."
 
             stats = await storage.get_user_stats(effective_id, guild_id)
             if not stats:
                 return f"No stats found for user {effective_id} in this server."
+            stats = public_stats(message.guild, stats, also_visible=getattr(message.channel, "id", None))
 
             display_name = f"User {effective_id}"
             avatar_url = None
@@ -192,6 +204,62 @@ class UserStatsTools:
         return [
             StructuredTool.from_function(coroutine=get_user_stats, metadata=_info_meta),
         ]
+
+
+def _is_hidden(runtime: Any, guild_id: int, user_id: str, db_path: Optional[str] = None) -> bool:
+    """Whether the member hid themselves from rankings and stats (``/leaderboard optout``).
+
+    Fails closed: when the opt-out list cannot be read, the member is treated as hidden.
+
+    Args:
+        db_path: The community database to read when the leaderboard cog is not loaded
+            (defaults to ``COMMUNITY_DB_PATH``).
+    """
+    bot = getattr(runtime, "bot", None)
+    cog = bot.get_cog("LeaderboardCog") if bot is not None else None
+    store = getattr(cog, "store", None)
+    try:
+        if store is None:
+            # The leaderboard cog is not loaded: read its opt-out list directly.
+            from cogs.community_lib.store import CommunityStore
+
+            if db_path is None:
+                from cogs.community import COMMUNITY_DB_PATH as db_path
+            store = CommunityStore(db_path)
+        return bool(store.is_opted_out(int(guild_id), int(user_id)))
+    except Exception:
+        # Any failure (database locked or missing, bad id) means we cannot tell whether the member
+        # opted out; refusing the lookup is the safe answer, so the tool carries on with that.
+        _logger.error("get_user_stats: could not read the opt-out list; treating the member as hidden", exc_info=True)
+        return True
+
+
+def _is_public(guild: Any, channel: Any) -> bool:
+    """Whether every member (the @everyone role) can see ``channel`` and read its history."""
+    try:
+        permissions = channel.permissions_for(guild.default_role)
+    except (AttributeError, TypeError, discord.ClientException):
+        return False
+    return bool(permissions.view_channel and permissions.read_message_history)
+
+
+def public_stats(guild: Any, stats: Dict[str, Any], also_visible: Optional[int] = None) -> Dict[str, Any]:
+    """The part of a member's all-time stats that may be shown to anyone in the server.
+
+    The all-time word and emoji counts (and so the word cloud) do not record which channel
+    they came from, so they are left out; channels are only listed when everyone can read them,
+    or when it is ``also_visible`` (the channel the answer is posted in).
+    """
+    public = {str(c.id) for c in getattr(guild, "channels", []) if _is_public(guild, c)}
+    if also_visible is not None:
+        public.add(str(also_visible))
+    channels = stats.get("top_channels") or {}
+    return {
+        **stats,
+        "top_words": {},
+        "top_emojis": {},
+        "top_channels": {channel: count for channel, count in channels.items() if str(channel) in public},
+    }
 
 
 # ======================================================================
