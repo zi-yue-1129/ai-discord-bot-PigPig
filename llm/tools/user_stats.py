@@ -221,7 +221,7 @@ def _is_public(guild: Any, channel: Any) -> bool:
     """Whether every member (the @everyone role) can see ``channel`` and read its history."""
     try:
         permissions = channel.permissions_for(guild.default_role)
-    except (AttributeError, TypeError):
+    except (AttributeError, TypeError, discord.ClientException):
         return False
     return bool(permissions.view_channel and permissions.read_message_history)
 
