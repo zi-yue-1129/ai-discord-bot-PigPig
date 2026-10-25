@@ -1,0 +1,21 @@
+{
+    "responses": {
+        "busy": "這個頻道已經有一場遊戲在進行了。",
+        "unavailable": "問答需要伺服器記憶和 AI 模型，目前其中一個無法使用。",
+        "preparing": "🧠 {user} 開了一場 {rounds} 題的伺服器知識問答，正在出題…",
+        "no_memories": "出不了題：這個伺服器的記憶還不夠多（或指定的範圍內沒有）。",
+        "failed": "出了點問題，問答中止了。",
+        "question_title": "❓ 第 {number}/{total} 題",
+        "question_footer": "{seconds} 秒內選 A–D，越快答對分數越高。",
+        "answered": "你的答案：{letter}",
+        "already_answered": "這題你已經答過了。",
+        "result": "結果",
+        "correct_count": "{answered} 人作答，{count} 人答對。",
+        "nobody_correct": "沒有人答對！",
+        "source": "出處",
+        "source_link": "原訊息",
+        "standings": "目前排名",
+        "final_title": "🏁 最終成績",
+        "final_none": "這次沒有人得分。"
+    }
+}

@@ -280,6 +280,58 @@ class QdrantStore(VectorStoreInterface):
             raise SearchError(f"Vector search failed: {str(e)}") from e
 
 
+    async def sample_memories(
+        self,
+        guild_id: str,
+        limit: int,
+        channel_id: Optional[str] = None,
+        since: Optional[float] = None,
+    ) -> List[MemoryFragment]:
+        """Returns up to ``limit`` random memories of one guild (for quiz questions).
+
+        Args:
+            guild_id: Only memories from this guild.
+            limit: How many to return.
+            channel_id: Only memories from this channel.
+            since: Only memories that started at or after this UNIX time.
+        """
+        from qdrant_client.models import Range, Sample, SampleQuery
+
+        conditions = self._metadata_conditions(user_id=None, channel_id=channel_id, guild_id=guild_id)
+        if since is not None:
+            conditions.append(FieldCondition(key="metadata.start_timestamp", range=Range(gte=float(since))))
+        search_filter = Filter(must=conditions)
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: self.client.query_points(
+                    collection_name=self.collection_name,
+                    query=SampleQuery(sample=Sample.RANDOM),
+                    limit=limit,
+                    query_filter=search_filter,
+                    with_payload=True,
+                    with_vectors=False,
+                ),
+            )
+        except Exception as e:
+            logger.exception("Sampling memories failed")
+            asyncio.create_task(self._report_error(e))
+            raise SearchError(f"Sampling memories failed: {e}") from e
+        fragments = []
+        for point in result.points:
+            payload = point.payload or {}
+            metadata = payload.get("metadata", {})
+            fragments.append(
+                MemoryFragment(
+                    id=metadata.get("fragment_id", str(point.id)),
+                    content=metadata.get("summary", ""),
+                    metadata=metadata,
+                    query_key=payload.get("page_content", ""),
+                )
+            )
+        return fragments
+
     async def search_memories_by_keyword(
         self,
         query_text: str,

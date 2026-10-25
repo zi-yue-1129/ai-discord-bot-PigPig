@@ -26,7 +26,11 @@
         "needs_gap_days": "come back after {value} days of silence",
         "needs_night_ratio": "send {value} of your messages between midnight and 5 am",
         "needs_membership_days": "be here {value} days since your first message",
-        "profile_titles": "Titles: {titles}"
+        "profile_titles": "Titles: {titles}",
+        "title_games_week": "🎮 **Most game points this week**",
+        "title_games_month": "🎮 **Most game points this month**",
+        "title_games_all": "🎮 **Most game points of all time**",
+        "value_points": "{count} points"
     },
     "achievements": {
         "msg_100": "Chatterbox",

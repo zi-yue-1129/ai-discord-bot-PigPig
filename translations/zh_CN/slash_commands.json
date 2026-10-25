@@ -219,5 +219,12 @@
     "Local weekday to post it (default Sunday)": "在星期几发（默认星期日）",
     "Local hour (0-23) to post it (default 20)": "几点发（0-23，默认 20）",
     "Preview this week's recap so far (only you see it)": "预览本周到目前为止的回顾（只有你看得到）",
-    "Percent of unprompted replies that are just an emoji reaction (0 turns it off)": "主动回复中只加表情、不说话的比例（0 为关闭）"
+    "Percent of unprompted replies that are just an emoji reaction (0 turns it off)": "主动回复中只加表情、不说话的比例（0 为关闭）",
+    "Rank by messages, daily streak or game points": "按消息数、连续发言天数或游戏积分排名",
+    "Game points": "游戏积分",
+    "Play a game with the server": "和服务器一起玩游戏",
+    "A quiz about things that happened on this server": "关于这个服务器发生过的事的问答",
+    "How many questions (3-10)": "题数（3-10）",
+    "Only use memories from the last this many days": "只用最近几天内的记忆出题",
+    "Only use memories from this channel": "只用这个频道的记忆出题"
 }

@@ -1,0 +1,21 @@
+{
+    "responses": {
+        "busy": "A game is already running in this channel.",
+        "unavailable": "The quiz needs the server's memories and a model, and one of them is not available right now.",
+        "preparing": "🧠 {user} started a quiz with {rounds} questions about this server. Writing the questions…",
+        "no_memories": "I could not make any questions: there are not enough memories of this server yet (or none in that range).",
+        "failed": "Something went wrong and the quiz stopped.",
+        "question_title": "❓ Question {number}/{total}",
+        "question_footer": "Pick A–D within {seconds} seconds. Faster correct answers score more.",
+        "answered": "Your answer: {letter}",
+        "already_answered": "You already answered this question.",
+        "result": "Result",
+        "correct_count": "{count} of {answered} got it right.",
+        "nobody_correct": "Nobody got it right!",
+        "source": "Where it came from",
+        "source_link": "Original messages",
+        "standings": "Standings",
+        "final_title": "🏁 Final results",
+        "final_none": "Nobody scored this time."
+    }
+}

@@ -1,0 +1,21 @@
+{
+    "responses": {
+        "busy": "このチャンネルではすでにゲームが進行中です。",
+        "unavailable": "クイズにはサーバーの記憶と AI モデルが必要ですが、いまはどちらかが使えません。",
+        "preparing": "🧠 {user} さんがサーバークイズ（{rounds} 問）を始めました。問題を作っています…",
+        "no_memories": "問題を作れませんでした。このサーバーの記憶がまだ足りません（または指定した範囲にありません）。",
+        "failed": "問題が起きたため、クイズを中止しました。",
+        "question_title": "❓ 第 {number}/{total} 問",
+        "question_footer": "{seconds} 秒以内に A–D を選んでください。早く正解するほど高得点です。",
+        "answered": "あなたの回答：{letter}",
+        "already_answered": "この問題にはもう回答しています。",
+        "result": "結果",
+        "correct_count": "{answered} 人中 {count} 人が正解。",
+        "nobody_correct": "正解者なし！",
+        "source": "出典",
+        "source_link": "元のメッセージ",
+        "standings": "現在の順位",
+        "final_title": "🏁 最終結果",
+        "final_none": "今回は誰も得点しませんでした。"
+    }
+}

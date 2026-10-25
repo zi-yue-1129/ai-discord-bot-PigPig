@@ -26,7 +26,11 @@
         "needs_gap_days": "沉默 {value} 天后再次发言",
         "needs_night_ratio": "{value} 的消息在凌晨 0 到 5 点发送",
         "needs_membership_days": "第一次发言满 {value} 天",
-        "profile_titles": "称号：{titles}"
+        "profile_titles": "称号：{titles}",
+        "title_games_week": "🎮 **本周游戏积分**",
+        "title_games_month": "🎮 **本月游戏积分**",
+        "title_games_all": "🎮 **历来游戏积分**",
+        "value_points": "{count} 分"
     },
     "achievements": {
         "msg_100": "话匣子",

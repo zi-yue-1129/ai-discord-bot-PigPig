@@ -60,6 +60,14 @@ CREATE TABLE IF NOT EXISTS titles (
     period TEXT NOT NULL,
     PRIMARY KEY (guild_id, title_id)
 );
+CREATE TABLE IF NOT EXISTS game_scores (
+    guild_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    game TEXT NOT NULL,
+    points INTEGER NOT NULL,
+    played_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_game_scores_guild_time ON game_scores (guild_id, played_at);
 CREATE TABLE IF NOT EXISTS achievement_checked (
     guild_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
@@ -320,6 +328,24 @@ class CommunityStore:
                     "SELECT title_id FROM titles WHERE guild_id = ? AND user_id = ? ORDER BY title_id", (guild_id, user_id)
                 )
             ]
+
+    # ------------------------------------------------------------ games
+    def add_game_scores(self, guild_id: int, game: str, points: Dict[int, int], played_at: float) -> None:
+        """Records one finished game's points per player (players with 0 points are kept out)."""
+        with self._session() as connection:
+            connection.executemany(
+                "INSERT INTO game_scores (guild_id, user_id, game, points, played_at) VALUES (?, ?, ?, ?, ?)",
+                [(guild_id, user_id, game, value, played_at) for user_id, value in points.items() if value > 0],
+            )
+
+    def game_points(self, guild_id: int, since: float = 0, until: float = float("inf")) -> List[Tuple[int, int]]:
+        """Returns each player's game points in a time range, as ``(user_id, points)``, most first."""
+        with self._session() as connection:
+            return connection.execute(
+                "SELECT user_id, SUM(points) AS total FROM game_scores WHERE guild_id = ? AND played_at >= ? AND played_at < ? "
+                "GROUP BY user_id ORDER BY total DESC, user_id",
+                (guild_id, since, until if until != float("inf") else 1e18),
+            ).fetchall()
 
     # ------------------------------------------------------------ birthday roles
     def add_birthday_role(self, guild_id: int, user_id: int, role_id: int, remove_at: float) -> None:
