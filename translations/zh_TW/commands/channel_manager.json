@@ -52,7 +52,8 @@
         },
         "details": {
             "chance": "回覆機率：{chance}%",
-            "keywords": "額外關鍵字：{keywords}"
+            "keywords": "額外關鍵字：{keywords}",
+            "reaction_chance": "只貼表情：{chance}% 的主動回覆只會加一個表情"
         }
     }
 }

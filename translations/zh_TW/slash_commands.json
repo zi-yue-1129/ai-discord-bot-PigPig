@@ -218,5 +218,6 @@
     "Where to post it (defaults to the announcement channel)": "要發在哪裡（預設為公告頻道）",
     "Local weekday to post it (default Sunday)": "在星期幾發（預設星期日）",
     "Local hour (0-23) to post it (default 20)": "幾點發（0-23，預設 20）",
-    "Preview this week's recap so far (only you see it)": "預覽本週到目前為止的回顧（只有你看得到）"
+    "Preview this week's recap so far (only you see it)": "預覽本週到目前為止的回顧（只有你看得到）",
+    "Percent of unprompted replies that are just an emoji reaction (0 turns it off)": "主動回覆中只加表情、不說話的比例（0 為關閉）"
 }

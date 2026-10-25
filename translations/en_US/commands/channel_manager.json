@@ -52,7 +52,8 @@
         },
         "details": {
             "chance": "Reply chance: {chance}%",
-            "keywords": "Extra keywords: {keywords}"
+            "keywords": "Extra keywords: {keywords}",
+            "reaction_chance": "Reaction only: {chance}% of unprompted replies are just an emoji"
         }
     }
 }

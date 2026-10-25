@@ -309,10 +309,17 @@ class PigPig(commands.Bot):
                         is_reply_to_bot = True
 
                 is_mentioned = self.user.id in message.raw_mentions and not message.mention_everyone
-                wants_reply = is_mentioned or is_reply_to_bot or (
-                    auto_response_enabled and await channel_manager.should_auto_respond(message, guild_id)
+                directly_asked = is_mentioned or is_reply_to_bot
+                auto_reply = (
+                    not directly_asked
+                    and auto_response_enabled
+                    and await channel_manager.should_auto_respond(message, guild_id)
                 )
+                wants_reply = directly_asked or auto_reply
                 if is_allowed and wants_reply:
+                    # Some unprompted replies are just an emoji reaction (per-channel reaction chance).
+                    if auto_reply and await channel_manager.react_instead(message, guild_id):
+                        return
                     retry_after = self.rate_limiter.hit("chat", message.author.id)
                     if retry_after:
                         # Unprompted auto-replies are skipped quietly; a direct ask gets told why.

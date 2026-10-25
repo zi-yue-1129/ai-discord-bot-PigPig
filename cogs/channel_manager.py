@@ -23,6 +23,10 @@ log = get_logger(server_id="Bot", source=__name__)
 # Auto-response modes for a channel whose auto-response is on.
 AUTO_RESPONSE_MODES = ("all", "chance", "relevant")
 DEFAULT_AUTO_RESPONSE_CHANCE = 20
+# Emojis an unprompted reaction can fall back to when the server has no favourites yet.
+GENERIC_REACTIONS = ("😂", "👍", "❤️", "👀", "🤣", "😮", "🔥", "🥹")
+# How many of the server's most used emojis this week a reaction is picked from.
+FAVOURITE_REACTIONS = 8
 
 
 @dataclass(frozen=True)
@@ -57,20 +61,33 @@ class AutoResponseTuning:
         return cls(**values)
 
 
+def _percent(raw: Dict[str, Any], key: str, default: int) -> int:
+    try:
+        value = int(raw.get(key, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(0, min(value, 100))
+
+
 def get_auto_response_settings(config: Dict[str, Any], channel_id: str) -> Dict[str, Any]:
-    """Returns the channel's auto-response mode, chance (%) and keywords; mode is "off" when disabled."""
+    """Returns the channel's auto-response mode, chance (%), keywords and reaction chance (%).
+
+    The mode is "off" when auto-response is disabled. ``reaction_chance`` is the share of
+    unprompted replies that become a single emoji reaction instead of a message.
+    """
     if not config.get("auto_response", {}).get(channel_id, False):
-        return {"mode": "off", "chance": 0, "keywords": []}
+        return {"mode": "off", "chance": 0, "keywords": [], "reaction_chance": 0}
     raw = config.get("auto_response_settings", {}).get(channel_id) or {}
     mode = raw.get("mode", "all")
     if mode not in AUTO_RESPONSE_MODES:
         mode = "all"
-    try:
-        chance = int(raw.get("chance", DEFAULT_AUTO_RESPONSE_CHANCE))
-    except (TypeError, ValueError):
-        chance = DEFAULT_AUTO_RESPONSE_CHANCE
     keywords = [str(k).strip() for k in raw.get("keywords", []) if str(k).strip()]
-    return {"mode": mode, "chance": max(0, min(chance, 100)), "keywords": keywords}
+    return {
+        "mode": mode,
+        "chance": _percent(raw, "chance", DEFAULT_AUTO_RESPONSE_CHANCE),
+        "keywords": keywords,
+        "reaction_chance": _percent(raw, "reaction_chance", 0),
+    }
 
 
 def decide_auto_response(
@@ -377,6 +394,7 @@ class ChannelManager(commands.Cog):
         mode="Off, reply to every message, reply by chance, or reply only when the topic is relevant",
         chance="For the chance mode: the percent of messages that get a reply (1-100)",
         keywords="For the relevant mode: extra comma-separated words that count as relevant",
+        reaction_chance="Percent of unprompted replies that are just an emoji reaction (0 turns it off)",
     )
     @app_commands.choices(mode=[
         app_commands.Choice(name="Off", value="off"),
@@ -391,6 +409,7 @@ class ChannelManager(commands.Cog):
         mode: app_commands.Choice[str],
         chance: Optional[app_commands.Range[int, 1, 100]] = None,
         keywords: Optional[str] = None,
+        reaction_chance: Optional[app_commands.Range[int, 0, 100]] = None,
     ):
         """Set how the bot replies, unprompted, to messages in a channel."""
         if not await self.check_admin_permissions(interaction, defer=True):
@@ -412,6 +431,7 @@ class ChannelManager(commands.Cog):
                     settings["keywords"] = [k.strip() for k in keywords.split(",") if k.strip()]
                 else:
                     settings["keywords"] = previous.get("keywords", [])
+            settings["reaction_chance"] = reaction_chance if reaction_chance is not None else previous.get("reaction_chance", 0)
             config["auto_response_settings"][channel_id] = settings
         self.save_config(guild_id, config)
 
@@ -429,6 +449,12 @@ class ChannelManager(commands.Cog):
                 detail = self.lang_manager.translate(
                     guild_id, "commands", "channel_manager", "auto_response", "details", "keywords", keywords=", ".join(effective["keywords"])
                 )
+            if effective["mode"] != "off" and effective["reaction_chance"]:
+                reaction = self.lang_manager.translate(
+                    guild_id, "commands", "channel_manager", "auto_response", "details", "reaction_chance",
+                    chance=effective["reaction_chance"],
+                )
+                detail = f"{detail}\n{reaction}" if detail else reaction
             success_message = self.lang_manager.translate(
                 guild_id, "commands", "channel_manager", "auto_response", "responses", "success", channel=f"<#{channel_id}>", enabled=mode_name
             ) + (f"\n{detail}" if detail else "")
@@ -444,6 +470,41 @@ class ChannelManager(commands.Cog):
         if len(self._last_reply_at) > 5000:
             cutoff = now - self.tuning.conversation_window_seconds
             self._last_reply_at = {k: t for k, t in self._last_reply_at.items() if t >= cutoff}
+
+    async def react_instead(self, message: discord.Message, guild_id: str, roll: Optional[float] = None) -> bool:
+        """For an unprompted reply: maybe just add one emoji reaction instead of writing a message.
+
+        Returns:
+            True when the bot reacted, so no text reply should be written.
+        """
+        chance = get_auto_response_settings(self.load_config(guild_id), str(message.channel.id))["reaction_chance"]
+        roll = random.random() if roll is None else roll
+        if roll * 100 >= chance:
+            return False
+        for emoji in await self._reaction_candidates(message.guild):
+            try:
+                await message.add_reaction(emoji)
+                return True
+            except discord.HTTPException:
+                # Unknown or unusable emoji (deleted, from another server): try the next one.
+                log.debug(f"Could not react with {emoji!r}; trying another emoji")
+        return False
+
+    async def _reaction_candidates(self, guild: Optional[discord.Guild]) -> List[str]:
+        """Emojis to try, in order: one of the server's favourites this week, then generic ones."""
+        favourites: List[str] = []
+        stats_cog = self.bot.get_cog("StatsCog") if guild is not None and hasattr(self.bot, "get_cog") else None
+        storage = getattr(stats_cog, "stats_storage", None)
+        if storage is not None:
+            from cogs.memory.db.stats_storage import week_start
+
+            usable = {str(e) for e in getattr(guild, "emojis", []) if getattr(e, "available", True)}
+            terms = await storage.get_weekly_terms(str(guild.id), week_start(datetime.now()), "emoji", FAVOURITE_REACTIONS)
+            favourites = [term for term, _ in terms if not term.startswith("<") or term in usable]
+        generic = list(GENERIC_REACTIONS)
+        random.shuffle(favourites)
+        random.shuffle(generic)
+        return favourites[:1] + generic[:2]
 
     async def should_auto_respond(self, message: discord.Message, guild_id: str) -> bool:
         """Whether an unprompted message in this channel gets a reply under its auto-response mode.
