@@ -1,7 +1,7 @@
 {
     "responses": {
         "received": "提醒已接收",
-        "confirm_setup": "确认设置提醒",
+        "confirm_setup": "✅ 已设置提醒：{duration}后提醒 {user}「{message}」",
         "future_time_required": "需要未来时间",
         "invalid_format": "无效的格式",
         "reminder_message": "提醒: {message}",
@@ -16,7 +16,17 @@
         "cancel_not_found": "找不到你的提醒 #{id}（可能已发送或不是你设置的）。"
     },
     "time_units": {
-        "seconds": "秒",
-        "unit_key": "时间单位"
+        "seconds": " 秒",
+        "unit_key": "时间单位",
+        "years": " 年",
+        "months": " 个月",
+        "weeks": " 周",
+        "days": " 天",
+        "hours": " 小时",
+        "minutes": " 分钟"
+    },
+    "repeat": {
+        "daily": "（每天重复）",
+        "weekly": "（每周重复）"
     }
 }

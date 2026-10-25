@@ -1,6 +1,7 @@
 {
     "responses": {
         "error": "Failed to update schedule.",
-        "success": "Schedule updated successfully."
+        "success": "Schedule updated successfully.",
+        "invalid_time": "That time isn't valid. Use a range like 09:00-10:30."
     }
 }

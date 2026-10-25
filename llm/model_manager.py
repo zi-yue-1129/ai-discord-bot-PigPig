@@ -63,6 +63,10 @@ class ModelManager:
                 logger.error(f"llm/model_manager.py/_resolve_priority_list error: {e}")
             return []
 
+    def has_models(self, agent_type: str) -> bool:
+        """Whether llm.yaml lists any model for ``agent_type`` (an optional list may be left out)."""
+        return bool(self._resolve_priority_list(agent_type))
+
     def get_model_priority_list(self, agent_type: str) -> List[str]:
         """Returns the full list of models for a given agent_type.
 

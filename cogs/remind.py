@@ -30,7 +30,7 @@ import dateparser
 
 from typing import Any, Optional
 from .language_manager import LanguageManager
-from .remind_lib.store import Reminder, ReminderStore
+from .remind_lib.store import REPEAT_CHOICES, Reminder, ReminderStore, next_occurrence
 from function import func
 from addons.logging import get_logger
 from llm.reminder_writer import LATE_THRESHOLD_SECONDS, ReminderRequest, compose_reminder
@@ -165,16 +165,26 @@ class ReminderCog(commands.Cog):
             except discord.HTTPException:
                 self.logger.warning(f"remind: could not DM reminder {reminder.id}", exc_info=True)
 
+        anchor = reminder.anchor_at if reminder.anchor_at is not None else reminder.due_at
+        next_due = next_occurrence(anchor, reminder.repeat, now)
         if delivered:
-            self.store.finish(reminder.id, "delivered")
+            if next_due is not None:
+                self.store.reschedule(reminder.id, next_due)
+            else:
+                self.store.finish(reminder.id, "delivered")
             return
         attempts = self.store.postpone(reminder.id, until=now + self.RETRY_DELAY_SECONDS)
         if attempts >= self.MAX_DELIVERY_ATTEMPTS:
-            self.store.finish(reminder.id, "failed")
-            self.logger.error(f"remind: giving up on reminder {reminder.id} after {attempts} attempts")
+            if next_due is not None:
+                # A repeating reminder skips this occurrence instead of stopping for good.
+                self.store.reschedule(reminder.id, next_due)
+                self.logger.error(f"remind: skipping this occurrence of reminder {reminder.id} after {attempts} attempts")
+            else:
+                self.store.finish(reminder.id, "failed")
+                self.logger.error(f"remind: giving up on reminder {reminder.id} after {attempts} attempts")
 
     # -------------------------------------------------------------- setting
-    async def _set_reminder_logic(self, channel, target_user, time_str: str, message: str, guild_id: str, interaction: Optional[discord.Interaction] = None, creator=None):
+    async def _set_reminder_logic(self, channel, target_user, time_str: str, message: str, guild_id: str, interaction: Optional[discord.Interaction] = None, creator=None, repeat: str = "none"):
         """Core reminder logic shared by the slash command and the LLM tool.
 
         Args:
@@ -185,6 +195,7 @@ class ReminderCog(commands.Cog):
             guild_id: Guild ID (``"@me"`` in direct messages).
             interaction: The slash command interaction to answer, if any.
             creator: Who is setting the reminder (defaults to the target).
+            repeat: ``"none"``, ``"daily"`` or ``"weekly"``.
 
         Returns:
             The confirmation or error text.
@@ -200,6 +211,9 @@ class ReminderCog(commands.Cog):
 
             if interaction:
                 await interaction.edit_original_response(content=self.lang_manager.translate(guild_id, "commands", "remind", "responses", "received"))
+
+            if repeat not in REPEAT_CHOICES:
+                repeat = "none"
 
             reminder_time = self.parse_time(time_str, guild_id)
             if reminder_time is None:
@@ -234,14 +248,18 @@ class ReminderCog(commands.Cog):
                 message=message,
                 created_at=now,
                 due_at=now + time_diff.total_seconds(),
+                repeat=repeat,
             )
             if self._wake is not None:
                 self._wake.set()
 
-            return await reply(self.lang_manager.translate(
+            confirmation = self.lang_manager.translate(
                 guild_id, "commands", "remind", "responses", "confirm_setup",
                 duration=self.format_timedelta(time_diff, guild_id), user=mention_safe, message=message,
-            ))
+            )
+            if repeat != "none":
+                confirmation += " " + self.lang_manager.translate(guild_id, "commands", "remind", "repeat", repeat)
+            return await reply(confirmation)
 
         except Exception as e:
             await func.report_error(e, f"An error occurred in setting reminder: {e}")
@@ -256,9 +274,15 @@ class ReminderCog(commands.Cog):
     @app_commands.describe(
         time="When to remind (e.g., in 10 minutes, or at 2023-12-31 20:00:00)",
         message="The content of the reminder",
-        user="The user to remind (optional, defaults to yourself)"
+        user="The user to remind (optional, defaults to yourself)",
+        repeat="Repeat the reminder every day or every week (optional)",
     )
-    async def remind(self, interaction: discord.Interaction, time: str, message: str, user: discord.User = None):
+    @app_commands.choices(repeat=[
+        app_commands.Choice(name="Once", value="none"),
+        app_commands.Choice(name="Every day", value="daily"),
+        app_commands.Choice(name="Every week", value="weekly"),
+    ])
+    async def remind(self, interaction: discord.Interaction, time: str, message: str, user: discord.User = None, repeat: Optional[app_commands.Choice[str]] = None):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         guild_id = str(interaction.guild_id)
@@ -272,6 +296,7 @@ class ReminderCog(commands.Cog):
             guild_id=guild_id,
             interaction=interaction,
             creator=interaction.user,
+            repeat=repeat.value if repeat else "none",
         )
 
     # ----------------------------------------------------------- managing
@@ -285,10 +310,13 @@ class ReminderCog(commands.Cog):
         else:
             lines = [self.lang_manager.translate(guild_id, "commands", "remind", "responses", "list_title")]
             for reminder in pending:
-                lines.append(self.lang_manager.translate(
+                line = self.lang_manager.translate(
                     guild_id, "commands", "remind", "responses", "list_item",
                     id=reminder.id, time=f"<t:{int(reminder.due_at)}:R>", message=reminder.message,
-                ))
+                )
+                if reminder.repeat != "none":
+                    line += " " + self.lang_manager.translate(guild_id, "commands", "remind", "repeat", reminder.repeat)
+                lines.append(line)
             text = "\n".join(lines)
         await interaction.response.send_message(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 

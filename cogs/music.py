@@ -117,11 +117,11 @@ class YTMusic(commands.Cog):
         # Attempt early load; each command also lazy-loads if this returns None.
         self.lang_manager = self.bot.get_cog("LanguageManager")
 
-    @app_commands.command(name="mode", description="設置播放模式 (不循環/清單循環/單曲循環)")
+    @app_commands.command(name="mode", description="Set the play mode (no loop / loop queue / loop one song)")
     @app_commands.choices(mode=[
-        app_commands.Choice(name="不循環", value="no_loop"),
-        app_commands.Choice(name="清單循環", value="loop_queue"),
-        app_commands.Choice(name="單曲循環", value="loop_single")
+        app_commands.Choice(name="No loop", value="no_loop"),
+        app_commands.Choice(name="Loop queue", value="loop_queue"),
+        app_commands.Choice(name="Loop one song", value="loop_single")
     ])
     async def mode(self, interaction: discord.Interaction, mode: app_commands.Choice[str]):
         """播放模式命令"""
@@ -148,7 +148,7 @@ class YTMusic(commands.Cog):
         state.ui_messages.append(message)
         await self._refresh_player_buttons(guild_id)
 
-    @app_commands.command(name="shuffle", description="切換隨機播放")
+    @app_commands.command(name="shuffle", description="Toggle shuffle")
     async def shuffle(self, interaction: discord.Interaction):
         """隨機播放命令"""
         guild_id = interaction.guild.id
@@ -198,8 +198,8 @@ class YTMusic(commands.Cog):
             text = self.lang_manager.translate(guild_id, "system", "music", "ai_errors", result.reason, detail=result.detail)
         await interaction.response.send_message(embed=discord.Embed(title=f"❌ | {text}", color=discord.Color.red()), ephemeral=True)
 
-    @app_commands.command(name="volume", description="調整音樂音量 (0-100)")
-    @app_commands.describe(percent="音量百分比 (0-100)")
+    @app_commands.command(name="volume", description="Set the music volume (0-100)")
+    @app_commands.describe(percent="Volume percent (0-100)")
     async def volume(self, interaction: discord.Interaction, percent: app_commands.Range[int, 0, 100]):
         """音量命令"""
         if not self.lang_manager:
@@ -207,8 +207,8 @@ class YTMusic(commands.Cog):
         result = await self.service.set_volume(PlaybackContext.from_interaction(interaction), percent)
         await self._reply_service_result(interaction, result, "volume.responses.success", percent=percent)
 
-    @app_commands.command(name="queue_remove", description="從待播清單移除一首歌")
-    @app_commands.describe(position="歌曲在待播清單中的位置 (1 是下一首)")
+    @app_commands.command(name="queue_remove", description="Remove a song from the queue")
+    @app_commands.describe(position="The song's place in the queue (1 is next)")
     async def queue_remove(self, interaction: discord.Interaction, position: app_commands.Range[int, 1, 50]):
         """移除待播歌曲命令"""
         if not self.lang_manager:
@@ -217,7 +217,7 @@ class YTMusic(commands.Cog):
         title = result.data.get("title", "") if result.ok else ""
         await self._reply_service_result(interaction, result, "queue_tools.responses.removed", title=title, position=position)
 
-    @app_commands.command(name="queue_clear", description="清空待播清單 (目前播放的歌曲不受影響)")
+    @app_commands.command(name="queue_clear", description="Clear the queue (the current song keeps playing)")
     async def queue_clear(self, interaction: discord.Interaction):
         """清空待播清單命令"""
         if not self.lang_manager:
@@ -226,8 +226,8 @@ class YTMusic(commands.Cog):
         count = result.data.get("removed", 0) if result.ok else 0
         await self._reply_service_result(interaction, result, "queue_tools.responses.cleared", count=count)
 
-    @app_commands.command(name="play", description="播放影片(網址或關鍵字) 或 刷新UI")
-    @app_commands.describe(query="影片網址或關鍵字（不填則刷新播放介面）", insert="插播：排到下一首播放")
+    @app_commands.command(name="play", description="Play a video by link or keywords, or refresh the player")
+    @app_commands.describe(query="Video link or keywords (leave empty to refresh the player)", insert="Play it next, ahead of the queue")
     async def play(self, interaction: discord.Interaction, query: Optional[str] = None, insert: bool = False):
         """播放音樂或刷新UI命令"""
         guild_id = interaction.guild.id

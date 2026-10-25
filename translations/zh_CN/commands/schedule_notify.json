@@ -1,0 +1,7 @@
+{
+    "notice": "⏰ {user} {minutes} 分钟后有日程：{time} {description}",
+    "responses": {
+        "enabled": "已开启日程提醒，每个日程开始前 {minutes} 分钟会在这个频道通知你。",
+        "disabled": "已关闭日程提醒。"
+    }
+}

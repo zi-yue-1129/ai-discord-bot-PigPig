@@ -8,7 +8,7 @@ class UserPref(Base):
     __tablename__ = "user_pref"
     id = Column(Integer, primary_key=True, autoincrement=True)
     discord_id = Column(String)
-    model_uri = Column(String) # TODO: change type to uri (?)
+    model_uri = Column(String)  # Unused since the training script was removed; kept so existing databases load.
     last_update = Column(String)
 
 class SearchRecord(Base):

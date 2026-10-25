@@ -43,6 +43,16 @@
     "auto_response": {
         "responses": {
             "success": "チャンネル{channel}の自動応答を{enabled}に設定しました"
+        },
+        "choices": {
+            "off": "オフ",
+            "all": "すべてのメッセージに応答",
+            "chance": "確率で応答",
+            "relevant": "話題に関係する時だけ応答"
+        },
+        "details": {
+            "chance": "応答確率：{chance}%",
+            "keywords": "追加キーワード：{keywords}"
         }
     }
 }
