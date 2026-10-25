@@ -26,6 +26,17 @@
         "chain_over": "這局一共接了 {count} 個詞，最後一個是 **{last}**。",
         "chain_words": "這局的接龍",
         "chain_player": "{user} · {count} 個詞",
-        "chain_starters": "蘋果,電腦,太陽,音樂,學校,花園,火車,月亮,咖啡,朋友"
+        "chain_starters": "蘋果,電腦,太陽,音樂,學校,花園,火車,月亮,咖啡,朋友",
+        "song_need_voice": "請先加入語音頻道，片段會在那裡播放。",
+        "song_unavailable": "音樂功能目前無法使用，所以猜歌沒辦法開始。",
+        "song_music_playing": "這個伺服器正在放音樂（或佇列裡還有歌），等放完再來吧。",
+        "song_not_enough": "這個伺服器至少要用 /play 放過 {count} 首歌，才能玩猜歌。",
+        "song_preparing": "🎧 {user} 在 {channel} 開了猜歌，共 {rounds} 首！在這裡打歌名（或歌手），最先答對的人贏得這一題。",
+        "song_round_title": "🎵 第 {number}/{total} 首",
+        "song_round": "仔細聽……你有 {seconds} 秒。",
+        "song_answer": "答案是 **[{title}]({url})**",
+        "song_winner": "{user} 用了 {seconds} 秒猜中！",
+        "song_nobody": "沒有人猜中！",
+        "song_interrupted": "有人開始放音樂了，猜歌到這裡結束。"
     }
 }

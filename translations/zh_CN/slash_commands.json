@@ -228,5 +228,7 @@
     "Only use memories from the last this many days": "只用最近几天内的记忆出题",
     "Only use memories from this channel": "只用这个频道的记忆出题",
     "Word chain: start each word with the last character of the one before": "文字接龙：每个词的开头接上一个词的最后一个字",
-    "Also accept a character with the same pronunciation (Chinese)": "同音字也算（中文）"
+    "Also accept a character with the same pronunciation (Chinese)": "同音字也算（中文）",
+    "Guess the song from a short clip of what this server listened to": "从这个服务器听过的歌播一小段，猜猜是哪首",
+    "How many songs (3-10)": "歌曲数（3-10）"
 }

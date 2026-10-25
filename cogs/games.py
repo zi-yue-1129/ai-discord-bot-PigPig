@@ -1,8 +1,9 @@
-"""Games: a quiz about the server's own history and a word chain.
+"""Games: a quiz about the server's own history, a word chain, and guess the song.
 
 Each quiz question is written by the model from one randomly picked memory, and the answer is
 shown with where it came from (channel, day and a link to the original messages). In the word
-chain, players continue each other's words and the bot steps in when nobody does. Points go to
+chain, players continue each other's words and the bot steps in when nobody does. Guess the song
+plays short clips of songs this server listened to. Points go to
 the shared game leaderboard (``/leaderboard top kind:Game points``).
 """
 
@@ -40,7 +41,9 @@ from .games_lib.quiz import (
     parse_question,
     usable_memory,
 )
+from .games_lib import song_guess
 from .language_manager import LanguageManager
+from .music_lib.context import PlaybackContext
 
 LETTERS = "ABCD"
 # Memories sampled per wanted question: some are skipped (too short, unusable answer).
@@ -51,6 +54,9 @@ CHAIN_IDLE_SECONDS = 60
 CHAIN_MAX_SECONDS = 15 * 60
 # Reactions on word-like messages in a running chain.
 CHAIN_REACTIONS = {None: "✅", "wrong_start": "❌", "used": "🔁", "dead_end": "🚫", "twice": "⏳"}
+# Songs considered for guess the song (the server's most played ones).
+SONG_POOL_SIZE = 200
+MIN_SONGS = 3
 _LANGUAGE_NAMES = {"zh_TW": "Traditional Chinese", "zh_CN": "Simplified Chinese", "ja_JP": "Japanese", "en_US": "English"}
 
 
@@ -93,6 +99,9 @@ class GamesCog(commands.Cog):
         self.chain_max_seconds: float = CHAIN_MAX_SECONDS
         self._running: Dict[int, bool] = {}
         self._chains: Dict[int, "ChainGame"] = {}
+        self._guesses: Dict[int, "GuessRound"] = {}
+        self.clip_seconds: float = song_guess.CLIP_SECONDS
+        self.guess_seconds: float = song_guess.GUESS_SECONDS
 
     async def cog_load(self) -> None:
         self.lang_manager = LanguageManager.get_instance(self.bot)
@@ -289,8 +298,13 @@ class GamesCog(commands.Cog):
 
         Only messages that look like a single word count; other chatter in the channel is left alone.
         """
-        game = self._chains.get(getattr(message.channel, "id", None))
-        if game is None or message.author.bot:
+        if message.author.bot:
+            return False
+        channel_id = getattr(message.channel, "id", None)
+        if channel_id in self._guesses:
+            return await self._take_guess(message, self._guesses[channel_id])
+        game = self._chains.get(channel_id)
+        if game is None:
             return False
         word = normalise_word(message.content)
         if word is None:
@@ -416,6 +430,175 @@ class GamesCog(commands.Cog):
                 pass
         finally:
             self._running.pop(channel.id, None)
+
+    # ------------------------------------------------------------ guess the song
+    async def _take_guess(self, message: discord.Message, guess_round: "GuessRound") -> bool:
+        """Checks a guess; the first correct one wins the round. Messages to the bot itself are let through."""
+        bot_user = getattr(self.bot, "user", None)
+        if bot_user is not None and bot_user.id in getattr(message, "raw_mentions", []):
+            return False
+        if guess_round.winner is None and song_guess.is_correct(message.content, guess_round.title):
+            guess_round.winner = (message.author.id, self._now() - guess_round.started_at)
+            guess_round.solved.set()
+            try:
+                await message.add_reaction("✅")
+            except discord.HTTPException:
+                pass
+        return True
+
+    def song_pool(self, music: Any, guild_id: int) -> List[tuple]:
+        """``(video_id, title)`` of the server's most played songs, shuffled."""
+        rows = music._taste_store.top_played(guild_id, 0, float("inf"), SONG_POOL_SIZE)
+        pool = [(video_id, title) for video_id, title, *_ in rows if video_id and title]
+        random.shuffle(pool)
+        return pool
+
+    async def _wait_solved(self, guess_round: "GuessRound", seconds: float) -> bool:
+        try:
+            await asyncio.wait_for(guess_round.solved.wait(), timeout=max(0.0, seconds))
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+    async def play_round(self, channel: Any, guild: discord.Guild, voice_client: Any, music: Any, song: dict) -> "GuessRound":
+        """Plays one clip and takes guesses until someone is right or time is up."""
+        start = song_guess.clip_start(song.get("duration"))
+        volume = music.state_manager.get_state(guild.id).volume
+        source = music.audio_manager.create_audio_source(song, volume=volume, start_offset=start)
+        guess_round = GuessRound(song.get("title") or "", self._now())
+        self._guesses[channel.id] = guess_round
+        try:
+            voice_client.play(source)
+            if not await self._wait_solved(guess_round, self.clip_seconds):
+                voice_client.stop()
+                await self._wait_solved(guess_round, self.guess_seconds - self.clip_seconds)
+        finally:
+            self._guesses.pop(channel.id, None)
+            if voice_client.is_playing():
+                voice_client.stop()
+        return guess_round
+
+    def song_answer_embed(self, guild_id: int, number: int, total: int, song: dict, guess_round: "GuessRound", scoreboard: QuizScoreboard) -> discord.Embed:
+        name = song_guess.answer_name(song.get("title") or "")
+        embed = discord.Embed(
+            title=self._t(guild_id, "song_round_title", number=number, total=total),
+            description=self._t(guild_id, "song_answer", title=name[:200], url=song.get("url") or ""),
+        )
+        if guess_round.winner is not None:
+            user_id, elapsed = guess_round.winner
+            result = self._t(guild_id, "song_winner", user=f"<@{user_id}>", seconds=f"{elapsed:.1f}")
+        else:
+            result = self._t(guild_id, "song_nobody")
+        embed.add_field(name=self._t(guild_id, "result"), value=result, inline=False)
+        standings = self.standings_text(scoreboard)
+        if standings:
+            embed.add_field(name=self._t(guild_id, "standings"), value=standings, inline=False)
+        if song.get("thumbnail"):
+            embed.set_thumbnail(url=song["thumbnail"])
+        return embed
+
+    async def run_song_game(
+        self, channel: Any, guild: discord.Guild, voice_client: Any, music: Any, pool: List[tuple], rounds: int, user: Any
+    ) -> QuizScoreboard:
+        """Plays up to ``rounds`` clips from ``pool`` and records the points."""
+        scoreboard = QuizScoreboard()
+        quiet = discord.AllowedMentions.none()
+        context = PlaybackContext(guild=guild, channel=channel, user=user)
+        number = 0
+        for video_id, _ in pool[: rounds * 2]:  # a few songs may not be playable any more
+            if number >= rounds:
+                break
+            if voice_client.is_playing() or voice_client.is_paused():
+                await channel.send(self._t(guild.id, "song_interrupted"), allowed_mentions=quiet)
+                break
+            song, _ = await music.youtube.resolve_stream(f"https://www.youtube.com/watch?v={video_id}", context)
+            if not song:
+                continue
+            number += 1
+            await channel.send(
+                embed=discord.Embed(
+                    title=self._t(guild.id, "song_round_title", number=number, total=rounds),
+                    description=self._t(guild.id, "song_round", seconds=int(self.guess_seconds)),
+                ),
+                allowed_mentions=quiet,
+            )
+            guess_round = await self.play_round(channel, guild, voice_client, music, song)
+            if guess_round.winner is not None:
+                user_id, elapsed = guess_round.winner
+                scoreboard.add({user_id: song_guess.points_for(elapsed)})
+            await channel.send(
+                embed=self.song_answer_embed(guild.id, number, rounds, song, guess_round, scoreboard), allowed_mentions=quiet
+            )
+            if number < rounds:
+                await asyncio.sleep(self.pause_seconds)
+        self.store.add_game_scores(guild.id, "guess_song", scoreboard.totals, self._now())
+        final = discord.Embed(
+            title=self._t(guild.id, "final_title"),
+            description=self.standings_text(scoreboard) or self._t(guild.id, "final_none"),
+        )
+        await channel.send(embed=final, allowed_mentions=quiet)
+        return scoreboard
+
+    @game.command(name="guess_song", description="Guess the song from a short clip of what this server listened to")
+    @app_commands.describe(rounds="How many songs (3-10)")
+    async def guess_song(self, interaction: discord.Interaction, rounds: app_commands.Range[int, 3, 10] = 5) -> None:
+        guild, channel = interaction.guild, interaction.channel
+        voice = getattr(interaction.user, "voice", None)
+        music = self.bot.get_cog("YTMusic")
+        voice_client = guild.voice_client
+        problem = None
+        if voice is None or voice.channel is None:
+            problem = "song_need_voice"
+        elif music is None or getattr(music, "youtube", None) is None:
+            problem = "song_unavailable"
+        elif (voice_client is not None and (voice_client.is_playing() or voice_client.is_paused())) or not (
+            music.queue_manager.is_queue_empty(guild.id)
+        ):
+            problem = "song_music_playing"
+        elif self._running.get(channel.id):
+            problem = "busy"
+        pool = self.song_pool(music, guild.id) if problem is None else []
+        if problem is None and len(pool) < MIN_SONGS:
+            problem = "song_not_enough"
+        if problem is not None:
+            await interaction.response.send_message(self._t(guild.id, problem, count=MIN_SONGS), ephemeral=True)
+            return
+        self._running[channel.id] = True
+        joined = False
+        try:
+            await interaction.response.send_message(
+                self._t(guild.id, "song_preparing", user=interaction.user.mention, rounds=rounds, channel=voice.channel.mention)
+            )
+            if voice_client is None:
+                voice_client = await voice.channel.connect()
+                joined = True
+            elif voice_client.channel != voice.channel:
+                await voice_client.move_to(voice.channel)
+            await self.run_song_game(channel, guild, voice_client, music, pool, min(rounds, len(pool)), interaction.user)
+        except Exception as error:
+            self.logger.error("games: guess the song failed", exc_info=True)
+            await func.report_error(error, "games: guess the song")
+            try:
+                await channel.send(self._t(guild.id, "failed"))
+            except discord.HTTPException:
+                pass
+        finally:
+            self._running.pop(channel.id, None)
+            if joined and voice_client is not None and not (voice_client.is_playing() or voice_client.is_paused()):
+                try:
+                    await voice_client.disconnect()
+                except Exception:
+                    self.logger.warning("games: could not leave the voice channel", exc_info=True)
+
+
+class GuessRound:
+    """One clip: its title, when it started, and the first correct guess ``(user_id, seconds)``."""
+
+    def __init__(self, title: str, started_at: float) -> None:
+        self.title = title
+        self.started_at = started_at
+        self.winner: Optional[tuple] = None
+        self.solved = asyncio.Event()
 
 
 class ChainGame:

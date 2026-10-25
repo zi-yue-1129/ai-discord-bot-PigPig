@@ -26,6 +26,17 @@
         "chain_over": "{count} words were played. The last word was **{last}**.",
         "chain_words": "The chain",
         "chain_player": "{user} · {count} words",
-        "chain_starters": "apple,river,garden,music,pencil,window,tiger,summer,rocket,island"
+        "chain_starters": "apple,river,garden,music,pencil,window,tiger,summer,rocket,island",
+        "song_need_voice": "Join a voice channel first: the clips play there.",
+        "song_unavailable": "Music isn't available right now, so guess the song can't start.",
+        "song_music_playing": "Music is playing (or queued) on this server. Try again when it's done.",
+        "song_not_enough": "This server needs at least {count} songs played with /play before guess the song works.",
+        "song_preparing": "🎧 {user} started guess the song with {rounds} songs in {channel}! Type the song name (or the artist) here; the first right answer wins the round.",
+        "song_round_title": "🎵 Song {number}/{total}",
+        "song_round": "Listen… You have {seconds} seconds.",
+        "song_answer": "It was **[{title}]({url})**",
+        "song_winner": "{user} got it in {seconds} s!",
+        "song_nobody": "Nobody got it!",
+        "song_interrupted": "Someone started the music, so guess the song stops here."
     }
 }

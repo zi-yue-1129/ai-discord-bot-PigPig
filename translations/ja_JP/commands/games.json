@@ -26,6 +26,17 @@
         "chain_over": "全部で {count} 個の言葉がつながりました。最後は **{last}** でした。",
         "chain_words": "今回のしりとり",
         "chain_player": "{user} · {count} 個",
-        "chain_starters": "りんご,さくら,すいか,たいよう,こども,めがね,ねこ,うみ,やま,ともだち"
+        "chain_starters": "りんご,さくら,すいか,たいよう,こども,めがね,ねこ,うみ,やま,ともだち",
+        "song_need_voice": "先にボイスチャンネルに参加してください。そこで曲を流します。",
+        "song_unavailable": "音楽機能が今は使えないため、曲当てを始められません。",
+        "song_music_playing": "このサーバーで音楽が再生中（またはキューに曲があります）です。終わってからもう一度どうぞ。",
+        "song_not_enough": "曲当てには、このサーバーで /play で {count} 曲以上再生されている必要があります。",
+        "song_preparing": "🎧 {user} が {channel} で曲当てを始めました（全 {rounds} 曲）！ここに曲名（またはアーティスト）を書いてください。最初に正解した人の勝ちです。",
+        "song_round_title": "🎵 {number}/{total} 曲目",
+        "song_round": "よく聴いて…… 制限時間は {seconds} 秒です。",
+        "song_answer": "正解は **[{title}]({url})**",
+        "song_winner": "{user} が {seconds} 秒で正解！",
+        "song_nobody": "だれも当てられませんでした！",
+        "song_interrupted": "音楽の再生が始まったため、曲当てはここで終了します。"
     }
 }

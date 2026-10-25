@@ -333,3 +333,132 @@ async def test_a_word_chain_takes_moves_lets_the_bot_step_in_and_records_points(
     assert {f.name: f.value for f in result.fields}["standings|"] == "chain_player|count=1|user=<@10>"
     assert store.game_points(GUILD_ID) == [(10, WORD_POINTS)]
     assert await cog.handle_message(ChainMessage(channel, 10, "液體")) is False  # the game is over
+
+
+# ------------------------------------------------------------------ guess the song
+
+from cogs.games_lib import song_guess  # noqa: E402
+
+TITLE_JP = "YOASOBI「夜に駆ける」 Official Music Video"
+TITLE_ZH = "周杰倫 Jay Chou【告白氣球 Love Confession】Official MV"
+TITLE_EN = "Ed Sheeran - Shape of You (Official Music Video) [4K]"
+
+
+@pytest.mark.parametrize(
+    "guess, title",
+    [
+        ("夜に駆ける", TITLE_JP),
+        ("yoasobi", TITLE_JP),
+        ("告白气球", TITLE_ZH),  # Simplified for a Traditional title
+        ("love confession", TITLE_ZH),
+        ("周杰倫", TITLE_ZH),
+        ("shape of u", TITLE_EN),
+        ("Shape Of You!!", TITLE_EN),
+    ],
+)
+def test_close_guesses_of_the_song_or_artist_count(guess: str, title: str) -> None:
+    assert song_guess.is_correct(guess, title)
+
+
+@pytest.mark.parametrize("guess", ["you", "official music video", "4k", "a", "Perfect"])
+def test_noise_and_wrong_guesses_do_not_count(guess: str) -> None:
+    assert not song_guess.is_correct(guess, TITLE_EN)
+
+
+def test_the_answer_is_shown_without_tags_and_the_clip_starts_mid_song() -> None:
+    import random as random_module
+
+    assert song_guess.answer_name(TITLE_EN) == "Ed Sheeran - Shape of You"
+    assert song_guess.answer_name(TITLE_ZH) == "周杰倫 Jay Chou【告白氣球 Love Confession】"
+    assert song_guess.clip_start(30) == 0.0
+    starts = {song_guess.clip_start(200, random_module.Random(seed)) for seed in range(50)}
+    assert min(starts) >= 40 and max(starts) <= 120
+    assert song_guess.points_for(0) == 1000 and song_guess.points_for(30) == 500
+
+
+class FakeVoiceClient:
+    def __init__(self) -> None:
+        self.played: list = []
+        self.playing = False
+
+    def play(self, source: Any) -> None:
+        self.played.append(source)
+        self.playing = True
+
+    def stop(self) -> None:
+        self.playing = False
+
+    def is_playing(self) -> bool:
+        return self.playing
+
+    def is_paused(self) -> bool:
+        return False
+
+
+class FakeMusic:
+    def __init__(self, songs: dict) -> None:
+        self.songs = songs
+        self.state_manager = SimpleNamespace(get_state=lambda guild_id: SimpleNamespace(volume=0.4))
+        self.audio_manager = SimpleNamespace(create_audio_source=self._source)
+        self.youtube = SimpleNamespace(resolve_stream=self._resolve)
+        self.sources: list = []
+
+    def _source(self, song: dict, volume: float, start_offset: float) -> tuple:
+        self.sources.append((song["video_id"], volume, start_offset))
+        return ("source", song["video_id"])
+
+    async def _resolve(self, url: str, ctx: Any) -> tuple:
+        video_id = url.rsplit("=", 1)[1]
+        song = self.songs.get(video_id)
+        return (dict(song, video_id=video_id), None) if song else (None, None)
+
+
+class GuessChannel(ChainChannel):
+    """Sends a guess from each player in ``guesses`` as soon as a round starts."""
+
+    def __init__(self, cog: GamesCog, guesses: list) -> None:
+        super().__init__()
+        self.cog = cog
+        self.guesses = guesses
+        self.messages: list = []
+
+    async def send(self, content: Any = None, embed: Any = None, allowed_mentions: Any = None) -> None:
+        await super().send(content, embed, allowed_mentions)
+        if embed is not None and embed.description == "song_round|seconds=0" and self.guesses:
+            for author, text in self.guesses.pop(0):
+                message = ChainMessage(self, author, text)
+                message.raw_mentions = []
+                self.messages.append(message)
+                asyncio.get_running_loop().call_soon(asyncio.ensure_future, self.cog.handle_message(message))
+
+
+import asyncio  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_guess_the_song_plays_clips_and_the_first_right_guess_wins(cog: GamesCog, store: CommunityStore) -> None:
+    music = FakeMusic(
+        {
+            "a": {"title": TITLE_EN, "duration": 200, "url": "https://youtu.be/a"},
+            "c": {"title": TITLE_JP, "duration": 30, "url": "https://youtu.be/c"},
+        }
+    )
+    cog.clip_seconds, cog.guess_seconds = 0.05, 0.1
+    channel = GuessChannel(cog, [[(10, "perfect"), (11, "shape of you"), (10, "Shape of You")], [(12, "hello")]])
+    voice = FakeVoiceClient()
+    pool = [("a", TITLE_EN), ("b", "gone"), ("c", TITLE_JP)]
+
+    board = await cog.run_song_game(channel, SimpleNamespace(id=GUILD_ID), voice, music, pool, 2, SimpleNamespace(id=1))
+
+    assert [video for video, _, _ in music.sources] == ["a", "c"]  # "b" can't be played any more
+    assert music.sources[1] == ("c", 0.4, 0.0) and 40 <= music.sources[0][2] <= 120
+    assert list(board.totals) == [11]
+    answers = [e for e in channel.sent if getattr(e, "title", None) == "song_round_title|number=1|total=2"]
+    fields = {f.name: f.value for f in answers[-1].fields}
+    assert answers[-1].description == "song_answer|title=Ed Sheeran - Shape of You|url=https://youtu.be/a"
+    assert fields["result|"].startswith("song_winner|seconds=") and fields["result|"].endswith("user=<@11>")
+    assert [m.reactions for m in channel.messages[:3]] == [[], ["✅"], []]
+    last_round = [e for e in channel.sent if getattr(e, "title", None) == "song_round_title|number=2|total=2"][-1]
+    assert {f.name: f.value for f in last_round.fields}["result|"] == "song_nobody|"
+    assert voice.playing is False
+    assert [user for user, _ in store.game_points(GUILD_ID)] == [11]

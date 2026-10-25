@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Games cog runs games for the whole channel: a quiz about the server and a word chain. The quiz about the server's own history: questions are written from the server's episodic memories (the conversation summaries the memory system keeps), so when the answer is revealed everyone can see where it came from and jump back to the original messages.
+The Games cog runs games for the whole channel: a quiz about the server, a word chain, and guess the song. The quiz about the server's own history: questions are written from the server's episodic memories (the conversation summaries the memory system keeps), so when the answer is revealed everyone can see where it came from and jump back to the original messages.
 
 Points from every game go to `/leaderboard top kind:Game points`.
 
@@ -36,6 +36,18 @@ A word chain in the channel. The bot posts the first word; each next word has to
 - When nobody continues for 30 seconds, the bot plays one word (written by the model and checked against the rules). When nobody continues for 60 seconds after that, the game ends; it also ends after 15 minutes.
 - Each accepted word is worth 10 points. The result shows the last words of the chain and who played the most.
 
+## `/game guess_song [rounds]`
+
+Short clips of songs this server listened to; the first player to type the song's name (or artist) in the text channel wins the round.
+
+- You have to be in a voice channel, and no music may be playing, paused or queued. The bot joins your channel (or moves there if it is idle elsewhere) and leaves afterwards if it joined for the game.
+- Songs come from the server's most played songs in `play_events` (needs at least 3). Each one is looked up again (`resolve_stream`); songs that can no longer be played are skipped.
+- A clip plays for 15 seconds from a random point between 20% and 60% of the song (`-ss` seek). Guesses are taken for 30 seconds from the start of the clip.
+- A guess counts when it is close (≥ 0.8 similarity) to a part of the YouTube title: the text around `-`/`|`/`/`, text inside 「」『』《》 or non-tag brackets, and each Chinese or Latin run of those. Tags such as "Official Music Video", "MV", "4K", "Lyrics" are ignored, and Traditional and Simplified Chinese compare alike (OpenCC).
+- The winning guess gets ✅. Other messages in the channel during a round are not answered by the chat AI, except ones that mention the bot.
+- The winner scores 500 points plus up to 500 more the faster they were. The answer shows the cleaned-up title with a link.
+- If someone starts music with `/play` during the game, it stops.
+
 ## Storage
 
 `game_scores` in `data/community.db`: `(guild_id, user_id, game, points, played_at)`.
@@ -45,6 +57,7 @@ A word chain in the channel. The bot posts the first word; each next word has to
 - `cogs/games.py` — the cog, the answer buttons and the game loop
 - `cogs/games_lib/quiz.py` — question validation, scoring
 - `cogs/games_lib/chain.py` — word chain rules (normalising words, chaining, homophones)
-- `bot.py` — hands messages in a running chain to `GamesCog.handle_message` before chat handling
+- `cogs/games_lib/song_guess.py` — title parts, guess matching, clip start, points
+- `bot.py` — hands messages in a running chain or song round to `GamesCog.handle_message` before chat handling
 - `llm/game_writer.py` — asks the model for a quiz question or the bot's word chain move
 - `cogs/memory/vector_stores/qdrant_store.py` — `sample_memories` (Qdrant random sampling, filtered by guild, channel and time)
