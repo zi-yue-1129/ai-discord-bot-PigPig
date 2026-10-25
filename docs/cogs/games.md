@@ -23,7 +23,7 @@ How a game goes:
 5. The answer is revealed with how many got it right, the **source** (channel, day, link to the original messages) and the standings.
 6. After the last question the final standings are posted and the points are saved.
 
-Only one game runs per channel at a time, and a player can host one game at a time. Starting the quiz or the word chain counts as one use of the host's chat quota (the `chat` rate limit). At most 3 model calls for games run at once across the bot; these limits live on the bot, so they survive a reload of the cog, and unloading the cog stops running games. Games can't be started in the music request channel. The quiz needs the memory system (Qdrant) and a working model; otherwise it says so.
+Only one game runs per channel at a time, and a player can host one game at a time. Starting the quiz or the word chain counts as one use of the host's chat quota (the `chat` rate limit), and so does every model call the game makes for them (each quiz question written, each word the bot plays); once the quota is used up, the quiz plays the questions it has and the bot stops stepping in. At most 3 model calls for games run at once across the bot; these limits live on the bot, so they survive a reload of the cog, and unloading the cog stops running games. Games can't be started in the music request channel. The quiz needs the memory system (Qdrant) and a working model; otherwise it says so.
 
 ## `/game chain [homophones]`
 

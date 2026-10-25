@@ -391,16 +391,19 @@ class FakeVoiceClient:
         self.playing, self.source = True, source
 
     def stop(self) -> None:
-        self.playing, self.source = False, None
+        self.playing, self.source, self.paused = False, None, False
+
+    def pause(self) -> None:
+        self.playing, self.paused = False, True
+
+    def is_paused(self) -> bool:
+        return getattr(self, "paused", False)
 
     async def disconnect(self) -> None:
         self.disconnected = True
 
     def is_playing(self) -> bool:
         return self.playing
-
-    def is_paused(self) -> bool:
-        return False
 
 
 class FakeMusic:
@@ -648,3 +651,116 @@ async def test_queued_music_ends_the_song_game(cog: GamesCog) -> None:
     await cog.run_song_game(channel, SimpleNamespace(id=GUILD_ID), FakeVoiceClient(), music, [("a", TITLE_EN)], 1, SimpleNamespace(id=1))
 
     assert channel.sent[0] == "song_interrupted|" and music.sources == []
+
+
+# ------------------------------------------------------------------ third review follow-ups
+
+
+class OneCallLimiter:
+    """Allows one chat request per user, like a strict hourly limit."""
+
+    def __init__(self) -> None:
+        self.hits: list = []
+
+    def hit(self, bucket: str, user_id: int) -> float:
+        self.hits.append(user_id)
+        return 0 if self.hits.count(user_id) == 1 else 3600.0
+
+
+@pytest.mark.asyncio
+async def test_every_quiz_and_chain_model_call_counts_against_the_hosts_quota(
+    cog: GamesCog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list = []
+
+    async def fake_write(orchestrator: Any, guild_id: str, memory_text: str) -> str:
+        calls.append(memory_text)
+        return _reply()
+
+    async def fake_word(*args: Any) -> str:
+        calls.append("word")
+        return "果汁"
+
+    monkeypatch.setitem(GamesCog.make_questions.__globals__, "write_question", fake_write)
+    monkeypatch.setitem(GamesCog.bot_word.__globals__, "write_chain_word", fake_word)
+    cog.bot.rate_limiter = OneCallLimiter()
+    cog.bot.vector_manager.store.memories = [_memory(MEMORY + str(i)) for i in range(30)]
+
+    questions = await cog.make_questions(FakeGuild(), 10, host_id=10)
+
+    assert len(questions) == 1 and len(calls) == 1  # the other nine calls were refused
+    assert await cog.bot_word(SimpleNamespace(id=GUILD_ID), WordChain("蘋果"), host_id=10) is None
+    assert len(calls) == 1
+    assert await cog.bot_word(SimpleNamespace(id=GUILD_ID), WordChain("蘋果"), host_id=11) == "果汁"
+
+
+@pytest.mark.asyncio
+async def test_a_clip_never_replaces_music_that_was_paused_meanwhile(cog: GamesCog) -> None:
+    music = FakeMusic({})
+    voice = FakeVoiceClient()
+    voice.play("music")
+    voice.pause()
+
+    with pytest.raises(discord.ClientException):
+        await cog.play_round(ChainChannel(), SimpleNamespace(id=GUILD_ID), voice, music, {"title": TITLE_EN, "video_id": "a"})
+    assert voice.source == "music" and voice.is_paused()
+
+
+@pytest.mark.asyncio
+async def test_a_clip_paused_from_the_controls_is_stopped_when_the_round_ends(cog: GamesCog) -> None:
+    music = FakeMusic({})
+    voice = FakeVoiceClient()
+    cog.clip_seconds, cog.guess_seconds = 0.05, 0.1
+
+    async def pause_soon() -> None:
+        await asyncio.sleep(0.01)
+        voice.pause()
+
+    await asyncio.gather(
+        cog.play_round(ChainChannel(), SimpleNamespace(id=GUILD_ID), voice, music, {"title": TITLE_EN, "video_id": "a"}),
+        pause_soon(),
+    )
+    assert voice.source is None and not voice.is_paused()
+
+
+@pytest.mark.asyncio
+async def test_the_server_stays_reserved_until_the_music_is_handed_back(cog: GamesCog) -> None:
+    music = FakeMusic({})
+    music.queue.append("song")
+    reserved_during_handoff: list = []
+
+    async def play_next(ctx: Any) -> None:
+        reserved_during_handoff.append(GUILD_ID in cog.limits.song_guilds)
+
+    music.play_next = play_next
+    interaction = SimpleNamespace(
+        guild=SimpleNamespace(id=GUILD_ID), guild_id=GUILD_ID, channel=SimpleNamespace(id=500), user=SimpleNamespace(id=10)
+    )
+    cog._claim(interaction)
+    cog.limits.song_guilds.add(GUILD_ID)
+
+    await cog._finish_song_game(interaction, FakeVoiceClient(), music, joined=True)
+
+    assert reserved_during_handoff == [True]
+    assert GUILD_ID not in cog.limits.song_guilds and cog._busy(_interaction(10, 500)) is None
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_quiz_stops_its_answer_buttons(cog: GamesCog) -> None:
+    cog.answer_seconds = 60
+    views: list = []
+
+    class Channel(FakeChannel):
+        async def send(self, content: Any = None, embed: Any = None, view: Any = None, allowed_mentions: Any = None) -> FakeMessage:
+            if view is not None:
+                views.append(view)
+            return FakeMessage(embed, view)
+
+    task = asyncio.create_task(cog.run_quiz(Channel({}), SimpleNamespace(id=GUILD_ID), [parse_question(_reply(), MEMORY, META)]))
+    while not views:
+        await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert views[0].is_finished()

@@ -149,6 +149,13 @@ class GamesCog(commands.Cog):
                 return self._t(guild_id, "rate_limited", seconds=max(1, round(retry_after)))
         return None
 
+    def _charge(self, host_id: Optional[int]) -> bool:
+        """Counts one model call against the host's chat quota; False when the quota is used up."""
+        limiter = getattr(self.bot, "rate_limiter", None)
+        if limiter is None or host_id is None:
+            return True
+        return not limiter.hit("chat", host_id)
+
     def _claim(self, interaction: discord.Interaction) -> None:
         self.limits.running.add(interaction.channel.id)
         self.limits.hosts.add(interaction.user.id)
@@ -169,11 +176,13 @@ class GamesCog(commands.Cog):
         channel_id: Optional[str] = None,
         since: Optional[float] = None,
         here: Optional[int] = None,
+        host_id: Optional[int] = None,
     ) -> List[QuizQuestion]:
         """Writes up to ``count`` questions from random memories of this server.
 
         Only memories from channels everyone can read (or from ``here``, the channel the quiz is
         played in) are used, so a quiz never reveals what was said in a restricted channel.
+        Every model call counts against ``host_id``'s chat quota; writing stops once it is used up.
         """
         store, orchestrator = self._memory_store(), getattr(self.bot, "orchestrator", None)
         if store is None or orchestrator is None:
@@ -190,13 +199,19 @@ class GamesCog(commands.Cog):
         ]
         random.shuffle(candidates)
 
+        out_of_quota = False
+
         async def one(memory: Any) -> Optional[QuizQuestion]:
+            nonlocal out_of_quota
+            if out_of_quota or not self._charge(host_id):
+                out_of_quota = True
+                return None
             async with self.limits.model_slots:
                 reply = await write_question(orchestrator, str(guild.id), memory.content)
             return parse_question(reply, memory.content, memory.metadata or {}) if reply else None
 
         questions: List[QuizQuestion] = []
-        while candidates and len(questions) < count:
+        while candidates and len(questions) < count and not out_of_quota:
             batch, candidates = candidates[: count - len(questions)], candidates[count - len(questions):]
             for question in await asyncio.gather(*(one(m) for m in batch)):
                 if question is not None and len(questions) < count:
@@ -295,8 +310,10 @@ class GamesCog(commands.Cog):
             )
             # Scoring and the answer window both start once the question can be seen.
             quiz_round.started_at = self._now()
-            await asyncio.sleep(self.answer_seconds)
-            view.stop()
+            try:
+                await asyncio.sleep(self.answer_seconds)
+            finally:
+                view.stop()  # also when the game is cancelled (the cog unloads)
             scoreboard.add(quiz_round.points())
             await message.edit(embed=self.answer_embed(guild, number, total, quiz_round, scoreboard), view=None)
             if number < total:
@@ -335,7 +352,7 @@ class GamesCog(commands.Cog):
             await interaction.response.send_message(self._t(guild.id, "preparing", user=interaction.user.mention, rounds=rounds))
             since = self._now() - days * 86400 if days else None
             questions = await self.make_questions(
-                guild, rounds, str(channel.id) if this_channel else None, since, here=channel.id
+                guild, rounds, str(channel.id) if this_channel else None, since, here=channel.id, host_id=interaction.user.id
             )
             if not questions:
                 await channel.send(self._t(guild.id, "no_memories"))
@@ -382,10 +399,13 @@ class GamesCog(commands.Cog):
         code = get_lang(str(guild_id)) if get_lang else "en_US"
         return _LANGUAGE_NAMES.get(code, "English")
 
-    async def bot_word(self, guild: discord.Guild, chain: WordChain) -> Optional[str]:
-        """The bot's next word, checked against the rules; None when the model has none."""
+    async def bot_word(self, guild: discord.Guild, chain: WordChain, host_id: Optional[int] = None) -> Optional[str]:
+        """The bot's next word, checked against the rules; None when the model has none.
+
+        The model call counts against the host's chat quota; the bot skips its move once that is used up.
+        """
         orchestrator = getattr(self.bot, "orchestrator", None)
-        if orchestrator is None:
+        if orchestrator is None or not self._charge(host_id):
             return None
         start = f"the character {last_char(chain.last_word)}"
         if chain.homophones:
@@ -407,7 +427,7 @@ class GamesCog(commands.Cog):
         except asyncio.TimeoutError:
             return False
 
-    async def run_chain(self, channel: Any, guild: discord.Guild, chain: WordChain) -> WordChain:
+    async def run_chain(self, channel: Any, guild: discord.Guild, chain: WordChain, host_id: Optional[int] = None) -> WordChain:
         """Runs a word chain in ``channel`` until nobody continues, then records the points."""
         game = ChainGame(chain)
         self._chains[channel.id] = game
@@ -421,7 +441,7 @@ class GamesCog(commands.Cog):
                     continue
                 if chain.last_player != BOT_PLAYER:
                     seen = len(chain.words)
-                    word = await self.bot_word(guild, chain)
+                    word = await self.bot_word(guild, chain, host_id)
                     if len(chain.words) != seen:
                         continue  # someone played while the bot was thinking
                     if word is not None and chain.play(word, BOT_PLAYER) is None:
@@ -481,7 +501,9 @@ class GamesCog(commands.Cog):
             if homophones and not use_homophones:
                 text += "\n" + self._t(guild.id, "chain_no_homophones")
             await interaction.response.send_message(text)
-            await self.run_chain(channel, guild, WordChain(self.starter_word(guild.id), homophones=use_homophones))
+            await self.run_chain(
+                channel, guild, WordChain(self.starter_word(guild.id), homophones=use_homophones), interaction.user.id
+            )
         except Exception as error:
             self.logger.error("games: the word chain failed", exc_info=True)
             await func.report_error(error, "games: word chain")
@@ -529,10 +551,13 @@ class GamesCog(commands.Cog):
         guess_round = GuessRound(song.get("title") or "", self._now())
 
         def stop_clip() -> None:
-            # Only the game's own clip: music someone started meanwhile keeps playing.
-            if getattr(voice_client, "source", None) is source and voice_client.is_playing():
+            # Only the game's own clip (playing, or paused from the music controls); other music keeps playing.
+            if getattr(voice_client, "source", None) is source and (voice_client.is_playing() or voice_client.is_paused()):
                 voice_client.stop()
 
+        # Music may have started (and been paused) while the stream was looked up; play() would replace it.
+        if voice_client.is_playing() or voice_client.is_paused():
+            raise discord.ClientException("Music is playing")
         voice_client.play(source)
         self._guesses[channel.id] = guess_round
         try:
@@ -659,9 +684,16 @@ class GamesCog(commands.Cog):
             except discord.HTTPException:
                 pass
         finally:
+            await self._finish_song_game(interaction, voice_client, music, joined)
+
+    async def _finish_song_game(self, interaction: discord.Interaction, voice_client: Any, music: Any, joined: bool) -> None:
+        """Hands the voice channel back, then frees the server for another song game (not before)."""
+        guild = interaction.guild
+        try:
+            await self._hand_back_voice(guild, interaction.channel, voice_client, music, joined, interaction.user)
+        finally:
             self._release(interaction)
             self.limits.song_guilds.discard(guild.id)
-            await self._hand_back_voice(guild, channel, voice_client, music, joined, interaction.user)
 
     async def _hand_back_voice(self, guild: Any, channel: Any, voice_client: Any, music: Any, joined: bool, user: Any) -> None:
         """After the game: start songs queued with /play meanwhile, or leave a channel joined only for the game."""
