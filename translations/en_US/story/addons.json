@@ -1,0 +1,14 @@
+{
+    "dice_invalid": "I couldn't read those dice. Try d20, 2d6+3 or 4d6-1.",
+    "dice_too_many": "Too many dice: at most {max_dice} dice with up to {max_sides} sides each.",
+    "roll_result": "🎲 {user} rolled {result}",
+    "roll_reason": "({reason})",
+    "roll_in_story": "📖 The story will follow this result.",
+    "recap_title": "📜 Previously on…",
+    "no_story": "There's no story running in this channel.",
+    "recap_empty": "The story has only just begun; there's nothing to recap yet.",
+    "card_not_found": "I couldn't find that character (pick a public character of this server or one you created).",
+    "card_unavailable": "Image generation isn't available right now.",
+    "card_failed": "I couldn't draw the character card; try again later.",
+    "card_rate_limited": "You've used up your image quota; try again in {seconds} seconds."
+}

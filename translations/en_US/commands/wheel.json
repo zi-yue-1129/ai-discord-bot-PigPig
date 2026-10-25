@@ -1,0 +1,13 @@
+{
+    "responses": {
+        "title": "🎡 {user} spun the wheel",
+        "result": "Result: {option}",
+        "too_few": "Give at least {minimum} options separated by commas, e.g. \"hot pot, ramen, curry\".",
+        "busy": "A wheel is already spinning in this channel; wait for it to stop.",
+        "food_unavailable": "Restaurant search isn't available right now.",
+        "rate_limited": "You've used up your quota; try again in {seconds} seconds.",
+        "food_failed": "Something went wrong while looking for restaurants; try again later.",
+        "food_none": "I couldn't find enough \"{keyword}\" restaurants nearby to spin.",
+        "food_title": "🎡 What should we eat? ({keyword})"
+    }
+}

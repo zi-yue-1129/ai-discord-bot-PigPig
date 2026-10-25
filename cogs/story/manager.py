@@ -37,6 +37,9 @@ _ALLOWED_MENTIONS = discord.AllowedMentions(
 
 T = TypeVar('T', bound=BaseModel)
 
+# /roll results kept for the next GM turn in a story channel.
+MAX_PENDING_DICE = 5
+
 
 class StoryManager:
     """
@@ -56,6 +59,8 @@ class StoryManager:
         self.state_manager = StoryStateManager(bot)
         self.language_manager: LanguageManager = cast(LanguageManager, self.bot.get_cog("LanguageManager"))
         self.interventions: Dict[int, str] = {}
+        # /roll results per story channel, used (and cleared) by the next GM turn.
+        self.dice_results: Dict[int, List[str]] = {}
 
     def _get_db(self, guild_id: int) -> StoryDB:
         """Gets or creates a database connection for a specific guild."""
@@ -156,6 +161,12 @@ class StoryManager:
         """Stores an intervention for a specific channel."""
         self.interventions[channel_id] = text
         self.logger.info(f"Intervention added for channel {channel_id}.")
+
+    def add_dice_result(self, channel_id: int, text: str) -> None:
+        """Remembers a /roll result for the channel's next GM turn (the latest few only)."""
+        results = self.dice_results.setdefault(channel_id, [])
+        results.append(text)
+        del results[:-MAX_PENDING_DICE]
 
     async def intervene(self, interaction: discord.Interaction):
         """
@@ -411,6 +422,7 @@ class StoryManager:
             try:
                 # --- Step 1: Call GM Agent for a structured plan ---
                 intervention_text = self.interventions.pop(channel_id, None)
+                dice_results = self.dice_results.pop(channel_id, None)
                 if intervention_text:
                     self.logger.info(
                         f"Applying intervention for channel {channel_id}: {intervention_text}"
@@ -425,6 +437,7 @@ class StoryManager:
                     story_outlines=story_instance.outlines,
                     language=language,
                     intervention_text=intervention_text,
+                    dice_results=dice_results,
                 )
 
                 # Prepare dialogue history for the GM
