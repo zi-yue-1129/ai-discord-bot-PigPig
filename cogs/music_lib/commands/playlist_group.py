@@ -20,8 +20,8 @@ TITLE_WIDTH = 50
 VIEW_LIMIT = 40
 
 SCOPE_CHOICES = [
-    app_commands.Choice(name="個人歌單", value=PERSONAL),
-    app_commands.Choice(name="伺服器歌單", value=SERVER),
+    app_commands.Choice(name="Personal playlist", value=PERSONAL),
+    app_commands.Choice(name="Server playlist", value=SERVER),
 ]
 
 
@@ -65,8 +65,8 @@ class PlaylistGroup(MusicCommandBase, commands.GroupCog, group_name="playlist", 
                     choices.append(app_commands.Choice(name=f"{playlist.name} ({playlist.track_count})", value=playlist.name))
         return choices[:25]
 
-    @app_commands.command(name="create", description="建立新的歌單")
-    @app_commands.describe(name="歌單名稱", scope="個人歌單（預設）或伺服器歌單")
+    @app_commands.command(name="create", description="Create a new playlist")
+    @app_commands.describe(name="Playlist name", scope="Personal playlist (default) or server playlist")
     @app_commands.choices(scope=SCOPE_CHOICES)
     async def create(self, interaction: discord.Interaction, name: str,
                      scope: Optional[app_commands.Choice[str]] = None) -> None:
@@ -76,8 +76,8 @@ class PlaylistGroup(MusicCommandBase, commands.GroupCog, group_name="playlist", 
         result = await self._playlists().create(self.ctx(interaction), name, scope_value)
         await self._done(interaction, result, "created", emoji="📁", scope=self._scope_name(interaction.guild.id, scope_value))
 
-    @app_commands.command(name="delete", description="刪除歌單")
-    @app_commands.describe(name="歌單名稱", scope="個人歌單（預設）或伺服器歌單")
+    @app_commands.command(name="delete", description="Delete a playlist")
+    @app_commands.describe(name="Playlist name", scope="Personal playlist (default) or server playlist")
     @app_commands.choices(scope=SCOPE_CHOICES)
     @app_commands.autocomplete(name=name_autocomplete)
     async def delete(self, interaction: discord.Interaction, name: str,
@@ -87,8 +87,8 @@ class PlaylistGroup(MusicCommandBase, commands.GroupCog, group_name="playlist", 
         result = await self._playlists().delete(self.ctx(interaction), name, self._scope(scope))
         await self._done(interaction, result, "deleted", emoji="🗑️")
 
-    @app_commands.command(name="rename", description="重新命名歌單")
-    @app_commands.describe(name="目前的名稱", new_name="新名稱", scope="個人歌單（預設）或伺服器歌單")
+    @app_commands.command(name="rename", description="Rename a playlist")
+    @app_commands.describe(name="Current name", new_name="New name", scope="Personal playlist (default) or server playlist")
     @app_commands.choices(scope=SCOPE_CHOICES)
     @app_commands.autocomplete(name=name_autocomplete)
     async def rename(self, interaction: discord.Interaction, name: str, new_name: str,
@@ -98,7 +98,7 @@ class PlaylistGroup(MusicCommandBase, commands.GroupCog, group_name="playlist", 
         result = await self._playlists().rename(self.ctx(interaction), name, new_name, self._scope(scope))
         await self._done(interaction, result, "renamed", emoji="✏️", old=name)
 
-    @app_commands.command(name="list", description="列出你的歌單和這個伺服器的歌單")
+    @app_commands.command(name="list", description="List your playlists and this server's playlists")
     async def list_(self, interaction: discord.Interaction) -> None:
         if await self.require_music(interaction) is None:
             return
@@ -112,8 +112,8 @@ class PlaylistGroup(MusicCommandBase, commands.GroupCog, group_name="playlist", 
             embed.add_field(name=self._scope_name(guild_id, scope), value="\n".join(lines)[:1024] or none, inline=False)
         await self.send(interaction, embed=embed, ephemeral=True)
 
-    @app_commands.command(name="view", description="查看歌單裡的歌曲")
-    @app_commands.describe(name="歌單名稱", scope="個人歌單（預設）或伺服器歌單")
+    @app_commands.command(name="view", description="View the songs of a playlist")
+    @app_commands.describe(name="Playlist name", scope="Personal playlist (default) or server playlist")
     @app_commands.choices(scope=SCOPE_CHOICES)
     @app_commands.autocomplete(name=name_autocomplete)
     async def view(self, interaction: discord.Interaction, name: str, scope: Optional[app_commands.Choice[str]] = None) -> None:
@@ -134,9 +134,9 @@ class PlaylistGroup(MusicCommandBase, commands.GroupCog, group_name="playlist", 
                               color=discord.Color.blue())
         await self.send(interaction, embed=embed, ephemeral=True)
 
-    @app_commands.command(name="add", description="把歌曲加入歌單（不填則加入目前播放的歌，也可以貼播放清單連結）")
-    @app_commands.describe(name="歌單名稱", query="歌名、影片或播放清單連結（不填則為目前播放的歌曲）",
-                           scope="個人歌單（預設）或伺服器歌單")
+    @app_commands.command(name="add", description="Add a song to a playlist (empty: the current song; a playlist link adds all its songs)")
+    @app_commands.describe(name="Playlist name", query="Song name, video or playlist link (empty: the current song)",
+                           scope="Personal playlist (default) or server playlist")
     @app_commands.choices(scope=SCOPE_CHOICES)
     @app_commands.autocomplete(name=name_autocomplete)
     async def add(self, interaction: discord.Interaction, name: str, query: Optional[str] = None,
@@ -154,9 +154,9 @@ class PlaylistGroup(MusicCommandBase, commands.GroupCog, group_name="playlist", 
         await self._done(interaction, result, "added_one" if title and result.ok and result.data["added"] else "added",
                          emoji="➕", title=title)
 
-    @app_commands.command(name="remove", description="從歌單移除一首歌")
-    @app_commands.describe(name="歌單名稱", position="歌曲在歌單中的位置（用 /playlist view 查看）",
-                           scope="個人歌單（預設）或伺服器歌單")
+    @app_commands.command(name="remove", description="Remove a song from a playlist")
+    @app_commands.describe(name="Playlist name", position="Position of the song in the playlist (see /playlist view)",
+                           scope="Personal playlist (default) or server playlist")
     @app_commands.choices(scope=SCOPE_CHOICES)
     @app_commands.autocomplete(name=name_autocomplete)
     async def remove(self, interaction: discord.Interaction, name: str, position: app_commands.Range[int, 1, 1000],
@@ -168,8 +168,8 @@ class PlaylistGroup(MusicCommandBase, commands.GroupCog, group_name="playlist", 
             result.data["title"] = shorten(result.data["title"], TITLE_WIDTH)
         await self._done(interaction, result, "removed", emoji="➖", name=name)
 
-    @app_commands.command(name="play", description="播放歌單")
-    @app_commands.describe(name="歌單名稱", shuffle="打亂順序", scope="個人或伺服器歌單（不填則先找你的歌單）")
+    @app_commands.command(name="play", description="Play a playlist")
+    @app_commands.describe(name="Playlist name", shuffle="Shuffle the order", scope="Personal or server playlist (empty: yours first)")
     @app_commands.choices(scope=SCOPE_CHOICES)
     @app_commands.autocomplete(name=name_autocomplete)
     async def play(self, interaction: discord.Interaction, name: str, shuffle: bool = False,
@@ -180,8 +180,8 @@ class PlaylistGroup(MusicCommandBase, commands.GroupCog, group_name="playlist", 
         result = await self._playlists().play(self.ctx(interaction), name, scope.value if scope else None, shuffle=shuffle)
         await self._done(interaction, result, "playing", emoji="▶️")
 
-    @app_commands.command(name="save_queue", description="把目前的歌曲和待播清單存成歌單")
-    @app_commands.describe(name="歌單名稱（不存在會自動建立）", scope="個人歌單（預設）或伺服器歌單")
+    @app_commands.command(name="save_queue", description="Save the current song and the queue as a playlist")
+    @app_commands.describe(name="Playlist name (created if missing)", scope="Personal playlist (default) or server playlist")
     @app_commands.choices(scope=SCOPE_CHOICES)
     @app_commands.autocomplete(name=name_autocomplete)
     async def save_queue(self, interaction: discord.Interaction, name: str, scope: Optional[app_commands.Choice[str]] = None) -> None:
@@ -190,8 +190,8 @@ class PlaylistGroup(MusicCommandBase, commands.GroupCog, group_name="playlist", 
         result = await self._playlists().save_queue(self.ctx(interaction), name, self._scope(scope))
         await self._done(interaction, result, "added", emoji="💾")
 
-    @app_commands.command(name="share", description="把你的個人歌單複製一份給其他人")
-    @app_commands.describe(name="你的歌單名稱", user="要分享給誰")
+    @app_commands.command(name="share", description="Give another user a copy of your personal playlist")
+    @app_commands.describe(name="Your playlist name", user="Who to share with")
     @app_commands.autocomplete(name=name_autocomplete)
     async def share(self, interaction: discord.Interaction, name: str, user: discord.Member) -> None:
         if await self.require_music(interaction) is None:
@@ -206,8 +206,8 @@ class PlaylistGroup(MusicCommandBase, commands.GroupCog, group_name="playlist", 
             except (discord.Forbidden, discord.HTTPException):
                 pass
 
-    @app_commands.command(name="export", description="把歌單匯出成文字檔")
-    @app_commands.describe(name="歌單名稱", scope="個人歌單（預設）或伺服器歌單")
+    @app_commands.command(name="export", description="Export a playlist as a text file")
+    @app_commands.describe(name="Playlist name", scope="Personal playlist (default) or server playlist")
     @app_commands.choices(scope=SCOPE_CHOICES)
     @app_commands.autocomplete(name=name_autocomplete)
     async def export(self, interaction: discord.Interaction, name: str, scope: Optional[app_commands.Choice[str]] = None) -> None:
@@ -225,8 +225,8 @@ class PlaylistGroup(MusicCommandBase, commands.GroupCog, group_name="playlist", 
         await self.send(interaction, embed=discord.Embed(title=f"📤 | {title}", color=discord.Color.blue()),
                         file=file, ephemeral=True)
 
-    @app_commands.command(name="import", description="從文字檔匯入歌曲到歌單（不存在會自動建立）")
-    @app_commands.describe(name="歌單名稱", file="每行一個連結的文字檔", scope="個人歌單（預設）或伺服器歌單")
+    @app_commands.command(name="import", description="Import songs from a text file into a playlist (created if missing)")
+    @app_commands.describe(name="Playlist name", file="Text file with one link per line", scope="Personal playlist (default) or server playlist")
     @app_commands.choices(scope=SCOPE_CHOICES)
     async def import_(self, interaction: discord.Interaction, name: str, file: discord.Attachment,
                       scope: Optional[app_commands.Choice[str]] = None) -> None:

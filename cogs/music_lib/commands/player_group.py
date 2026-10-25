@@ -50,8 +50,8 @@ class MusicGroup(MusicCommandBase, commands.GroupCog, group_name="music", group_
             seconds=int(abs(seconds)), title=shorten(result.data.get("title") or "", HISTORY_TITLE_WIDTH),
         ), emoji="⏩" if seconds >= 0 else "⏪")
 
-    @app_commands.command(name="seek", description="跳到歌曲的指定時間（例如 1:30 或 90）")
-    @app_commands.describe(time="時間，例如 1:30、90 或 1:02:03")
+    @app_commands.command(name="seek", description="Jump to a time of the current song (e.g. 1:30 or 90)")
+    @app_commands.describe(time="Time, e.g. 1:30, 90 or 1:02:03")
     async def seek(self, interaction: discord.Interaction, time: str) -> None:
         try:
             seconds = parse_clock(time)
@@ -60,23 +60,23 @@ class MusicGroup(MusicCommandBase, commands.GroupCog, group_name="music", group_
             return
         await self._seek(interaction, seconds, relative=False, key="seeked")
 
-    @app_commands.command(name="forward", description="快轉目前的歌曲")
-    @app_commands.describe(seconds="快轉幾秒（預設 10）")
+    @app_commands.command(name="forward", description="Skip ahead in the current song")
+    @app_commands.describe(seconds="Seconds to skip ahead (default 10)")
     async def forward(self, interaction: discord.Interaction,
                       seconds: app_commands.Range[int, 1, MAX_STEP_SECONDS] = 10) -> None:
         await self._seek(interaction, seconds, relative=True, key="forwarded")
 
-    @app_commands.command(name="rewind", description="倒轉目前的歌曲")
-    @app_commands.describe(seconds="倒轉幾秒（預設 10）")
+    @app_commands.command(name="rewind", description="Rewind the current song")
+    @app_commands.describe(seconds="Seconds to rewind (default 10)")
     async def rewind(self, interaction: discord.Interaction,
                      seconds: app_commands.Range[int, 1, MAX_STEP_SECONDS] = 10) -> None:
         await self._seek(interaction, -seconds, relative=True, key="rewound")
 
-    @app_commands.command(name="replay", description="從頭播放目前的歌曲")
+    @app_commands.command(name="replay", description="Play the current song from the start")
     async def replay(self, interaction: discord.Interaction) -> None:
         await self._seek(interaction, 0, relative=False, key="replayed")
 
-    @app_commands.command(name="previous", description="回到上一首歌")
+    @app_commands.command(name="previous", description="Go back to the previous song")
     async def previous(self, interaction: discord.Interaction) -> None:
         music = await self.require_music(interaction)
         if music is None:
@@ -91,8 +91,8 @@ class MusicGroup(MusicCommandBase, commands.GroupCog, group_name="music", group_
             title=shorten(result.data.get("title") or "", HISTORY_TITLE_WIDTH), position="0:00",
         ), emoji="⏮️")
 
-    @app_commands.command(name="lyrics", description="顯示目前歌曲的歌詞，或搜尋其他歌曲的歌詞")
-    @app_commands.describe(query="要搜尋的歌名（不填則為目前播放的歌曲）")
+    @app_commands.command(name="lyrics", description="Show the lyrics of the current song, or search another song's")
+    @app_commands.describe(query="Song to look up (empty: the current song)")
     async def lyrics(self, interaction: discord.Interaction, query: Optional[str] = None) -> None:
         music = await self.require_music(interaction)
         if music is None:
@@ -124,7 +124,7 @@ class MusicGroup(MusicCommandBase, commands.GroupCog, group_name="music", group_
                            on_sync=show_synced)
         await self.send(interaction, embed=embeds[0], view=view, ephemeral=True)
 
-    @app_commands.command(name="history", description="顯示這次播放過的歌曲")
+    @app_commands.command(name="history", description="Show the songs played in this session")
     async def history(self, interaction: discord.Interaction) -> None:
         music = await self.require_music(interaction)
         if music is None:
@@ -202,8 +202,8 @@ class FilterCommand(MusicCommandBase, commands.Cog, name="MusicFilter"):
         self.bot = bot
 
     @app_commands.guild_only()
-    @app_commands.command(name="filter", description="套用音效（nightcore、8D、卡拉 OK…），選「關閉」取消")
-    @app_commands.describe(effect="要套用的音效")
+    @app_commands.command(name="filter", description="Apply an audio effect (nightcore, 8D, karaoke...); choose Off to remove it")
+    @app_commands.describe(effect="Audio effect to apply")
     @app_commands.choices(effect=[
         app_commands.Choice(name=f"{get_preset(name).emoji} {_FILTER_CHOICE_NAMES[name]}", value=name) for name in FILTER_NAMES
     ])

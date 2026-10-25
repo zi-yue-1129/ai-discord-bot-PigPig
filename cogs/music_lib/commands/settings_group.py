@@ -39,7 +39,7 @@ class MusicSettingsGroup(MusicCommandBase, commands.GroupCog, group_name="music_
     def _on_off(self, guild_id: int, enabled: bool) -> str:
         return self.t(guild_id, "commands", "music_settings", "values", "on" if enabled else "off")
 
-    @app_commands.command(name="view", description="查看目前的音樂設定")
+    @app_commands.command(name="view", description="Show the current music settings")
     async def view(self, interaction: discord.Interaction) -> None:
         if await self.require_music(interaction) is None:
             return
@@ -66,8 +66,8 @@ class MusicSettingsGroup(MusicCommandBase, commands.GroupCog, group_name="music_
         embed.add_field(name=label("stage_announce"), value=self._on_off(guild.id, settings.stage_announce), inline=True)
         await self.send(interaction, embed=embed, ephemeral=True)
 
-    @app_commands.command(name="dj", description="設定 DJ 身分組（不填則取消，所有人都能控制音樂）")
-    @app_commands.describe(role="DJ 身分組")
+    @app_commands.command(name="dj", description="Set the DJ role (empty removes it: everyone controls the music)")
+    @app_commands.describe(role="DJ role")
     async def dj(self, interaction: discord.Interaction, role: Optional[discord.Role] = None) -> None:
         if await self.require_music(interaction) is None:
             return
@@ -77,24 +77,24 @@ class MusicSettingsGroup(MusicCommandBase, commands.GroupCog, group_name="music_
         else:
             await self._saved(interaction, "dj_set", role=role.name)
 
-    @app_commands.command(name="vote_ratio", description="非 DJ 跳過歌曲需要多少比例的聽眾投票")
-    @app_commands.describe(percent="百分比（預設 50）")
+    @app_commands.command(name="vote_ratio", description="Share of listeners whose votes skip a song when not a DJ")
+    @app_commands.describe(percent="Percent (default 50)")
     async def vote_ratio(self, interaction: discord.Interaction, percent: app_commands.Range[int, 10, 100]) -> None:
         if await self.require_music(interaction) is None:
             return
         self._store().update_settings(interaction.guild.id, vote_ratio=percent / 100)
         await self._saved(interaction, "vote_ratio_set", percent=percent)
 
-    @app_commands.command(name="default_volume", description="每次開始播放時的預設音量")
-    @app_commands.describe(percent="音量百分比 (0-100)")
+    @app_commands.command(name="default_volume", description="Volume each session starts at")
+    @app_commands.describe(percent="Volume percent (0-100)")
     async def default_volume(self, interaction: discord.Interaction, percent: app_commands.Range[int, 0, 100]) -> None:
         if await self.require_music(interaction) is None:
             return
         self._store().update_settings(interaction.guild.id, default_volume=percent)
         await self._saved(interaction, "default_volume_set", percent=percent)
 
-    @app_commands.command(name="stay_247", description="24/7 模式：播完或沒人時也留在語音頻道，重啟後自動回來")
-    @app_commands.describe(enabled="開啟或關閉", channel="要常駐的語音頻道（預設為你所在的頻道）")
+    @app_commands.command(name="stay_247", description="24/7 mode: stay in the voice channel when the queue ends or it empties, and rejoin after a restart")
+    @app_commands.describe(enabled="On or off", channel="Voice channel to stay in (default: yours)")
     async def stay_247(self, interaction: discord.Interaction, enabled: bool,
                        channel: Optional[discord.VoiceChannel] = None) -> None:
         music = await self.require_music(interaction)
@@ -119,8 +119,8 @@ class MusicSettingsGroup(MusicCommandBase, commands.GroupCog, group_name="music_
             return
         await self._saved(interaction, "stay_247_on", channel=target.name)
 
-    @app_commands.command(name="request_channel", description="設定點歌頻道：在那裡輸入的文字都會直接點歌（不填則取消）")
-    @app_commands.describe(channel="點歌頻道")
+    @app_commands.command(name="request_channel", description="Set the song request channel: text typed there is played (empty turns it off)")
+    @app_commands.describe(channel="Request channel")
     async def request_channel(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None) -> None:
         music = await self.require_music(interaction)
         if music is None:
@@ -135,8 +135,8 @@ class MusicSettingsGroup(MusicCommandBase, commands.GroupCog, group_name="music_
             return
         await self._saved(interaction, "request_channel_set", channel=channel.mention)
 
-    @app_commands.command(name="stage_announce", description="在舞台頻道播放時，把舞台主題設為目前的歌名")
-    @app_commands.describe(enabled="開啟或關閉")
+    @app_commands.command(name="stage_announce", description="In a stage channel, set the stage topic to the current song")
+    @app_commands.describe(enabled="On or off")
     async def stage_announce(self, interaction: discord.Interaction, enabled: bool) -> None:
         if await self.require_music(interaction) is None:
             return

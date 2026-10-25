@@ -37,8 +37,8 @@ class QueueGroup(MusicCommandBase, commands.GroupCog, group_name="queue", group_
                 pass
         await view.update_button_state()
 
-    @app_commands.command(name="move", description="把待播清單的一首歌移到另一個位置")
-    @app_commands.describe(position="歌曲目前的位置（1 是下一首）", to="要移到的位置")
+    @app_commands.command(name="move", description="Move a queued song to another position")
+    @app_commands.describe(position="Current position of the song (1 is next)", to="Position to move to")
     async def move(self, interaction: discord.Interaction, position: app_commands.Range[int, 1, 50],
                    to: app_commands.Range[int, 1, 50]) -> None:
         music = await self.require_music(interaction)
@@ -52,8 +52,8 @@ class QueueGroup(MusicCommandBase, commands.GroupCog, group_name="queue", group_
         await self.ok(interaction, self.t(interaction.guild.id, "commands", "queue", "responses", "moved",
                                           title=shorten(result.data["title"], TITLE_WIDTH), position=to), emoji="↕️")
 
-    @app_commands.command(name="swap", description="交換待播清單中兩首歌的位置")
-    @app_commands.describe(first="第一首的位置", second="第二首的位置")
+    @app_commands.command(name="swap", description="Swap two songs in the queue")
+    @app_commands.describe(first="Position of the first song", second="Position of the second song")
     async def swap(self, interaction: discord.Interaction, first: app_commands.Range[int, 1, 50],
                    second: app_commands.Range[int, 1, 50]) -> None:
         music = await self.require_music(interaction)
@@ -68,7 +68,7 @@ class QueueGroup(MusicCommandBase, commands.GroupCog, group_name="queue", group_
                                           first=shorten(result.data["first"], TITLE_WIDTH),
                                           second=shorten(result.data["second"], TITLE_WIDTH)), emoji="🔃")
 
-    @app_commands.command(name="export", description="把目前的歌曲和待播清單匯出成文字檔")
+    @app_commands.command(name="export", description="Export the current song and the queue as a text file")
     async def export(self, interaction: discord.Interaction) -> None:
         music = await self.require_music(interaction)
         if music is None:
@@ -84,8 +84,8 @@ class QueueGroup(MusicCommandBase, commands.GroupCog, group_name="queue", group_
         await self.send(interaction, embed=discord.Embed(title=f"📤 | {title}", color=discord.Color.blue()),
                         file=file, ephemeral=True)
 
-    @app_commands.command(name="import", description="從文字檔匯入歌曲到待播清單（每行一個連結）")
-    @app_commands.describe(file="用 /queue export 或 /playlist export 匯出的文字檔", shuffle="打亂順序")
+    @app_commands.command(name="import", description="Queue the songs of a text file (one link per line)")
+    @app_commands.describe(file="Text file made by /queue export or /playlist export", shuffle="Shuffle the order")
     async def import_(self, interaction: discord.Interaction, file: discord.Attachment, shuffle: bool = False) -> None:
         music = await self.require_music(interaction)
         if music is None:
