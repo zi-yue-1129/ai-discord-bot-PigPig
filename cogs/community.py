@@ -42,8 +42,12 @@ from .language_manager import LanguageManager
 COMMUNITY_DB_PATH = "data/community.db"
 # Discord refuses longer messages.
 MESSAGE_LIMIT = 2000
-# A birthday role that could not be taken back is retried for this long, then dropped.
-ROLE_REMOVAL_RETRY_SECONDS = 7 * 86400
+# A failed daily job or role removal waits longer after each failure, up to this long.
+MAX_RETRY_SECONDS = 3600
+# A birthday role must not carry any of these: the bot hands it out without a moderator.
+_UNSAFE_ROLE_PERMISSIONS = discord.Permissions.elevated() | discord.Permissions(
+    mute_members=True, deafen_members=True, move_members=True, manage_nicknames=True, mention_everyone=True
+)
 
 _WELCOME_TASK = (
     "New members just joined this Discord server. Welcome them warmly and briefly (one to three "
@@ -69,8 +73,6 @@ class CommunityCog(commands.Cog):
 
     CHECK_SECONDS = 300
     UPCOMING_DAYS = 30
-    # A daily job that keeps failing (e.g. no permission to post) is given up after this many checks.
-    MAX_JOB_ATTEMPTS = 5
 
     community = app_commands.Group(
         name="community",
@@ -92,7 +94,8 @@ class CommunityCog(commands.Cog):
         self._now = time.time
         self._scheduler: Optional[asyncio.Task] = None
         self._flushes: Dict[int, asyncio.Task] = {}
-        self._attempts: Dict[Tuple[int, str, str], int] = {}
+        # key -> (failures so far, time of the next try); see _may_retry and _failed.
+        self._retries: Dict[Tuple[Any, ...], Tuple[int, float]] = {}
 
     async def cog_load(self) -> None:
         self.lang_manager = LanguageManager.get_instance(self.bot)
@@ -139,18 +142,17 @@ class CommunityCog(commands.Cog):
     async def _send(self, channel: Any, text: str, members: Sequence[Any]) -> bool:
         """Posts ``text`` (split into several messages when too long), allowing pings only for ``members``.
 
-        Returns False only when nothing could be posted, so a job is not retried over a partial post.
+        Returns False when any part could not be posted, so a job is retried rather than leaving
+        some members out (a retry may repeat the parts that did go out).
         """
         allowed = discord.AllowedMentions(everyone=False, roles=False, users=[discord.Object(id=m.id) for m in members])
-        posted = False
         for chunk in split_message(text):
             try:
                 await channel.send(chunk, allowed_mentions=allowed)
-                posted = True
             except discord.HTTPException:
                 self.logger.warning(f"community: could not post in channel {getattr(channel, 'id', None)}", exc_info=True)
-                break
-        return posted
+                return False
+        return True
 
     @staticmethod
     def _pick_emoji(guild: discord.Guild) -> str:
@@ -280,12 +282,13 @@ class CommunityCog(commands.Cog):
     async def _run_job(self, guild_id: int, job: str, period: str, run: Callable[[], Awaitable[bool]]) -> None:
         """Runs a job once per period.
 
-        The job is only marked done once ``run`` returns True, so a temporary Discord error is
-        retried at the next check; after ``MAX_JOB_ATTEMPTS`` failed checks it is given up.
+        The job is only marked done once ``run`` returns True. A failure (e.g. a Discord outage or
+        no permission to post) is retried, waiting longer each time (see ``_failed``), for as long
+        as the period is due; it is never marked done without having run.
         """
-        if self.store.has_run(guild_id, job, period):
+        key = ("job", guild_id, job, period)
+        if self.store.has_run(guild_id, job, period) or not self._may_retry(key):
             return
-        key = (guild_id, job, period)
         try:
             done = await run()
         except asyncio.CancelledError:
@@ -296,11 +299,27 @@ class CommunityCog(commands.Cog):
         except Exception as error:
             await func.report_error(error, f"community: the {job} job in guild {guild_id}")
             done = False
-        attempts = self._attempts.pop(key, 0) + 1
-        if done or attempts >= self.MAX_JOB_ATTEMPTS:
+        if done:
+            self._retries.pop(key, None)
             self.store.claim_run(guild_id, job, period)
         else:
-            self._attempts[key] = attempts
+            self._failed(key)
+
+    def _may_retry(self, key: Tuple[Any, ...]) -> bool:
+        """Whether something that failed before (or never failed) may be tried now."""
+        entry = self._retries.get(key)
+        return entry is None or self._now() >= entry[1]
+
+    def _failed(self, key: Tuple[Any, ...]) -> int:
+        """Records a failure; the next try waits one check, then twice as long each time, up to an hour.
+
+        Returns:
+            How many times it has failed in a row.
+        """
+        failures = self._retries.get(key, (0, 0.0))[0] + 1
+        wait = min(self.CHECK_SECONDS * 2 ** (failures - 1), MAX_RETRY_SECONDS)
+        self._retries[key] = (failures, self._now() + wait)
+        return failures
 
     def _birthday_members(self, guild: discord.Guild, local: datetime) -> List[discord.Member]:
         """The members (not bots) whose birthday is on ``local``'s day, up to the mention limit."""
@@ -329,6 +348,11 @@ class CommunityCog(commands.Cog):
         role = guild.get_role(role_id)
         if role is None:
             return True
+        # Checked again here: the role or its permissions may have changed since it was chosen.
+        problem = self._unsafe_birthday_role(guild, role)
+        if problem:
+            self.logger.warning(f"community: not giving birthday role {role.id} in guild {guild.id} ({problem})")
+            return True
         midnight = (local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         given_all = True
         for member in members:
@@ -344,21 +368,26 @@ class CommunityCog(commands.Cog):
         return given_all
 
     async def _remove_expired_birthday_roles(self) -> None:
-        """Takes back birthday roles whose day is over; a failed removal is retried at the next check."""
-        now = self._now()
-        for guild_id, user_id, role_id, remove_at in self.store.due_birthday_roles(now):
+        """Takes back birthday roles whose day is over; a failed removal is kept and retried."""
+        for guild_id, user_id, role_id, given_by_bot in self.store.due_birthday_roles(self._now()):
+            key = ("role", guild_id, user_id, role_id)
+            if not self._may_retry(key):
+                continue
             guild = self.bot.get_guild(guild_id)
             member = guild.get_member(user_id) if guild is not None else None
             role = guild.get_role(role_id) if guild is not None else None
-            if member is not None and role is not None:
+            if member is not None and role is not None and given_by_bot:
                 try:
                     await member.remove_roles(role, reason="Birthday is over")
                 except discord.NotFound:
                     pass  # the member or role is gone
                 except discord.HTTPException:
-                    self.logger.warning(f"community: could not remove the birthday role in guild {guild_id}", exc_info=True)
-                    if now - remove_at < ROLE_REMOVAL_RETRY_SECONDS:
-                        continue
+                    if self._failed(key) == 1:
+                        self.logger.warning(
+                            f"community: could not remove the birthday role in guild {guild_id}; will keep trying", exc_info=True
+                        )
+                    continue
+            self._retries.pop(key, None)
             self.store.forget_birthday_role(guild_id, user_id, role_id)
 
     async def celebrate_anniversaries(self, guild: discord.Guild, settings: GuildSettings, local: datetime) -> bool:
@@ -553,24 +582,38 @@ class CommunityCog(commands.Cog):
         key = "birthday_on" if enabled else "birthday_off"
         await interaction.response.send_message(self._t(interaction.guild_id, key, hour=settings.birthday_hour), ephemeral=True)
 
-    @staticmethod
-    def _birthday_role_problem(interaction: discord.Interaction, role: discord.Role) -> Optional[str]:
+    @classmethod
+    def _birthday_role_problem(cls, interaction: discord.Interaction, role: discord.Role) -> Optional[str]:
         """Why ``role`` cannot be the birthday role, as a response key; None when it can.
 
         The bot hands the role out by itself, so the admin must be able to give it themselves
-        (Manage Roles and a higher top role, or the server owner), the bot must be able to manage
-        it, and it must not carry moderator permissions.
+        (Manage Roles and a higher top role, or the server owner), on top of ``_unsafe_birthday_role``.
         """
         guild, user = interaction.guild, interaction.user
-        if not role.is_assignable():
-            return "birthday_role_unassignable"
-        if role.permissions.value & discord.Permissions.elevated().value:
-            return "birthday_role_elevated"
+        problem = cls._unsafe_birthday_role(guild, role)
+        if problem:
+            return problem
         if user.id != guild.owner_id:
             permissions = getattr(user, "guild_permissions", None)
             top_role = getattr(user, "top_role", None)
             if permissions is None or not permissions.manage_roles or top_role is None or role >= top_role:
                 return "birthday_role_not_yours"
+        return None
+
+    @staticmethod
+    def _unsafe_birthday_role(guild: discord.Guild, role: discord.Role) -> Optional[str]:
+        """Why the bot must not hand ``role`` out, as a response key; None when it may.
+
+        The bot must be able to manage the role (Manage Roles and a higher role), and the role
+        must not carry moderator permissions, voice moderation included.
+        """
+        me = getattr(guild, "me", None)
+        if me is None or not me.guild_permissions.manage_roles:
+            return "birthday_role_bot_cannot"
+        if not role.is_assignable():
+            return "birthday_role_unassignable"
+        if role.permissions.value & _UNSAFE_ROLE_PERMISSIONS.value:
+            return "birthday_role_elevated"
         return None
 
     @community.command(name="anniversaries", description="Celebrate the yearly anniversary of when members joined")

@@ -65,6 +65,30 @@ async def test_words_and_emojis_are_counted_per_local_week(storage: StatsStorage
 
 
 @pytest.mark.asyncio
+async def test_terms_can_be_counted_for_some_channels_only(storage: StatsStorage) -> None:
+    await storage.upsert_user_stats(USER, GUILD, "pizza", "1", "2026-10-20T04:00:00Z")
+    await storage.upsert_user_stats(USER, GUILD, "pizza", "2", "2026-10-20T04:00:00Z")
+    await storage.upsert_user_stats(OTHER, GUILD, "secretproject secretproject", "3", "2026-10-20T04:00:00Z")
+
+    assert await storage.get_weekly_terms(GUILD, "2026-10-19", "word") == [("pizza", 2), ("secretproject", 2)]
+    assert await storage.get_weekly_terms(GUILD, "2026-10-19", "word", channel_ids=["1", "2"]) == [("pizza", 2)]
+    assert await storage.get_weekly_terms(GUILD, "2026-10-19", "word", channel_ids=[]) == []
+
+
+@pytest.mark.asyncio
+async def test_a_quick_add_and_remove_of_a_reaction_leaves_nothing(storage: StatsStorage) -> None:
+    import asyncio
+
+    for _ in range(20):
+        await asyncio.gather(
+            storage.record_reaction("9", GUILD, "1", USER, 100.0, 1, reactor_id=OTHER),
+            storage.record_reaction("9", GUILD, "1", None, 100.0, -1, reactor_id=OTHER),
+        )
+
+    assert await storage.reactions_by_author(GUILD, 0, 200) == []
+
+
+@pytest.mark.asyncio
 async def test_old_weeks_and_reactions_are_pruned(storage: StatsStorage) -> None:
     now = datetime(2026, 10, 25, 12, 0).astimezone()
     await storage.upsert_user_stats(USER, GUILD, "pizza", "1", "2026-01-05T04:00:00Z")

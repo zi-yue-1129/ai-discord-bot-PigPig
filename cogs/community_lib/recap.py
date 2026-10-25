@@ -93,6 +93,16 @@ def is_public(guild: Any, channel: Any) -> bool:
     return bool(permissions.view_channel and permissions.read_message_history)
 
 
+def public_channel_ids(guild: Any) -> List[str]:
+    """The ids of the channels and (public) threads every member can read."""
+    found = [c for c in getattr(guild, "channels", []) if is_public(guild, c)]
+    found += [
+        t for t in getattr(guild, "threads", [])
+        if getattr(t, "type", None) != discord.ChannelType.private_thread and is_public(guild, t)
+    ]
+    return [str(c.id) for c in found]
+
+
 def _field(text: str) -> str:
     """Cuts an embed field value to what Discord accepts."""
     return text if len(text) <= FIELD_CHARS else text[: FIELD_CHARS - 1] + "…"
@@ -153,9 +163,11 @@ class RecapBuilder:
 
         storage = self._stats_storage()
         if storage is not None:
-            recap.emojis = await storage.get_weekly_terms(gid, recap.week, "emoji", TOP_EMOJIS)
+            # Only what was said where everyone can read it goes into a public post.
+            public = public_channel_ids(guild)
+            recap.emojis = await storage.get_weekly_terms(gid, recap.week, "emoji", TOP_EMOJIS, public)
             # Words counted before the length cap existed are skipped here too.
-            words = await storage.get_weekly_terms(gid, recap.week, "word", TOP_WORDS * 4)
+            words = await storage.get_weekly_terms(gid, recap.week, "word", TOP_WORDS * 4, public)
             recap.words = [(w, n) for w, n in words if len(w) <= MAX_WORD_CHARS][:TOP_WORDS]
             funny = _visible(guild, await storage.reactions_by_author(gid, since, until), hidden, 1)
             if funny:

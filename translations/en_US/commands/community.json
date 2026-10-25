@@ -22,6 +22,7 @@
         "birthday_off": "Birthday messages are off.",
         "birthday_role_unassignable": "I can't hand out {role}: it must be a normal role below my highest role.",
         "birthday_role_elevated": "{role} has moderator permissions, so it can't be the birthday role.",
+        "birthday_role_bot_cannot": "I need the Manage Roles permission before I can hand out {role}.",
         "birthday_role_not_yours": "To pick {role} you need the Manage Roles permission and a role higher than it.",
         "anniversary_on": "Join anniversaries will be celebrated at {hour}:00 each day.",
         "anniversary_off": "Anniversary messages are off.",

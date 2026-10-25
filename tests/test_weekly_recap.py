@@ -156,6 +156,13 @@ class FakeMember:
         self.mention = f"<@{member_id}>"
 
 
+class ChannelMap(dict):
+    """Channels by id, iterated like ``guild.channels`` (the channels themselves)."""
+
+    def __iter__(self) -> Any:
+        return iter(list(self.values()))
+
+
 class FakeGuild:
     def __init__(self) -> None:
         self.id = GUILD_ID
@@ -163,9 +170,10 @@ class FakeGuild:
         self.system_channel = None
         self.default_role = "@everyone"
         self.channel = FakeChannel(500, {2: FakeMessage("best joke ever")})
-        self.channels = {500: self.channel, 501: FakeChannel(501)}
+        self.channels = ChannelMap({500: self.channel, 501: FakeChannel(501)})
         self.members = {i: FakeMember(i) for i in (10, 11, 12, 13)}
         self.members[99] = FakeMember(99, bot=True)
+        self.threads: list = []
 
     def get_channel(self, channel_id: int) -> Optional[FakeChannel]:
         return self.channels.get(channel_id)
@@ -190,8 +198,10 @@ class FakeCollector:
 
 
 class FakeStorage:
-    async def get_weekly_terms(self, guild_id: str, week: str, kind: str, limit: int) -> list:
+    async def get_weekly_terms(self, guild_id: str, week: str, kind: str, limit: int, channel_ids: Any = None) -> list:
         assert week == "2026-10-19"
+        if channel_ids is not None and "500" not in channel_ids:
+            return []
         return [("😂", 12)] if kind == "emoji" else [("pizza", 8), ("exam", 3)]
 
     async def reactions_by_author(self, guild_id: str, since: float, until: float) -> list:
@@ -348,13 +358,28 @@ async def test_private_channels_are_never_named_or_quoted(cog: CommunityCog, gui
     assert "secret" not in str(fields) and "502" not in str(fields)
 
 
+@pytest.mark.asyncio
+async def test_hot_words_and_emojis_only_count_public_channels(cog: CommunityCog, guild: FakeGuild, store: CommunityStore) -> None:
+    guild.channels[502] = FakeChannel(502, public=False)
+    seen: list = []
+
+    async def terms(guild_id: str, week: str, kind: str, limit: int, channel_ids: Any = None) -> list:
+        seen.append(channel_ids)
+        return []
+
+    cog.bot.get_cog("StatsCog").stats_storage.get_weekly_terms = terms
+    await cog.post_weekly_recap(guild, store.get_settings(GUILD_ID), MONDAY, SUNDAY_EVENING)
+
+    assert seen and all(sorted(ids) == ["500", "501"] for ids in seen)
+
+
 async def _rows(rows: list) -> list:
     return rows
 
 
 @pytest.mark.asyncio
 async def test_spam_words_are_left_out_and_fields_fit_discord(cog: CommunityCog, guild: FakeGuild, store: CommunityStore) -> None:
-    async def terms(guild_id: str, week: str, kind: str, limit: int) -> list:
+    async def terms(guild_id: str, week: str, kind: str, limit: int, channel_ids: Any = None) -> list:
         return [("😂", 12)] if kind == "emoji" else [("哈" * 1100, 50), ("pizza", 8)]
 
     cog.bot.get_cog("StatsCog").stats_storage.get_weekly_terms = terms
@@ -375,6 +400,7 @@ async def test_a_recap_that_could_not_be_posted_is_retried(cog: CommunityCog, gu
 
     await cog.run_daily_jobs()
     assert guild.channels[501].sent == [] and store.titles_of(GUILD_ID, 11) == []
+    cog._now = lambda: SUNDAY_EVENING.timestamp() + CommunityCog.CHECK_SECONDS
     await cog.run_daily_jobs()
     await cog.run_daily_jobs()
 
