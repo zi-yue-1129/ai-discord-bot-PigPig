@@ -23,7 +23,7 @@ from discord.ext import commands
 from addons.logging import get_logger
 from function import func
 
-from addons.confirm import ConfirmView, ask
+from addons.confirm import ConfirmView, ask, close_late
 from addons.visibility import audience_can_read, can_read, current_member
 
 from .events_lib.store import CANCELLED, GOING, MAYBE, OPEN, Event, EventStore, Roster
@@ -400,8 +400,11 @@ class EventsCog(commands.Cog):
             return "not_found"
         if event.starts_at <= self._now():
             return "event_started"
-        # The title is only shown where the event itself is; elsewhere it is named by number and link.
-        title = f"**{event.title}**" if event.channel_id == channel.id else self._untitled(event)
+        # The title is only shown in the event's own channel, and only when everyone there may read its
+        # history (the title is in an older message); otherwise the event is named by number and link.
+        title = self._shown_title(event, channel) if event.channel_id == channel.id else self._untitled(event)
+        if title == event.title:
+            title = f"**{title}**"
         prompt_key = {GOING: "ask_going", MAYBE: "ask_maybe", None: "ask_leave"}[status]
 
         async def on_confirm() -> str:
@@ -536,6 +539,9 @@ class EventsCog(commands.Cog):
         except BaseException:
             view.finish()
             raise
+        if view.done:
+            # Replaced while it was being sent: its buttons would never work.
+            await close_late(view.message, self._t(guild_id, "draft_replaced"))
         return None, draft
 
     def draft_text(self, draft: EventDraft) -> str:

@@ -8,6 +8,7 @@ host presses Confirm, and a birthday it proposes is saved only once the member i
 from __future__ import annotations
 
 import itertools
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
@@ -24,6 +25,9 @@ from cogs.wheel import WheelCog
 from llm import tools_factory
 from llm.tools.community_tools import CommunityTools, EventTools
 from llm.tools.fun_tools import FunTools
+
+# The module the events cog really runs in (see tests/test_community.py).
+events_module = sys.modules[EventsCog.__module__]
 
 GUILD_ID = 42
 HOST_ID = 1
@@ -128,7 +132,9 @@ class FakeInteraction:
 
 @pytest.fixture(autouse=True)
 def public_flag(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(visibility, "audience_can_read", lambda channel: bool(getattr(channel, "public", False)))
+    public = lambda channel: bool(getattr(channel, "public", False))  # noqa: E731
+    monkeypatch.setattr(visibility, "audience_can_read", public)
+    monkeypatch.setattr(events_module, "audience_can_read", public)
 
 
 @pytest.fixture
@@ -1080,6 +1086,80 @@ def test_the_hourly_allowance_is_per_server(birthdays: SimpleNamespace) -> None:
         assert cog._may_propose(GUILD_ID, HOST_ID)
     assert not cog._may_propose(GUILD_ID, HOST_ID)
     assert cog._may_propose(GUILD_ID + 1, HOST_ID)
+
+# ------------------------------------------------------------------ review round 5
+@pytest.mark.asyncio
+async def test_the_join_question_hides_the_title_where_some_viewers_cannot_read_history(world: SimpleNamespace) -> None:
+    event = _event(world, title="SECRET_OLD_TITLE")
+    world.here.public = False
+    await _tools(world, EventTools)["join_event"].coroutine(event_id=event.id)
+    asked = world.here.messages[-1]
+    assert "SECRET_OLD_TITLE" not in asked.content and "untitled_event|" in asked.content
+
+
+@pytest.mark.asyncio
+async def test_three_questions_in_a_row_leave_only_the_newest_tracked(birthdays: SimpleNamespace) -> None:
+    world = birthdays
+    host = world.guild.get_member(HOST_ID)
+    event = _event(world)
+    for status in (GOING, MAYBE, None):
+        await world.events.propose_answer(world.here, host, event.id, status)
+    asks = [m.kwargs["view"] for m in world.here.messages[-3:]]
+    assert list(world.events._answer_asks.values()) == [asks[-1]] and [v.done for v in asks] == [True, True, False]
+
+    for title in ("a", "b", "c"):
+        await world.events.post_draft(world.here, host, title, "3600")
+    drafts = [m.kwargs["view"] for m in world.here.messages[-3:]]
+    assert list(world.events._drafts.values()) == [drafts[-1]] and [v.done for v in drafts] == [True, True, False]
+
+    world.cog.limits = type(world.cog.limits)(birthday_proposals_per_hour=10)
+    world.guild.add(4)
+    for member_id in ("2", "3", "4"):
+        await world.propose(month=1, day=1, user_id=member_id)
+    proposals = [m.kwargs["view"] for m in world.here.messages[-3:]]
+    assert list(world.cog._birthday_proposals.values()) == [proposals[-1]]
+    assert [v.done for v in proposals] == [True, True, False]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["answer", "draft", "birthday"])
+async def test_a_question_replaced_while_it_was_being_sent_is_closed(birthdays: SimpleNamespace, kind: str) -> None:
+    import asyncio
+
+    world = birthdays
+    world.cog.limits = type(world.cog.limits)(birthday_proposals_per_hour=10)
+    host = world.guild.get_member(HOST_ID)
+    event = _event(world)
+    gate = asyncio.Event()
+    real_send = world.here.send
+    calls = {"n": 0}
+
+    async def slow_first_send(*args: Any, **kwargs: Any) -> FakeMessage:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            await gate.wait()
+        return await real_send(*args, **kwargs)
+
+    world.here.send = slow_first_send
+
+    def start(index: int) -> Any:
+        if kind == "answer":
+            return world.events.propose_answer(world.here, host, event.id, GOING if index == 0 else MAYBE)
+        if kind == "draft":
+            return world.events.post_draft(world.here, host, f"raid {index}", "3600")
+        return world.cog.propose_birthday(world.here, host, world.guild.get_member(2 + index), 1, 1)
+
+    first = asyncio.create_task(start(0))
+    await asyncio.sleep(0)
+    await start(1)
+    gate.set()
+    await first
+
+    late = world.here.messages[-1]
+    assert late.kwargs["view"].done and late.edits and late.edits[-1]["view"] is None
+    assert "replaced" in late.edits[-1]["content"]
+    newest = world.here.messages[0].kwargs["view"]
+    assert not newest.done
 
 # ------------------------------------------------------------------ direct messages
 def test_event_and_fun_tools_are_not_offered_in_direct_messages(world: SimpleNamespace) -> None:

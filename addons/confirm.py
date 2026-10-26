@@ -110,4 +110,15 @@ async def ask(channel: Any, content: str, view: ConfirmView) -> ConfirmView:
         # Also when the task is cancelled, so the key is never left reserved.
         view._finish()
         raise
+    if view.done:
+        # A newer question replaced this one while it was being sent: its buttons would never work.
+        await close_late(view.message, view.text("ask_replaced"))
     return view
+
+
+async def close_late(message: Any, content: str) -> None:
+    """Turns a question that was answered or replaced before its message existed into ``content``."""
+    try:
+        await message.edit(content=content, view=None)
+    except discord.HTTPException:
+        pass

@@ -20,7 +20,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from addons.confirm import ConfirmView, ask
+from addons.confirm import ConfirmView, ask, close_late
 from addons.logging import get_logger
 from addons.settings import base_config
 from addons.tokens import tokens
@@ -944,6 +944,9 @@ class CommunityCog(commands.Cog):
             # Also when the task is cancelled, so the member's place is never left reserved.
             view._finish()
             raise
+        if view.done:
+            # Replaced while it was being sent: its buttons would never work.
+            await close_late(view.message, self._t(guild_id, "birthday_proposal_replaced"))
         return "proposed"
 
     def _may_propose(self, guild_id: int, asker_id: int) -> bool:
