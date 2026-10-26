@@ -21,7 +21,14 @@ def fragment_user_ids(metadata: Optional[Mapping[str, Any]]) -> Set[int]:
     """
     found: Set[int] = set()
     meta = metadata or {}
-    for value in list(meta.get("author_ids") or []) + list(meta.get("user_ids") or []) + [meta.get("author_id")]:
+    values: List[Any] = []
+    for key in ("author_ids", "user_ids", "author_id"):
+        field = meta.get(key)
+        if isinstance(field, (list, tuple, set, frozenset)):
+            values.extend(field)
+        elif field is not None:  # a single id: a string must not be split into its characters
+            values.append(field)
+    for value in values:
         try:
             found.add(int(value))
         except (TypeError, ValueError):

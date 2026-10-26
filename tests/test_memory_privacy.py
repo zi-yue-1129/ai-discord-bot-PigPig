@@ -45,6 +45,9 @@ def test_the_participants_of_a_fragment_are_read_from_every_metadata_shape() -> 
     assert fragment_user_ids({"author_id": "12"}) == {12}
     # What the memory ingestion writes (cogs/memory/services/vectorization_service.py): string ids.
     assert fragment_user_ids({"author_ids": ["11", "12"]}) == {11, 12}
+    # A single id instead of a list (the vector store accepts both): a string is not split into characters.
+    assert fragment_user_ids({"author_ids": "112"}) == {112}
+    assert fragment_user_ids({"user_ids": 113}) == {113}
     assert fragment_user_ids({"author": "someone"}) == set()
     assert fragment_user_ids(None) == set()
 
