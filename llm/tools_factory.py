@@ -257,30 +257,109 @@ def _channel_ids(channel: Any) -> set:
     return ids
 
 
-def _id_set(values: Any) -> set:
-    if not isinstance(values, (list, tuple, set)):
+_TRUE_WORDS = frozenset({"true", "yes", "on", "1"})
+_FALSE_WORDS = frozenset({"false", "no", "off", "0"})
+_warned: set = set()
+
+
+def _warn_once(text: str) -> None:
+    """Logs a settings problem once, not on every message."""
+    if text not in _warned:
+        _warned.add(text)
+        logger.warning(text)
+
+
+def _id_set(values: Any) -> Optional[set]:
+    """Channel ids from a list or a single id; None when the value cannot be read."""
+    if values is None:
         return set()
-    return {str(value).strip() for value in values if str(value).strip()}
+    if not isinstance(values, (list, tuple, set)):
+        values = [values]
+    ids = set()
+    for value in values:
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
+            return None
+        text = str(value).strip()
+        if text:
+            if not text.isdigit():
+                return None
+            ids.add(text)
+    return ids
+
+
+def _flag(value: Any) -> Optional[bool]:
+    """``enabled`` as a bool (true/false, yes/no, on/off, 1/0); None when it is none of these."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        word = value.strip().lower()
+        if word in _TRUE_WORDS:
+            return True
+        if word in _FALSE_WORDS:
+            return False
+    return None
+
+
+def normalize_tool_groups(raw: Any) -> dict:
+    """The owner's ``tool_groups`` with group names lowercased and trimmed.
+
+    Unknown group names are kept (a tool may use its own group) but logged, since they are most
+    likely typos. Two names for the same group (``Games`` and ``games``) cannot both apply, so the
+    group gets settings that turn it off.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        _warn_once(f"llm.yaml tool_groups must be a mapping of group names, not {type(raw).__name__}; ignored")
+        return {}
+    groups: dict = {}
+    for key, rules in raw.items():
+        name = str(key).strip().lower()
+        if name in groups:
+            _warn_once(f"llm.yaml tool_groups names the group {name!r} twice; the group is turned off")
+            groups[name] = {"enabled": False}
+            continue
+        if name not in TOOL_GROUP_ORDER:
+            _warn_once(f"llm.yaml tool_groups: unknown group {key!r} (known: {', '.join(TOOL_GROUP_ORDER[1:])})")
+        groups[name] = rules
+    return groups
 
 
 def group_allowed(group: str, channel: Any, settings: Optional[dict]) -> bool:
     """Whether the bot owner's ``tool_groups`` settings let ``group`` be used in ``channel``.
 
     A group with no settings is used everywhere; core tools always are. ``enabled: false`` turns a
-    group off, ``channels`` limits it to those channel ids and ``exclude_channels`` keeps it out of
-    them. Settings that cannot be read leave the group on, as if it had none.
+    group off, ``channels`` limits it to those channel ids (an empty list means no limit) and
+    ``exclude_channels`` keeps it out of them. A single id works like a one-item list. Settings
+    that cannot be read turn the group off (with a warning): the owner meant to limit it.
     """
     if group == CORE_TOOL_GROUP:
         return True
-    rules = (settings or {}).get(group) if isinstance(settings, dict) else None
-    if not isinstance(rules, dict):
+    if not isinstance(settings, dict) or group not in settings:
         return True
-    if rules.get("enabled", True) is False:
+    rules = settings[group]
+    if rules is None:
+        return True
+    if not isinstance(rules, dict):
+        _warn_once(f"llm.yaml tool_groups.{group} must be a mapping; the group is turned off")
         return False
-    here = _channel_ids(channel)
-    if here & _id_set(rules.get("exclude_channels")):
+    enabled = _flag(rules.get("enabled", True))
+    if enabled is None:
+        _warn_once(f"llm.yaml tool_groups.{group}.enabled must be true or false; the group is turned off")
         return False
+    if not enabled:
+        return False
+    excluded = _id_set(rules.get("exclude_channels"))
     only = _id_set(rules.get("channels"))
+    for label, ids in (("exclude_channels", excluded), ("channels", only)):
+        if ids is None:
+            _warn_once(f"llm.yaml tool_groups.{group}.{label} must be channel ids; the group is turned off")
+            return False
+    here = _channel_ids(channel)
+    if here & excluded:
+        return False
     return not only or bool(here & only)
 
 
@@ -292,7 +371,7 @@ def _tool_group_settings() -> dict:
     except Exception as e:
         _report_async(e, "llm.tools: reading tool_groups")
         return {}
-    return settings if isinstance(settings, dict) else {}
+    return normalize_tool_groups(settings)
 
 
 def _get_user_permissions(user: discord.Member, guid: discord.Guild) -> dict:
@@ -487,4 +566,4 @@ def get_tools(
         return result  # type: ignore
 
 
-__all__ = ["get_tools", "group_allowed", "sort_tools", "tool_group", "CORE_TOOL_GROUP", "TOOL_GROUP_ORDER"]
+__all__ = ["get_tools", "group_allowed", "normalize_tool_groups", "sort_tools", "tool_group", "CORE_TOOL_GROUP", "TOOL_GROUP_ORDER"]

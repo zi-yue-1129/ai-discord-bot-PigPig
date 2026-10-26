@@ -14,7 +14,14 @@ import pytest
 from langchain_core.tools.structured import StructuredTool
 
 from llm import tools_factory
-from llm.tools_factory import CORE_TOOL_GROUP, TOOL_GROUP_ORDER, group_allowed, sort_tools, tool_group
+from llm.tools_factory import (
+    CORE_TOOL_GROUP,
+    TOOL_GROUP_ORDER,
+    group_allowed,
+    normalize_tool_groups,
+    sort_tools,
+    tool_group,
+)
 
 
 def _tool(name: str, group: str | None = None, mode: str = "info") -> StructuredTool:
@@ -73,9 +80,100 @@ def test_a_thread_follows_its_parent_channel():
     assert not group_allowed("games", _channel(500, parent_id=10), {"games": {"exclude_channels": [10]}})
 
 
-@pytest.mark.parametrize("rules", ["off", 3, ["games"], {"channels": "10"}])
-def test_unreadable_settings_leave_the_group_on(rules):
-    assert group_allowed("games", _channel(10), {"games": rules})
+def test_a_single_channel_id_works_like_a_list():
+    assert group_allowed("games", _channel(10), {"games": {"channels": 10}})
+    assert group_allowed("games", _channel(10), {"games": {"channels": " 10 "}})
+    assert not group_allowed("games", _channel(11), {"games": {"channels": 10}})
+    assert not group_allowed("games", _channel(10), {"games": {"exclude_channels": "10"}})
+
+
+def test_an_empty_channel_list_means_no_limit():
+    assert group_allowed("games", _channel(10), {"games": {"channels": []}})
+    assert group_allowed("games", _channel(10), {"games": None})  # "games:" with nothing under it
+
+
+@pytest.mark.parametrize("value", [False, "false", "False", " no ", "off", 0, "0"])
+def test_common_ways_of_writing_false_turn_a_group_off(value):
+    assert not group_allowed("games", _channel(10), {"games": {"enabled": value}})
+
+
+@pytest.mark.parametrize("value", [True, "true", "yes", "on", 1, "1"])
+def test_common_ways_of_writing_true_keep_a_group_on(value):
+    assert group_allowed("games", _channel(10), {"games": {"enabled": value}})
+
+
+@pytest.mark.parametrize(
+    "rules",
+    [
+        "off",
+        3,
+        ["games"],
+        {"enabled": "maybe"},
+        {"enabled": 2},
+        {"channels": "abc"},
+        {"channels": [10, None]},
+        {"channels": {"id": 10}},
+        {"exclude_channels": True},
+    ],
+)
+def test_unreadable_settings_turn_the_group_off_with_a_warning(rules, monkeypatch):
+    warnings: list = []
+    monkeypatch.setattr(tools_factory, "_warned", set())
+    monkeypatch.setattr(tools_factory.logger, "warning", warnings.append)
+
+    assert not group_allowed("games", _channel(10), {"games": rules})
+    assert not group_allowed("games", _channel(10), {"games": rules})
+    assert len(warnings) == 1 and "games" in warnings[0]  # logged once, not on every message
+    # Other groups are not affected.
+    assert group_allowed("music", _channel(10), {"games": rules})
+
+
+def test_group_names_ignore_case_and_spaces_and_unknown_names_are_logged(monkeypatch):
+    warnings: list = []
+    monkeypatch.setattr(tools_factory, "_warned", set())
+    monkeypatch.setattr(tools_factory.logger, "warning", warnings.append)
+
+    settings = normalize_tool_groups({"Games ": {"enabled": False}, "game": {"enabled": False}})
+
+    assert not group_allowed("games", _channel(10), settings)
+    assert group_allowed("music", _channel(10), settings)
+    assert len(warnings) == 1 and "'game'" in warnings[0]
+
+
+def test_the_same_group_named_twice_turns_it_off(monkeypatch):
+    warnings: list = []
+    monkeypatch.setattr(tools_factory, "_warned", set())
+    monkeypatch.setattr(tools_factory.logger, "warning", warnings.append)
+
+    settings = normalize_tool_groups({"games": {"channels": [10]}, "Games": {"channels": [11]}})
+
+    assert not group_allowed("games", _channel(10), settings)
+    assert any("twice" in text for text in warnings)
+
+
+@pytest.mark.parametrize("raw", [["games"], "games", 3])
+def test_tool_groups_that_are_not_a_mapping_are_ignored_with_a_warning(raw, monkeypatch):
+    warnings: list = []
+    monkeypatch.setattr(tools_factory, "_warned", set())
+    monkeypatch.setattr(tools_factory.logger, "warning", warnings.append)
+
+    assert normalize_tool_groups(raw) == {}
+    assert len(warnings) == 1
+    assert normalize_tool_groups(None) == {}
+
+
+def test_llm_config_warns_when_tool_groups_is_not_a_mapping(tmp_path, monkeypatch):
+    from addons import settings as settings_module
+
+    warnings: list = []
+    monkeypatch.setattr(settings_module.logger, "warning", warnings.append)
+    path = tmp_path / "llm.yaml"
+    path.write_text("tool_groups: [games]\n", encoding="utf-8")
+
+    config = settings_module.LLMConfig(str(path))
+
+    assert config.tool_groups == {}
+    assert any("tool_groups" in text for text in warnings)
 
 
 # ---------------------------------------------------------------- order
