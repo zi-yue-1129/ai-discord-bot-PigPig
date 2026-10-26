@@ -9,12 +9,13 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
+from typing import Any, Dict, FrozenSet, Optional, Set, Tuple
 
 import discord
 
 from addons.logging import get_logger
 from function import func
+from llm.memory.privacy import fragment_user_ids, hidden_in_guild_async, without_hidden_participants
 
 _LOGGER = get_logger(server_id="Bot", source="llm.memory.episodic")
 
@@ -68,8 +69,9 @@ class EpisodicMemoryProvider:
         self.max_chars = max_chars
         self.max_cache_size = max_cache_size
         self.cache_ttl = cache_ttl
-        # key: (channel_id: str, query: str), value: (formatted_str: Optional[str], expire_at: float monotonic)
-        self._cache: Dict[Tuple[str, str], Tuple[Optional[str], float]] = {}
+        # key: (channel_id: str, query: str), value: (formatted_str: Optional[str], expire_at: float monotonic,
+        # ids of the people in the fragments formatted_str retells: checked again when the entry is served)
+        self._cache: Dict[Tuple[str, str], Tuple[Optional[str], float, FrozenSet[int]]] = {}
         # prevents cache stampedes
         self._pending_queries: Dict[Tuple[str, str], asyncio.Event] = {}
 
@@ -92,6 +94,32 @@ class EpisodicMemoryProvider:
             event = self._pending_queries.pop(k, None)
             if event:
                 event.set()
+
+    async def _read_hidden(self, guild: Any) -> Optional[Set[int]]:
+        """The members of ``guild`` who hid themselves (``/leaderboard optout``); nobody in a DM.
+
+        None when the list cannot be read. It is read on a worker thread, so every caller must make its
+        cache and ownership decisions after this await, never across it.
+        """
+        if guild is None:
+            return set()
+        return await hidden_in_guild_async(self.bot, guild.id)
+
+    def _lookup(self, cache_key: Tuple[str, str], hidden: Set[int]) -> Optional[Tuple[Optional[str]]]:
+        """The usable cached result for ``cache_key`` as a 1-tuple, or None when there is none.
+
+        Synchronous on purpose (no await between reading the entry and using it, so an invalidation
+        cannot slip in). A result is checked against the opt-out list each time it is served: someone in
+        it may have hidden themselves since; then the entry is dropped and the search runs again.
+        """
+        entry = self._cache.get(cache_key)
+        if entry is None or entry[1] <= time.monotonic():
+            return None
+        text, _expire_at, participants = entry
+        if hidden & participants:
+            self._cache.pop(cache_key, None)
+            return None
+        return (text,)
 
     async def get(self, message: discord.Message) -> Optional[str]:
         """Return formatted episodic context string, or None if nothing relevant.
@@ -120,20 +148,29 @@ class EpisodicMemoryProvider:
         channel_id = str(message.channel.id)
         cache_key = (channel_id, query)
 
-        # Thundering herd protection logic
-        while cache_key in self._pending_queries:
+        guild = getattr(message, "guild", None)
+
+        # Without the opt-out list nothing is injected, cached or not.
+        hidden = await self._read_hidden(guild)
+        if hidden is None:
+            return None
+
+        # Thundering herd protection logic. From the lookup to taking ownership below there is no await,
+        # so two requests cannot both decide to search, and an invalidation cannot slip in between.
+        while True:
+            cached = self._lookup(cache_key, hidden)
+            if cached is not None:
+                return cached[0]
+            if cache_key not in self._pending_queries:
+                break
             await self._pending_queries[cache_key].wait()
-            now = time.monotonic()
-            entry = self._cache.get(cache_key)
-            if entry is not None and entry[1] > now:
-                return entry[0]
             # If wait finished but cache wasn't updated (e.g. error in primary task),
             # loop again in case another task picked up the query.
+            hidden = await self._read_hidden(guild)
+            if hidden is None:
+                return None
 
         now = time.monotonic()
-        entry = self._cache.get(cache_key)
-        if entry is not None and entry[1] > now:
-            return entry[0]
 
         event = asyncio.Event()
         self._pending_queries[cache_key] = event
@@ -150,11 +187,20 @@ class EpisodicMemoryProvider:
                 await func.report_error(e, "EpisodicMemoryProvider.get: vector search failed")
                 return None
 
+            # What a hidden member (/leaderboard optout) said is not retold, whoever asks; the cached
+            # result is already filtered. The list is read again here: someone may have opted out during
+            # the search. Without it nothing is injected (and nothing cached).
+            hidden = await self._read_hidden(guild) if fragments else set()
+
             # The event is this search's ownership token. Invalidation removes
             # it, and a newer search may already own the same key. Never return
-            # or cache a result from the invalidated generation.
+            # or cache a result from the invalidated generation. Checked after
+            # the last await, so nothing can invalidate between check and use.
             if self._pending_queries.get(cache_key) is not event:
                 return None
+            if hidden is None:
+                return None
+            fragments = without_hidden_participants(fragments, hidden)
 
             if not fragments:
                 formatted_result = None
@@ -197,7 +243,8 @@ class EpisodicMemoryProvider:
 
             # Update cache
             expire_at = now + self.cache_ttl
-            self._cache[cache_key] = (formatted_result, expire_at)
+            participants = frozenset().union(*(fragment_user_ids(frag.metadata) for frag in fragments))
+            self._cache[cache_key] = (formatted_result, expire_at, participants)
 
             # Prune expired items if cache is getting large
             if len(self._cache) > self.max_cache_size:

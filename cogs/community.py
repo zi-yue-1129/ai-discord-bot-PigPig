@@ -13,7 +13,7 @@ import asyncio
 import random
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 import discord
 from discord import app_commands
@@ -274,7 +274,7 @@ class CommunityCog(commands.Cog):
                 if settings.birthday_role_id:
                     await self._run_job(
                         guild.id, "birthday_role", today,
-                        lambda: self._give_birthday_role(guild, settings.birthday_role_id, self._birthday_members(guild, local), local),
+                        lambda: self._give_todays_birthday_role(guild, settings.birthday_role_id, local),
                     )
             if settings.anniversary_enabled:
                 await self._run_job(guild.id, "anniversary", today, lambda: self.celebrate_anniversaries(guild, settings, local))
@@ -321,9 +321,27 @@ class CommunityCog(commands.Cog):
         self._retries[key] = (failures, self._now() + wait)
         return failures
 
-    def _birthday_members(self, guild: discord.Guild, local: datetime) -> List[discord.Member]:
-        """The members (not bots) whose birthday is on ``local``'s day, up to the mention limit."""
-        ids = birthdays_on(local.date(), self.store.birthdays(guild.id))
+    async def _hidden_members(self, guild: discord.Guild) -> Set[int]:
+        """The members of ``guild`` hidden with ``/leaderboard optout``, read off the event loop.
+
+        Raises:
+            sqlite3.Error: The list cannot be read; the job that asked fails and is retried.
+        """
+        return await asyncio.to_thread(self.store.read_optouts, guild.id)
+
+    async def _give_todays_birthday_role(self, guild: discord.Guild, role_id: int, local: datetime) -> bool:
+        """``_give_birthday_role`` for the members whose birthday is on ``local``'s day (hidden ones left out)."""
+        return await self._give_birthday_role(guild, role_id, await self._birthday_members(guild, local), local)
+
+    async def _birthday_members(self, guild: discord.Guild, local: datetime) -> List[discord.Member]:
+        """The members (not bots) whose birthday is on ``local``'s day, up to the mention limit.
+
+        Members hidden with ``/leaderboard optout`` are left out, so they are neither named in the
+        greeting nor marked by the birthday role. When the opt-out list cannot be read this raises,
+        and the job is retried: nobody is named while it is unknown who is hidden.
+        """
+        hidden = await self._hidden_members(guild)
+        ids = [user_id for user_id in birthdays_on(local.date(), self.store.birthdays(guild.id)) if user_id not in hidden]
         members = [m for m in (guild.get_member(user_id) for user_id in ids) if m is not None and not m.bot]
         return members[: self.limits.birthday_max_mentions]
 
@@ -332,7 +350,7 @@ class CommunityCog(commands.Cog):
 
         With nowhere to post yet it also gives False, so a channel set later that day still gets it.
         """
-        members = self._birthday_members(guild, local)
+        members = await self._birthday_members(guild, local)
         if not members:
             return True
         channel = self._channel_for(guild, settings)
@@ -410,7 +428,8 @@ class CommunityCog(commands.Cog):
     async def celebrate_anniversaries(self, guild: discord.Guild, settings: GuildSettings, local: datetime) -> bool:
         """Posts one message for every member who joined on this day in an earlier year; False when it could not be posted."""
         zone = local.tzinfo
-        found = [(m, anniversary_years(local.date(), m.joined_at, zone)) for m in guild.members if not m.bot]
+        hidden = await self._hidden_members(guild)  # hidden members are not named; unreadable: the job is retried
+        found = [(m, anniversary_years(local.date(), m.joined_at, zone)) for m in guild.members if not m.bot and m.id not in hidden]
         found = [(m, years) for m, years in found if years > 0][: self.limits.birthday_max_mentions]
         if not found:
             return True
@@ -443,7 +462,7 @@ class CommunityCog(commands.Cog):
         Raises:
             discord.HTTPException: The recap could not be posted (so the scheduler retries it).
         """
-        recap = await RecapBuilder(self.bot, self.limits).build(guild, start, end, self.store.optouts(guild.id))
+        recap = await RecapBuilder(self.bot, self.limits).build(guild, start, end, await self._hidden_members(guild))
         if recap is None:
             return None
         if preview_channel is None and recap.total < self.limits.weekly_min_messages:
