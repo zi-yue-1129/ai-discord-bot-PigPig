@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 import pytest
 
-from cogs import userdata
 from cogs.memory.db.knowledge_storage import MAX_KNOWLEDGE_CHARS
 from cogs.userdata import UserDataCog
 from llm.tools.user_data import UserMemoryTools
+
+# The module the cog really runs in: ``from cogs import userdata`` can return an older copy
+# left on the package by a test file that ran earlier (the root conftest re-imports cogs modules).
+userdata = sys.modules[UserDataCog.__module__]
 
 TARGET = "111"
 ASKER = "222"

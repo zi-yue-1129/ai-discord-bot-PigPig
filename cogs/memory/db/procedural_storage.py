@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from ..users.models import UserInfo
 from .connection import DatabaseConnection
+from .member_tables import MEMBER_STATS_TABLES, USER_STATS_TEXT_COLUMNS
 from function import func
 from addons.logging import get_logger
 logger = get_logger(server_id="system", source=__name__)
@@ -269,10 +270,23 @@ class ProceduralStorage:
             return False
 
     def _delete_user_data_sync(self, discord_id: str) -> bool:
+        """Forgets the member and what they said: their profile row, and the words and emojis
+        counted from their messages in every server (message counts and streaks stay)."""
         with self.db.get_connection() as conn:
             cursor = conn.execute("DELETE FROM users WHERE discord_id = ?", (discord_id,))
-            conn.commit()
             deleted = cursor.rowcount > 0
+            # user_stats keeps the counts; every other stats table only holds what they said.
+            for table in MEMBER_STATS_TABLES:
+                if table != "user_stats":
+                    cursor = conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (discord_id,))
+                    deleted = cursor.rowcount > 0 or deleted
+            emptied = ", ".join(f"{column} = '{{}}'" for column in USER_STATS_TEXT_COLUMNS)
+            changed = " OR ".join(f"{column} != '{{}}'" for column in USER_STATS_TEXT_COLUMNS)
+            cursor = conn.execute(
+                f"UPDATE user_stats SET {emptied} WHERE user_id = ? AND ({changed})", (discord_id,)
+            )
+            deleted = cursor.rowcount > 0 or deleted
+            conn.commit()
 
             if deleted and discord_id in self._user_cache:
                 del self._user_cache[discord_id]

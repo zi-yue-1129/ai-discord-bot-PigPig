@@ -20,6 +20,7 @@ from fastapi import Query
 from addons.logging import get_logger
 from addons.tokens import tokens
 from dashboard.middleware.permission import require_owner
+from dashboard.services.member_stats import delete_member_stats
 from function import ROOT_DIR
 
 log = get_logger(server_id="Bot", source=__name__)
@@ -491,8 +492,7 @@ async def admin_delete_user_memory(
             async with aiosqlite.connect(str(_PROCEDURAL_DB)) as db:
                 c = await db.execute("DELETE FROM users WHERE discord_id = ?", (user_id,))
                 deleted["procedural_users"] = c.rowcount
-                c = await db.execute("DELETE FROM user_stats WHERE user_id = ?", (user_id,))
-                deleted["user_stats"] = c.rowcount
+                deleted.update(await delete_member_stats(db, user_id))
                 await db.commit()
         except Exception as exc:
             log.error(f"admin_delete_user_memory failed for {user_id}: {exc}")

@@ -244,3 +244,107 @@ async def test_words_used_once_in_settled_weeks_are_pruned(storage: StatsStorage
 
     assert await storage.get_weekly_terms(GUILD, "2026-09-28", "word") == [("pizza", 2)]
     assert await storage.get_weekly_terms(GUILD, "2026-10-12", "word") == [("lastweek", 1)]
+
+
+# ------------------------------------------------------------ public words per member
+
+
+@pytest.mark.asyncio
+async def test_only_words_from_public_messages_are_counted_per_member(storage: StatsStorage) -> None:
+    await storage.upsert_user_stats(USER, GUILD, "pizza pizza 😀", "1", "2026-10-20T04:00:00Z", public=True)
+    await storage.upsert_user_stats(USER, GUILD, "secretproject 🤫", "2", "2026-10-20T04:00:00Z", public=False)
+    await storage.upsert_user_stats(USER, GUILD, "pizza", "3", "2026-10-20T04:00:00Z", public=True)
+    await storage.upsert_user_stats(OTHER, GUILD, "pasta", "1", "2026-10-20T04:00:00Z", public=True)
+
+    assert await storage.get_user_public_terms(USER, GUILD, "word", ["1", "2", "3"]) == [("pizza", 3)]
+    assert await storage.get_user_public_terms(USER, GUILD, "emoji", ["1", "2", "3"]) == [("😀", 1)]
+    # A channel that is no longer public is left out too.
+    assert await storage.get_user_public_terms(USER, GUILD, "word", ["3"]) == [("pizza", 1)]
+    assert await storage.get_user_public_terms(USER, GUILD, "word", []) == []
+
+
+@pytest.mark.asyncio
+async def test_public_words_are_capped_per_member_and_channel(storage: StatsStorage, monkeypatch: pytest.MonkeyPatch) -> None:
+    import cogs.memory.db.stats_storage as module
+
+    monkeypatch.setattr(module, "MAX_PUBLIC_TERMS", 2)
+    await storage.upsert_user_stats(USER, GUILD, "pizza pizza pizza pasta pasta sushi", "1", "2026-10-20T04:00:00Z", public=True)
+
+    # The table was full when sushi came, so it took pasta's place and count (Space-Saving).
+    assert await storage.get_user_public_terms(USER, GUILD, "word", ["1"]) == [("pizza", 3), ("sushi", 3)]
+
+
+@pytest.mark.asyncio
+async def test_a_new_public_word_used_often_gets_in_despite_old_favourites(
+    storage: StatsStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import cogs.memory.db.stats_storage as module
+
+    monkeypatch.setattr(module, "MAX_PUBLIC_TERMS", 3)
+    with storage.db.get_connection() as conn:
+        conn.executemany(
+            "INSERT INTO user_public_terms (guild_id, user_id, channel_id, kind, term, count) VALUES (?, ?, '1', 'word', ?, 100)",
+            [(GUILD, USER, term) for term in ("apple", "banana", "cherry")],
+        )
+        conn.commit()
+
+    day = datetime(2026, 10, 1, 12, 0).astimezone()
+    for _ in range(11):
+        await storage.upsert_user_stats(USER, GUILD, " ".join(["zebra"] * 10), "1", day.isoformat(), public=True)
+        day += timedelta(days=1)
+        await storage.prune_activity_history(day)
+
+    words = dict(await storage.get_user_public_terms(USER, GUILD, "word", ["1"]))
+    assert len(words) == 3 and words["zebra"] >= 110
+
+
+@pytest.mark.asyncio
+async def test_a_failed_public_word_write_keeps_the_other_counts(storage: StatsStorage) -> None:
+    with storage.db.get_connection() as conn:
+        conn.execute(
+            "CREATE TRIGGER no_public_words BEFORE INSERT ON user_public_terms BEGIN SELECT RAISE(ABORT, 'boom'); END"
+        )
+        conn.commit()
+
+    for n in range(2):
+        stats = await storage.upsert_user_stats(USER, GUILD, "pizza", "1", f"2026-10-20T04:0{n}:00Z", public=True)
+        assert stats["total_messages"] == n + 1
+
+    assert (await storage.get_user_stats(USER, GUILD))["total_messages"] == 2
+    assert await storage.get_weekly_terms(GUILD, "2026-10-19", "word") == [("pizza", 2)]
+    assert await storage.get_user_public_terms(USER, GUILD, "word", ["1"]) == []
+
+
+@pytest.mark.asyncio
+async def test_one_message_adds_a_bounded_number_of_new_public_words(storage: StatsStorage) -> None:
+    import cogs.memory.db.stats_storage as module
+
+    many = " ".join(f"word{chr(97 + i // 26)}{chr(97 + i % 26)}" for i in range(300))
+    await storage.upsert_user_stats(USER, GUILD, "pizza pizza " + many, "1", "2026-10-20T04:00:00Z", public=True)
+
+    words = dict(await storage.get_user_public_terms(USER, GUILD, "word", ["1"], limit=1000))
+    assert len(words) == module.MAX_NEW_PUBLIC_TERMS_PER_MESSAGE and words["pizza"] == 2
+    # Terms already counted are not limited.
+    await storage.upsert_user_stats(USER, GUILD, many, "1", "2026-10-20T04:01:00Z", public=True)
+    assert len(await storage.get_user_public_terms(USER, GUILD, "word", ["1"], limit=1000)) == 2 * module.MAX_NEW_PUBLIC_TERMS_PER_MESSAGE
+
+
+def test_an_old_database_gets_the_public_words_scope_index(tmp_path: Path) -> None:
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE user_public_terms (guild_id TEXT NOT NULL, user_id TEXT NOT NULL, channel_id TEXT NOT NULL, "
+            "kind TEXT NOT NULL, term TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0, "
+            "PRIMARY KEY (guild_id, user_id, kind, term, channel_id))"
+        )
+    with DatabaseConnection(path).get_connection():  # the first connection runs the schema upgrade
+        pass
+    with sqlite3.connect(path) as conn:
+        plan = conn.execute(
+            "EXPLAIN QUERY PLAN SELECT term, count FROM user_public_terms "
+            "WHERE guild_id = ? AND user_id = ? AND channel_id = ? AND kind = ? ORDER BY count, term LIMIT 1",
+            ("1", "2", "3", "word"),
+        ).fetchall()
+    assert any("idx_user_public_terms_scope" in str(row) for row in plan)

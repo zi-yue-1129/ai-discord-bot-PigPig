@@ -442,6 +442,51 @@ async def test_the_stats_cog_hands_fresh_stats_to_other_cogs(storage: StatsStora
     assert name == "user_stats_updated" and sent_message is message and stats["total_messages"] == 1
 
 
+
+@pytest.mark.asyncio
+async def test_the_stats_cog_counts_public_words_only_in_channels_everyone_can_read(
+    storage: StatsStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Patch the globals the cog really uses (other test files may re-import cogs modules).
+    monkeypatch.setitem(StatsCog.on_message.__globals__, "audience_can_read", lambda channel: channel.id == 5)
+    stats_cog = StatsCog(SimpleNamespace(procedural_storage=SimpleNamespace(db=storage.db)))
+    for channel_id, text in [(5, "pizza"), (6, "secretproject")]:
+        await stats_cog.on_message(SimpleNamespace(
+            guild=SimpleNamespace(id=GUILD_ID),
+            author=SimpleNamespace(id=10, bot=False),
+            channel=SimpleNamespace(id=channel_id, name="c"),
+            content=text,
+            created_at=datetime(2026, 10, 25, 4, 0, tzinfo=timezone.utc),
+        ))
+
+    assert await storage.get_user_public_terms("10", str(GUILD_ID), "word", ["5", "6"]) == [("pizza", 1)]
+
+
+@pytest.mark.asyncio
+async def test_a_real_channel_with_a_role_deny_is_not_counted_as_public(storage: StatsStorage) -> None:
+    """The unpatched rule, with real discord.py channels: a role denied history is not public."""
+    import discord
+
+    from test_visibility import _guild, _member, _overwrite, _role
+
+    denied = _guild(
+        roles=[_role(2, discord.Permissions.none(), 1)],
+        members=[_member(5, [2]), _member(6)],
+        overwrites=[_overwrite(2, 0, deny=discord.Permissions(read_message_history=True))],
+    )
+    stats_cog = StatsCog(SimpleNamespace(procedural_storage=SimpleNamespace(db=storage.db)))
+    for guild, text in [(_guild(), "pizza"), (denied, "secretproject")]:
+        await stats_cog.on_message(SimpleNamespace(
+            guild=guild,
+            author=SimpleNamespace(id=10, bot=False),
+            channel=guild.get_channel(10),
+            content=text,
+            created_at=datetime(2026, 10, 25, 4, 0, tzinfo=timezone.utc),
+        ))
+
+    assert await storage.get_user_public_terms("10", "1", "word", ["10"]) == [("pizza", 1)]
+
+
 # ------------------------------------------------------------------ translations
 
 

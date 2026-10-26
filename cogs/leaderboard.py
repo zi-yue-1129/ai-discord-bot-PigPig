@@ -20,7 +20,7 @@ from discord.ext import commands
 from addons.logging import get_logger
 from addons.settings import base_config
 from function import func
-from llm.tools.user_stats import _format_text_card, _make_t, public_stats
+from llm.tools.user_stats import _format_text_card, _make_t, fetch_public_terms, public_view
 
 from .community import COMMUNITY_DB_PATH
 from .community_lib.achievements import (
@@ -302,12 +302,16 @@ class LeaderboardCog(commands.Cog):
         stats = await storage.get_user_stats(str(member.id), str(guild.id)) if storage else None
         if not stats:
             return self._r(guild.id, "no_stats", name=member.display_name)
-        lines = [_format_text_card(member.display_name, public_stats(guild, stats), _make_t(self.bot, str(guild.id)))]
+        terms = await fetch_public_terms(storage, guild, str(member.id))
+        place = ranked = None
         if not self.store.is_opted_out(guild.id, member.id):
             ranked = await self.rankings(guild, "messages", "all") or []
             place = next((place for place, (m, _) in enumerate(ranked, start=1) if m.id == member.id), None)
-            if place is not None:
-                lines.append(self._r(guild.id, "profile_rank", rank=place, total=len(ranked)))
+        # Built after the last await, so a channel made private meanwhile is left out.
+        shown = public_view(guild, stats, terms)
+        lines = [_format_text_card(member.display_name, shown, _make_t(self.bot, str(guild.id)))]
+        if place is not None:
+            lines.append(self._r(guild.id, "profile_rank", rank=place, total=len(ranked)))
         titles = self.store.titles_of(guild.id, member.id)
         if titles:
             names = self._r(guild.id, "list_joiner").join(self._title(guild.id, title_id) for title_id in titles)
