@@ -54,7 +54,7 @@ class FakeChannel:
         post = view and member.id not in self.muted
         return SimpleNamespace(
             view_channel=view, read_message_history=view, manage_threads=False, send_messages=post,
-            use_application_commands=post,
+            send_messages_in_threads=post, use_application_commands=post,
         )
 
     async def send(self, content: Any = None, **kwargs: Any) -> Any:
@@ -366,15 +366,61 @@ async def test_round_two_game_regressions(games: GamesCog, monkeypatch: pytest.M
 
 
 def test_thread_games_need_the_thread_send_permission() -> None:
-    thread = SimpleNamespace(type=discord.ChannelType.public_thread)
+    thread = SimpleNamespace(type=discord.ChannelType.public_thread, locked=False, archived=False, members=[])
     host = _member(HOST_ID)
 
     def allowed(**flags: bool) -> bool:
-        thread.permissions_for = lambda member: SimpleNamespace(view_channel=True, use_application_commands=True, **flags)
+        flags = {"send_messages": False, "send_messages_in_threads": True, "manage_threads": False, **flags}
+        thread.permissions_for = lambda member: SimpleNamespace(
+            view_channel=True, read_message_history=True, use_application_commands=True, **flags
+        )
         return GamesCog.host_may_play(thread, host)
 
-    assert allowed(send_messages=False, send_messages_in_threads=True)
+    assert allowed()
     assert not allowed(send_messages=True, send_messages_in_threads=False)
+    # A locked or archived thread: only someone who can manage threads.
+    thread.locked = True
+    assert not allowed() and allowed(manage_threads=True)
+    thread.locked, thread.archived = False, True
+    assert not allowed() and allowed(manage_threads=True)
+    # A private thread: only its members (or someone who can manage threads).
+    thread.archived, thread.type = False, discord.ChannelType.private_thread
+    assert not allowed()
+    thread.members = [host]
+    assert allowed()
+
+
+@pytest.mark.asyncio
+async def test_start_refuses_a_host_who_left_the_private_thread_meanwhile(games: GamesCog, monkeypatch: pytest.MonkeyPatch) -> None:
+    host = _member(HOST_ID, voice=SimpleNamespace(channel=SimpleNamespace(id=1, mention="#voice")))
+    thread = FakeChannel(700)
+    thread.type = discord.ChannelType.private_thread
+    thread.members = [host]
+    music = SimpleNamespace(youtube=object(), queue_manager=SimpleNamespace(is_queue_empty=lambda guild_id: True))
+    games.bot.get_cog = lambda name: music if name == "YTMusic" else None
+    reads: list = []
+
+    def song_pool(music: Any, guild_id: int) -> list:
+        reads.append(1)
+        if len(reads) == 2:  # removed from the thread while Start reads the pool
+            thread.members = []
+        return [("a", "A"), ("b", "B"), ("c", "C")]
+
+    monkeypatch.setattr(games, "song_pool", song_pool)
+    tool = _tool(GameTools, _runtime({"GamesCog": games}, thread, {HOST_ID: host}))
+    assert (await tool.coroutine(game="guess_song")).startswith("Posted a Start button")
+
+    pressed = await _press(thread.sent[-1][1]["view"], "offer_start", host)
+
+    assert pressed.edited[0]["content"] == "offer_denied|"
+    assert games._tasks == set() and games.limits.running == set() and games.limits.song_guilds == set()
+
+
+def test_reading_settings_never_creates_the_database(tmp_path: Path) -> None:
+    path = tmp_path / "missing" / "community.db"
+    with pytest.raises(sqlite3.Error):
+        CommunityStore(path).read_settings(GUILD_ID)
+    assert not path.exists() and not path.parent.exists()
 
 
 @pytest.mark.asyncio

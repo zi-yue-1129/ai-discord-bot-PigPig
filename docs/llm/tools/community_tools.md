@@ -23,7 +23,7 @@ The AI's answer is posted for everyone in the channel, so each tool returns only
 
 ### Starting a game
 
-The model never starts a game by itself: `start_server_game` posts an offer that pings nobody, and only the asker can press Start (others are told it is not theirs). Text that tricks the model can at most post an offer. An offer expires after 2 minutes; a host has one open offer (a new one replaces it) and a server at most 3. Pressing Start looks the asker up again and runs the `/game` checks again: they must still be allowed to see the channel, post in it and use commands there, and the channel, the host or the music may be busy by then. A game cancelled before it ran (the cog unloaded) frees the channel and the host, and a press still being handled when the cog unloads starts nothing. Guess the song reads its song pool on a worker thread.
+The model never starts a game by itself: `start_server_game` posts an offer that pings nobody, and only the asker can press Start (others are told it is not theirs). Text that tricks the model can at most post an offer. An offer expires after 2 minutes; a host has one open offer (a new one replaces it) and a server at most 3. Pressing Start looks the asker up again and runs the `/game` checks again: they must still be allowed to read the channel (in a private thread: be in it), post in it and use commands there (in a locked or archived thread only someone who can manage threads), and the channel, the host or the music may be busy by then. A game cancelled before it ran (the cog unloaded) frees the channel and the host, and a press still being handled when the cog unloads starts nothing. Guess the song reads its song pool on a worker thread.
 
 ### Popular songs
 
@@ -42,3 +42,8 @@ Everything in the AI's recap is counted only in shareable channels (everyone can
 The opt-out list is read before anything that could create the community database (`get_settings` does), and again after the last await: if someone hid themselves meanwhile, or a counted channel stopped being shareable, the tool answers "not available". The weekly post's "missing regulars" are left out: a member's last message may be in a private channel, so the list would tell.
 
 Groups are explained in [the tools factory](../tools_factory.md#tool-groups).
+
+### Known limits (accepted)
+
+- The community database uses SQLite's default rollback journal, so while a worker thread runs the settings or opt-out `SELECT`, a write on the event loop waits for that read to finish. These reads are single small-table lookups (milliseconds), so this is accepted; moving `CommunityStore` to WAL is a store-wide change (backups, `mode=ro` reads) left for its own PR.
+- The opt-out list is read last, but on a worker thread: someone who hides in the moment between that read and the answer going out can still be named once. Closing that gap would mean reading the list on the event loop (blocking), the same trade-off as the last check before posting in #379.

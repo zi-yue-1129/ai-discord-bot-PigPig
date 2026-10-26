@@ -19,7 +19,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from addons.logging import get_logger
-from addons.visibility import current_member
+from addons.visibility import can_read, current_member
 from function import func
 from llm.game_writer import Charge, QuotaExhausted, write_chain_word, write_question
 
@@ -278,14 +278,23 @@ class GamesCog(commands.Cog):
 
     @staticmethod
     def host_may_play(channel: Any, host: Any) -> bool:
-        """Whether ``host`` may start a game in ``channel`` themselves: see it, post in it and use commands there."""
+        """Whether ``host`` may start a game in ``channel`` themselves: read it, post in it and use commands there.
+
+        In a private thread they must be in it (``can_read``); a locked or archived thread only
+        takes games from someone who can manage threads.
+        """
         try:
             permissions = channel.permissions_for(host)
         except Exception:
             return False
+        if not can_read(channel, host):
+            return False
         in_thread = getattr(channel, "type", None) in (
             discord.ChannelType.public_thread, discord.ChannelType.private_thread, discord.ChannelType.news_thread
         )
+        if in_thread and (getattr(channel, "locked", False) or getattr(channel, "archived", False)):
+            if not getattr(permissions, "manage_threads", False):
+                return False
         send = "send_messages_in_threads" if in_thread else "send_messages"
         return all(getattr(permissions, name, False) for name in ("view_channel", send, "use_application_commands"))
 
