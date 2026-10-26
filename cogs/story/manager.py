@@ -168,13 +168,9 @@ class StoryManager:
         results.append(text)
         del results[:-MAX_PENDING_DICE]
 
-    def discard_dice_result(self, channel_id: int, text: str) -> None:
-        """Takes back a result from :meth:`add_dice_result` that was never shown (if still pending)."""
-        results = self.dice_results.get(channel_id)
-        if results and text in results:
-            results.remove(text)
-            if not results:
-                del self.dice_results[channel_id]
+    def clear_dice_results(self, channel_id: int) -> None:
+        """Forgets the channel's pending rolls, so they never carry over into another story."""
+        self.dice_results.pop(channel_id, None)
 
     async def intervene(self, interaction: discord.Interaction):
         """
@@ -998,6 +994,8 @@ class StoryManager:
         """
         assert interaction.guild_id is not None, "interaction.guild_id must not be None"
         assert interaction.channel_id is not None, "interaction.channel_id must not be None"
+        # Rolls made before this story belong to no story of it.
+        self.clear_dice_results(cast(int, interaction.channel_id))
         db = self._get_db(cast(int, interaction.guild_id))
         world = db.get_world(world_name)
         if not world:

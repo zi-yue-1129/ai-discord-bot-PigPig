@@ -503,9 +503,6 @@ class FakeStoryManager:
     def add_dice_result(self, channel_id: int, text: str) -> None:
         self.dice.append((channel_id, text))
 
-    def discard_dice_result(self, channel_id: int, text: str) -> None:
-        self.dice.remove((channel_id, text))
-
 
 def _story_cog(instance: Any = None, characters: Optional[dict] = None, **bot_attrs: Any) -> StoryManagerCog:
     lang = FakeLang()
@@ -1405,6 +1402,7 @@ async def test_a_roll_is_queued_for_the_story_before_its_reply_shows_up() -> Non
     await StoryManagerCog.roll.callback(cog, interaction, "1d20", None)
     assert len(seen_when_sent[0]) == 1
 
+    # The story may already have used the roll by the time a reply fails, so the roll stands.
     failing = FakeInteraction(user_id=5)
 
     async def fail(content: Any = None, **kwargs: Any) -> None:
@@ -1413,17 +1411,48 @@ async def test_a_roll_is_queued_for_the_story_before_its_reply_shows_up() -> Non
     failing.response.send_message = fail
     with pytest.raises(discord.HTTPException):
         await StoryManagerCog.roll.callback(cog, failing, "1d20", None)
-    assert len(cog.story_manager.dice) == 1  # the roll nobody saw is taken back
+    assert len(cog.story_manager.dice) == 2
 
 
-def test_a_discarded_roll_leaves_the_other_pending_rolls() -> None:
-    from cogs.story.manager import StoryManager
+def test_pending_rolls_are_consumed_once_and_never_carry_over_into_another_story() -> None:
+    from cogs.story.manager import MAX_PENDING_DICE, StoryManager
 
     manager = SimpleNamespace(dice_results={})
-    StoryManager.add_dice_result(manager, 500, "a rolled 1")
-    StoryManager.add_dice_result(manager, 500, "b rolled 2")
-    StoryManager.discard_dice_result(manager, 500, "a rolled 1")
-    assert manager.dice_results == {500: ["b rolled 2"]}
-    StoryManager.discard_dice_result(manager, 500, "b rolled 2")
-    StoryManager.discard_dice_result(manager, 500, "gone")
-    assert manager.dice_results == {}
+    for number in range(MAX_PENDING_DICE + 2):
+        StoryManager.add_dice_result(manager, 500, f"rolled {number}")
+    StoryManager.add_dice_result(manager, 501, "elsewhere")
+    # What the GM turn does: take the channel's pending rolls.
+    assert manager.dice_results.pop(500, None) == [f"rolled {n}" for n in range(2, MAX_PENDING_DICE + 2)]
+
+    StoryManager.add_dice_result(manager, 500, "left over")
+    StoryManager.clear_dice_results(manager, 500)  # the story ends (or a new one starts)
+    StoryManager.clear_dice_results(manager, 502)
+    assert manager.dice_results == {501: ["elsewhere"]}
+
+
+@pytest.mark.asyncio
+async def test_ending_a_story_forgets_its_pending_rolls() -> None:
+    from cogs.story.manager import StoryManager
+    from cogs.story.ui import views
+
+    saved: list = []
+    manager = SimpleNamespace(
+        language_manager=FakeLang(), character_db=SimpleNamespace(), interventions={}, bot=SimpleNamespace(),
+        dice_results={500: ["left over"], 501: ["elsewhere"]},
+        _get_db=lambda guild_id: SimpleNamespace(save_story_instance=saved.append),
+    )
+    manager.clear_dice_results = lambda channel_id: StoryManager.clear_dice_results(manager, channel_id)
+    instance = SimpleNamespace(
+        guild_id=GUILD_ID, channel_id=500, is_active=True, narration_enabled=True, active_character_ids=[], world_name="w"
+    )
+    view = views.ActiveStoryView(manager=manager, story_instance=instance)
+
+    async def is_admin(interaction: Any) -> bool:
+        return True
+
+    interaction = FakeInteraction(user_id=1)
+    interaction.client = SimpleNamespace(get_cog=lambda name: SimpleNamespace(check_admin_permissions=is_admin))
+    await view.end_story_button.callback(interaction)
+
+    assert saved == [instance] and instance.is_active is False
+    assert manager.dice_results == {501: ["elsewhere"]}

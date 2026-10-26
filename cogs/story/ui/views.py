@@ -443,6 +443,7 @@ class ActiveStoryView(StoryTextMixin, discord.ui.View):
             
             # 結束故事
             self.story_instance.is_active = False
+            self.story_manager.clear_dice_results(self.story_instance.channel_id)
             db = self.story_manager._get_db(interaction.guild_id)
             db.save_story_instance(self.story_instance)
             

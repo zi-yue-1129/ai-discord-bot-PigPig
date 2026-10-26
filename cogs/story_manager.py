@@ -172,19 +172,14 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
         in_story = self._active_story(guild_id, interaction.channel_id) is not None
         if in_story:
             text += "\n" + self._t(guild_id, "story", "addons", "roll_in_story")
-        note = None
         if in_story:
             note = f"{interaction.user.display_name} rolled {result.describe()}"
             if reason:
                 note += f" for: {reason}"
-            # Queued before the reply goes out: a story message right after the roll shows up must see it.
+            # Queued before the reply goes out: a story message right after the roll shows up must see
+            # it. The roll stands even if the reply then fails, since the story may already have used it.
             self.story_manager.add_dice_result(interaction.channel_id, note)
-        try:
-            await interaction.response.send_message(text, allowed_mentions=discord.AllowedMentions.none())
-        except discord.HTTPException:
-            if note is not None:
-                self.story_manager.discard_dice_result(interaction.channel_id, note)
-            raise
+        await interaction.response.send_message(text, allowed_mentions=discord.AllowedMentions.none())
 
     # ----------------------------------------------------------------- recap
     async def _recap_text(self, channel: Any, instance: Any, user_id: Optional[int], before: Any = None) -> Optional[str]:
