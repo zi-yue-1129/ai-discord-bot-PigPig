@@ -52,13 +52,17 @@ class FakeChannel:
         self.overwrites: dict = {}
         self.sent: List[tuple] = []
         self.fail = False
+        self.on_send: Any = None
 
     def permissions_for(self, member: Any) -> Any:
         if member is self.guild.me:
             return SimpleNamespace(view_channel=True, manage_channels=self.guild.bot_manages_channels)
         return SimpleNamespace(view_channel=self.viewers is None or member.id in self.viewers)
 
-    async def send(self, text: str, allowed_mentions: Any = None, view: Any = None) -> Any:
+    async def send(self, text: str, allowed_mentions: Any = None, view: Any = None, suppress_embeds: bool = False) -> Any:
+        assert suppress_embeds is True
+        if self.on_send is not None:
+            self.on_send()
         if self.fail:
             raise discord.HTTPException(SimpleNamespace(status=500, reason="boom"), "boom")
         self.sent.append((text, allowed_mentions, view))
@@ -73,6 +77,10 @@ class FakeMember:
         self.mention = f"<@{member_id}>"
         self.voice = voice
         self.activities: tuple = ()
+        self.timed_out = False
+
+    def is_timed_out(self) -> bool:
+        return self.timed_out
 
 
 class FakeGuild:
@@ -90,6 +98,9 @@ class FakeGuild:
 
     def get_member(self, user_id: int) -> Optional[FakeMember]:
         return self.members.get(user_id)
+
+    async def fetch_member(self, user_id: int) -> FakeMember:
+        raise discord.NotFound(SimpleNamespace(status=404, reason="gone"), "gone")
 
     def get_channel(self, channel_id: int) -> Any:
         return self.channels.get(channel_id)
@@ -285,8 +296,10 @@ async def test_a_server_with_the_feature_off_gets_nothing(tmp_path: Path) -> Non
 
 
 class FakePress:
-    def __init__(self, guild: FakeGuild, message_id: int) -> None:
+    def __init__(self, guild: FakeGuild, message_id: int, user_id: int = 1) -> None:
         self.guild = guild
+        self.user = SimpleNamespace(id=user_id)
+        guild.members.setdefault(user_id, FakeMember(user_id))
         self.message = SimpleNamespace(id=message_id)
         self.deferred: Optional[dict] = None
         self.followups: List[str] = []
@@ -477,3 +490,134 @@ async def test_admins_turn_it_on_with_a_channel_and_player_count(tmp_path: Path)
     await CommunityCog.playing_command.callback(community, interaction, False, None, None)
     assert store.get_settings(GUILD_ID).playing_enabled is False and replies[-1] == "playing_off|"
     assert "playing=" in community._status_text(SimpleNamespace(id=GUILD_ID), store.get_settings(GUILD_ID))
+
+
+
+@pytest.mark.asyncio
+async def test_players_who_lose_access_or_opt_out_while_the_post_is_written_are_left_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import cogs.playing as playing_module
+
+    holder: list = []
+
+    async def compose(orchestrator: Any, bot: Any, channel: Any, task: str, facts: str, mentions: Any) -> str:
+        cog, guild, store = holder[0]
+        guild.channel.viewers = {1, 2, 4}  # 3 loses the channel
+        store.set_optout(GUILD_ID, 4, True)  # 4 opts out
+        return "一起玩！ <@1> <@2> <@3> <@4>"
+
+    monkeypatch.setattr(playing_module, "compose_announcement", compose)
+    cog, guild, store = _cog(tmp_path)
+    holder.append((cog, guild, store))
+    cog.bot.orchestrator = object()
+    store.update_settings(GUILD_ID, playing_min_players=2)
+    _playing(cog, guild, "Valorant", 1, 2, 3, 4)
+
+    text = await _check(cog, store)
+
+    content, allowed, _ = guild.channel.sent[0]
+    assert text == content == "playing_fixed|game=Valorant|mentions=<@1> <@2>"  # the written text named them: not used
+    assert sorted(user.id for user in allowed.users) == [1, 2]
+
+    # Too few left: nothing is posted, and nothing counts towards the cooldown.
+    cog2, guild2, store2 = _cog(tmp_path / "second")
+    holder[0] = (cog2, guild2, store2)
+    cog2.bot.orchestrator = object()
+    _playing(cog2, guild2, "Valorant", 1, 2, 3)
+    assert await _check(cog2, store2) is None and guild2.channel.sent == [] and store2.count_playing_posts(GUILD_ID, 0) == 0
+
+
+def test_game_names_lose_links_mentions_lines_and_formatting() -> None:
+    from cogs.playing import shown_game_name
+
+    shown = shown_game_name("**Free** https://example.invalid/promo <@5> <@&6> <#7>\n@everyone @here www.x.com agar.io")
+    assert "http" not in shown and "www." not in shown and "<@" not in shown and "<#" not in shown and "\n" not in shown
+    assert "@everyone" not in shown and "@here" not in shown and "\\*\\*Free\\*\\*" in shown and "agar.io" in shown
+    assert shown_game_name("https://only.a/link") == "?"
+
+
+@pytest.mark.asyncio
+async def test_a_hostile_game_name_is_neutralised_in_the_post_and_the_room(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False)
+    message_id = await _posted_game(cog, guild, store, "Valorant https://evil.invalid <@5> @everyone")
+
+    content = guild.channel.sent[0][0]
+    assert "evil.invalid" not in content and "<@5>" not in content and "@everyone" not in content
+    await cog.open_room(FakePress(guild, message_id))
+    assert "evil" not in guild.created[0]["name"] and guild.created[0]["name"].startswith("Valorant")
+
+
+async def _posted_game(cog: PlayingCog, guild: FakeGuild, store: CommunityStore, game: str) -> int:
+    _playing(cog, guild, game, 1, 2, 3)
+    await _check(cog, store)
+    with sqlite3.connect(store.path) as connection:
+        return connection.execute("SELECT message_id FROM playing_posts").fetchone()[0]
+
+
+@pytest.mark.asyncio
+async def test_only_members_who_can_take_part_in_the_channel_open_a_room(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False)
+    message_id = await _posted(cog, guild, store)
+
+    timed_out = FakePress(guild, message_id, user_id=8)
+    guild.members[8].timed_out = True
+    await cog.open_room(timed_out)
+    guild.channel.viewers = {1, 2, 3}
+    outsider = FakePress(guild, message_id, user_id=9)
+    await cog.open_room(outsider)
+    gone = FakePress(guild, message_id, user_id=10)
+    del guild.members[10]
+    await cog.open_room(gone)
+
+    assert [press.followups for press in (timed_out, outsider, gone)] == [["playing_expired|"]] * 3
+    assert guild.created == []
+
+
+@pytest.mark.asyncio
+async def test_a_room_that_cannot_be_recorded_is_deleted_again(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False)
+    message_id = await _posted(cog, guild, store)
+
+    def broken(*args: Any) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(store, "add_temp_voice", broken)
+    press = FakePress(guild, message_id)
+    await cog.open_room(press)
+
+    room_id = next(iter(c for c in guild.channels if c != guild.channel.id), None)
+    assert press.followups == ["playing_room_failed|"] and room_id is None  # created, then deleted
+
+
+@pytest.mark.asyncio
+async def test_a_post_opens_one_room_ever_and_none_once_the_feature_is_off(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False)
+    message_id = await _posted(cog, guild, store)
+
+    await cog.open_room(FakePress(guild, message_id))
+    room = next(channel for channel in guild.channels.values() if isinstance(channel, FakeVoice))
+    await cog.on_voice_state_update(FakeMember(1), SimpleNamespace(channel=room), SimpleNamespace(channel=None))
+    again = FakePress(guild, message_id)
+    await cog.open_room(again)
+    assert room.deleted and again.followups == ["playing_room_closed|"] and len(guild.created) == 1
+
+    _playing(cog, guild, "Apex", 4, 5, 6)
+    await _check(cog, store)
+    with sqlite3.connect(store.path) as connection:
+        apex_post = connection.execute("SELECT message_id FROM playing_posts WHERE game_key = 'apex'").fetchone()[0]
+    store.update_settings(GUILD_ID, playing_enabled=False)
+    off = FakePress(guild, apex_post)
+    await cog.open_room(off)
+    assert off.followups == ["playing_expired|"] and len(guild.created) == 1
+
+
+@pytest.mark.asyncio
+async def test_post_buttons_expire_with_the_post_and_stop_on_unload(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_cooldown_hours=3)
+    await _posted(cog, guild, store)
+    view = guild.channel.sent[0][2]
+
+    assert view.timeout == 3 * 3600 and cog.view.timeout is None
+    await cog.cog_unload()
+    assert view.is_finished() and cog.view.is_finished() and cog._sent_views == []

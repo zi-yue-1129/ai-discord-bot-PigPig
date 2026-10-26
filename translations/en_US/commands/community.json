@@ -77,6 +77,7 @@
         "playing_room_exists": "There is already a voice room for this: {channel}",
         "playing_expired": "This suggestion is too old; the voice room button no longer works.",
         "playing_room_failed": "I could not open a voice room here (I may be missing the Manage Channels permission).",
-        "playing_room_limit": "There are already enough voice rooms open on this server. Join one of them, or wait until one empties."
+        "playing_room_limit": "There are already enough voice rooms open on this server. Join one of them, or wait until one empties.",
+        "playing_room_closed": "This post's voice room was already opened and has closed again."
     }
 }

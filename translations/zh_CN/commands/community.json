@@ -77,6 +77,7 @@
         "playing_room_exists": "已经有语音房了：{channel}",
         "playing_expired": "这则提议太久了，按钮已经不能用了。",
         "playing_room_failed": "没办法在这里开语音房（可能缺少「管理频道」权限）。",
-        "playing_room_limit": "这个服务器已经开了够多的语音房，请加入其中一个，或等有房间空出来。"
+        "playing_room_limit": "这个服务器已经开了够多的语音房，请加入其中一个，或等有房间空出来。",
+        "playing_room_closed": "这则提议的语音房已经开过，也已经关闭了。"
     }
 }

@@ -77,6 +77,7 @@
         "playing_room_exists": "已經有語音房了：{channel}",
         "playing_expired": "這則提議太久了，按鈕已經不能用了。",
         "playing_room_failed": "沒辦法在這裡開語音房（可能缺少「管理頻道」權限）。",
-        "playing_room_limit": "這個伺服器已經開了夠多的語音房，請加入其中一個，或等有房間空出來。"
+        "playing_room_limit": "這個伺服器已經開了夠多的語音房，請加入其中一個，或等有房間空出來。",
+        "playing_room_closed": "這則提議的語音房已經開過，也已經關閉了。"
     }
 }

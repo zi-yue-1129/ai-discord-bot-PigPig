@@ -12,6 +12,7 @@ Server admins turn it on with ``/community playing``; the bot owner sets the lim
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -20,6 +21,7 @@ from discord.ext import commands
 
 from addons.logging import get_logger
 from addons.presence import current_game
+from addons.visibility import current_member
 from addons.settings import base_config
 from function import func
 from llm.announcement_writer import compose_announcement
@@ -35,6 +37,9 @@ FAILURE_BACKOFF_SECONDS = 600
 # Posts older than this no longer count for anything and are dropped.
 POST_RETENTION_SECONDS = 2 * 86400
 ROOM_NAME_LIMIT = 90
+# Discord turns these into links; a bare name like "agar.io" stays plain text.
+_URL = re.compile(r"(?i)\b(?:https?://|www\.)\S+")
+_MENTION = re.compile(r"<(?:@[!&]?|#|/[^:>]+:)\d+>")
 
 _TASK = (
     "Several members of this Discord server are playing the same game right now, but not together "
@@ -44,11 +49,22 @@ _TASK = (
 )
 
 
+def shown_game_name(name: str) -> str:
+    """A game's name as it may appear in a post: one line, no links, no mentions, no formatting.
+
+    Game names come from presences, which anyone can set to anything.
+    """
+    name = _URL.sub("", name)
+    name = _MENTION.sub("", name)
+    name = " ".join(name.replace("@", "@\u200b").split())
+    return discord.utils.escape_markdown(name)[:ROOM_NAME_LIMIT].strip() or "?"
+
+
 class PlayingView(discord.ui.View):
     """The "open a voice room" button; the post is found by the message it is on."""
 
-    def __init__(self, bot: commands.Bot) -> None:
-        super().__init__(timeout=None)
+    def __init__(self, bot: commands.Bot, timeout: Optional[float] = None) -> None:
+        super().__init__(timeout=timeout)
         self.bot = bot
 
     @discord.ui.button(emoji="🔊", label="Open a voice room", style=discord.ButtonStyle.primary, custom_id="pigpig:playing:voice")
@@ -76,6 +92,7 @@ class PlayingCog(commands.Cog):
         self._now = time.time
         self.view = PlayingView(bot)
         self._task: Optional[asyncio.Task] = None
+        self._sent_views: List[PlayingView] = []
         self._backoff: Dict[int, float] = {}
         # One check, and one voice room being opened, per server at a time.
         self._guild_locks: Dict[int, asyncio.Lock] = {}
@@ -87,7 +104,9 @@ class PlayingCog(commands.Cog):
         self._task = asyncio.create_task(self._run())
 
     async def cog_unload(self) -> None:
-        self.view.stop()
+        for view in [self.view, *self._sent_views]:
+            view.stop()
+        self._sent_views.clear()
         if self._task is not None:
             self._task.cancel()
             self._task = None
@@ -98,9 +117,11 @@ class PlayingCog(commands.Cog):
         return self.lang_manager.translate(str(guild_id), "commands", "community", "responses", key, **kwargs)
 
     def _localised_view(self, guild_id: Any) -> PlayingView:
-        """A view with the persistent one's custom id, labelled in the server's language."""
-        view = PlayingView(self.bot)
+        """A view with the persistent one's custom id, labelled in the server's language. It lives
+        as long as the button works; presses after that reach the persistent view."""
+        view = PlayingView(self.bot, timeout=self.limits.playing_cooldown_hours * 3600)
         view.children[0].label = self._t(guild_id, "playing_button")
+        self._sent_views = [sent for sent in self._sent_views if not sent.is_finished()] + [view]
         return view
 
     # ------------------------------------------------------------ presences
@@ -198,7 +219,7 @@ class PlayingCog(commands.Cog):
                 players = self._players(guild, channel, group, hidden)
                 if len(players) < minimum or self._together_in_voice(players):
                     continue
-                return await self._post(guild, channel, group, players[: self.limits.playing_max_mentions])
+                return await self._post(guild, channel, group, players[: self.limits.playing_max_mentions], minimum)
         return None
 
     def _can_open_rooms(self, channel: Any) -> bool:
@@ -209,12 +230,26 @@ class PlayingCog(commands.Cog):
         permissions = place.permissions_for(me) if hasattr(place, "permissions_for") else me.guild_permissions
         return bool(permissions.manage_channels)
 
-    async def _post(self, guild: discord.Guild, channel: Any, group: GameGroup, players: List[discord.Member]) -> Optional[str]:
+    def _still_eligible(self, guild: discord.Guild, channel: Any, group: GameGroup, players: List[discord.Member]) -> List[discord.Member]:
+        """The players who may still be named: still in the server and playing the game, able to
+        see the channel, and not opted out (any of it may change while the post is written)."""
+        hidden = self.store.optouts(guild.id)
+        current = GameGroup(
+            key=group.key,
+            name=group.name,
+            user_ids=[member.id for member in players if self.tracker.playing(guild.id, member.id) == group.key],
+        )
+        return self._players(guild, channel, current, hidden)
+
+    async def _post(
+        self, guild: discord.Guild, channel: Any, group: GameGroup, players: List[discord.Member], minimum: int
+    ) -> Optional[str]:
         mentions = [member.mention for member in players]
+        game = shown_game_name(group.name)
         text = None
         if self.limits.playing_use_ai and getattr(self.bot, "orchestrator", None) is not None:
             facts = (
-                f"Game: <<<{group.name}>>>\n"
+                f"Game: <<<{game}>>>\n"
                 "Players: " + ", ".join(f"<<<{m.display_name}>>> (mention as {m.mention})" for m in players)
             )
             try:
@@ -222,18 +257,24 @@ class PlayingCog(commands.Cog):
             except Exception as error:
                 self.logger.error("playing: the model could not write the post", exc_info=True)
                 await func.report_error(error, "playing: composing a post")
+        # Checked again after writing it: from here to the send nothing is awaited.
+        eligible = self._still_eligible(guild, channel, group, players)
+        if len(eligible) < minimum:
+            return None
+        if len(eligible) < len(players):
+            # The written text may name someone who can no longer be named.
+            players, text = eligible, None
+            mentions = [member.mention for member in players]
         if not text:
-            text = self._t(
-                guild.id, "playing_fixed", mentions=" ".join(mentions), game=discord.utils.escape_markdown(group.name)
-            )
+            text = self._t(guild.id, "playing_fixed", mentions=" ".join(mentions), game=game)
         text = text[:MESSAGE_LIMIT]
         view = self._localised_view(guild.id) if self._can_open_rooms(channel) else None
         allowed = discord.AllowedMentions(everyone=False, roles=False, users=[discord.Object(id=m.id) for m in players])
         try:
             if view is not None:
-                message = await channel.send(text, allowed_mentions=allowed, view=view)
+                message = await channel.send(text, allowed_mentions=allowed, suppress_embeds=True, view=view)
             else:
-                message = await channel.send(text, allowed_mentions=allowed)
+                message = await channel.send(text, allowed_mentions=allowed, suppress_embeds=True)
         except discord.HTTPException:
             self.logger.warning(f"playing: could not post in channel {channel.id}", exc_info=True)
             self._backoff[guild.id] = self._now() + FAILURE_BACKOFF_SECONDS
@@ -252,18 +293,24 @@ class PlayingCog(commands.Cog):
             return
         async with self._room_locks.setdefault(guild.id, asyncio.Lock()):
             post = self.store.playing_post(message.id)
-            if post is None or self._now() - post["posted_at"] > self.limits.playing_cooldown_hours * 3600:
+            expired = post is None or self._now() - post["posted_at"] > self.limits.playing_cooldown_hours * 3600
+            if expired or not self.store.get_settings(guild.id).playing_enabled:
                 await interaction.followup.send(self._t(guild.id, "playing_expired"), ephemeral=True)
                 return
-            existing = guild.get_channel(post["voice_channel_id"]) if post["voice_channel_id"] else None
-            if existing is not None:
-                await interaction.followup.send(
-                    self._t(guild.id, "playing_room_exists", channel=existing.mention), ephemeral=True
-                )
+            if post["voice_channel_id"]:
+                # One room per post: once it was opened (and maybe closed again), the post is used up.
+                existing = guild.get_channel(post["voice_channel_id"])
+                key, values = ("playing_room_exists", {"channel": existing.mention}) if existing else ("playing_room_closed", {})
+                await interaction.followup.send(self._t(guild.id, key, **values), ephemeral=True)
                 return
             channel = guild.get_channel(post["channel_id"])
+            # Only someone who may take part in the channel opens a room for it (checked as they are now).
+            member = await current_member(guild, interaction.user.id)
+            if channel is None or member is None or not channel.permissions_for(member).view_channel or member.is_timed_out():
+                await interaction.followup.send(self._t(guild.id, "playing_expired"), ephemeral=True)
+                return
             rooms = [room for room in self.store.temp_voice_rooms(guild.id) if guild.get_channel(room[1]) is not None]
-            if channel is None or not self._can_open_rooms(channel):
+            if not self._can_open_rooms(channel):
                 await interaction.followup.send(self._t(guild.id, "playing_room_failed"), ephemeral=True)
                 return
             if len(rooms) >= self.limits.playing_max_rooms:
@@ -275,13 +322,21 @@ class PlayingCog(commands.Cog):
                 self.logger.warning(f"playing: could not open a voice room in guild {guild.id}", exc_info=True)
                 await interaction.followup.send(self._t(guild.id, "playing_room_failed"), ephemeral=True)
                 return
-            self.store.add_temp_voice(guild.id, room.id, self._now())
-            self.store.set_playing_voice(message.id, room.id)
+            try:
+                self.store.add_temp_voice(guild.id, room.id, self._now())
+                self.store.set_playing_voice(message.id, room.id)
+            except Exception as error:
+                # An untracked room would never be deleted: take it back.
+                self.logger.error(f"playing: could not record voice room {room.id}", exc_info=True)
+                await func.report_error(error, "playing: recording a voice room")
+                await self._delete_room(room)
+                await interaction.followup.send(self._t(guild.id, "playing_room_failed"), ephemeral=True)
+                return
         await interaction.followup.send(self._t(guild.id, "playing_room_ready", channel=room.mention), ephemeral=True)
 
     async def _create_room(self, guild: discord.Guild, channel: Any, game: str) -> Any:
         """A voice room next to ``channel``, open to the same people as it."""
-        name = " ".join(game.split())[:ROOM_NAME_LIMIT] or "game"
+        name = shown_game_name(game).replace("\\", "") or "game"
         reason = "PigPig: a voice room for members playing the same game"
         if channel.category is not None and getattr(channel, "permissions_synced", False):
             # The room inherits the category's permissions, like the channel does.
