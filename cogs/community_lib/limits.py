@@ -20,10 +20,17 @@ def _number(
     if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
         logger.warning(f"community limit {key!r} is not a number ({raw_value!r}), using {default}")
         return default
-    value = float(raw_value)
+    try:
+        value = float(raw_value)
+    except OverflowError:
+        value = math.inf
     if not math.isfinite(value) or value < minimum:
+        logger.warning(f"community limit {key!r} is out of range ({raw_value!r}), using {default}")
         return default
-    return min(value, maximum)
+    if value > maximum:
+        logger.warning(f"community limit {key!r} is above {maximum} ({raw_value!r}), using {maximum}")
+        return maximum
+    return value
 
 
 @dataclass(frozen=True)

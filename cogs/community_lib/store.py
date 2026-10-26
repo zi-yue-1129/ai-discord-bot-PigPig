@@ -89,7 +89,8 @@ CREATE INDEX IF NOT EXISTS idx_playing_posts_guild ON playing_posts (guild_id, p
 CREATE TABLE IF NOT EXISTS temp_voice_rooms (
     channel_id INTEGER PRIMARY KEY,
     guild_id INTEGER NOT NULL,
-    created_at REAL NOT NULL
+    created_at REAL NOT NULL,
+    post_message_id INTEGER
 );
 CREATE TABLE IF NOT EXISTS birthday_roles (
     guild_id INTEGER NOT NULL,
@@ -113,6 +114,7 @@ _ADDED_COLUMNS = [
     ("guild_settings", "playing_enabled", "INTEGER NOT NULL DEFAULT 0"),
     ("guild_settings", "playing_channel_id", "INTEGER"),
     ("guild_settings", "playing_min_players", "INTEGER NOT NULL DEFAULT 3"),
+    ("temp_voice_rooms", "post_message_id", "INTEGER"),
 ]
 
 
@@ -284,6 +286,34 @@ class CommunityStore:
         keys = ("message_id", "guild_id", "channel_id", "game_key", "game", "posted_at", "voice_channel_id")
         return dict(zip(keys, row))
 
+    def move_playing_post(self, old_message_id: int, message_id: int) -> None:
+        """Gives a post recorded before it was sent its real message id."""
+        with self._session() as connection:
+            connection.execute("UPDATE playing_posts SET message_id = ? WHERE message_id = ?", (message_id, old_message_id))
+
+    def forget_playing_post(self, message_id: int) -> None:
+        with self._session() as connection:
+            connection.execute("DELETE FROM playing_posts WHERE message_id = ?", (message_id,))
+
+    def claim_playing_post(self, message_id: int) -> bool:
+        """Marks a post as having opened its room (``voice_channel_id`` -1 until the room is known).
+
+        Returns False when the post already opened one: only one claim ever succeeds.
+        """
+        with self._session() as connection:
+            cursor = connection.execute(
+                "UPDATE playing_posts SET voice_channel_id = -1 WHERE message_id = ? AND voice_channel_id IS NULL",
+                (message_id,),
+            )
+            return cursor.rowcount == 1
+
+    def release_playing_post(self, message_id: int) -> None:
+        """Takes back a claim whose room could not be created."""
+        with self._session() as connection:
+            connection.execute(
+                "UPDATE playing_posts SET voice_channel_id = NULL WHERE message_id = ? AND voice_channel_id = -1", (message_id,)
+            )
+
     def set_playing_voice(self, message_id: int, voice_channel_id: int) -> None:
         with self._session() as connection:
             connection.execute(
@@ -295,13 +325,21 @@ class CommunityStore:
         with self._session() as connection:
             connection.execute("DELETE FROM playing_posts WHERE posted_at < ?", (before,))
 
-    def add_temp_voice(self, guild_id: int, channel_id: int, now: float) -> None:
-        """Remembers a voice room the bot made, so it is deleted once empty."""
+    def add_temp_voice(self, guild_id: int, channel_id: int, now: float, post_message_id: Optional[int] = None) -> None:
+        """Remembers a voice room the bot made (and the post it was opened from), so it is deleted once empty."""
         with self._session() as connection:
             connection.execute(
-                "INSERT OR REPLACE INTO temp_voice_rooms (channel_id, guild_id, created_at) VALUES (?, ?, ?)",
-                (channel_id, guild_id, now),
+                "INSERT OR REPLACE INTO temp_voice_rooms (channel_id, guild_id, created_at, post_message_id) VALUES (?, ?, ?, ?)",
+                (channel_id, guild_id, now, post_message_id),
             )
+
+    def temp_voice_for_post(self, post_message_id: int) -> Optional[int]:
+        """The recorded room a post opened, or None."""
+        with self._session() as connection:
+            row = connection.execute(
+                "SELECT channel_id FROM temp_voice_rooms WHERE post_message_id = ?", (post_message_id,)
+            ).fetchone()
+        return row[0] if row else None
 
     def temp_voice_rooms(self, guild_id: Optional[int] = None) -> List[Tuple[int, int, float]]:
         """Returns ``(guild_id, channel_id, created_at)`` for the bot's voice rooms (of one guild, if given)."""

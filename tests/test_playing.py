@@ -672,6 +672,9 @@ async def test_a_threshold_above_the_mention_cap_still_posts_naming_the_first_pl
         "一起玩！ <@1> <@2> <@3> ＠everyone",
         "一起玩！ <@1> <@2> <@3> @\u200beveryone",
         "<@1> <@2> <@3> visit Valorant.com",  # the game's name forms a domain with the text
+        "<@1> <@2> <@3> visit valorant . com",
+        "<@1> <@2> <@3> visit Valorant/free",
+        "<@1> <@2> <@3> visit Valorant:\\evil",
     ],
 )
 async def test_an_unusable_written_post_falls_back_to_the_fixed_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reply: str) -> None:
@@ -998,3 +1001,121 @@ async def test_settings_changed_while_the_post_is_written_are_followed(
 def test_boolean_and_quoted_cooldowns_are_not_numbers() -> None:
     for value in (False, True, "0", "5"):
         assert CommunityLimits.from_config({"playing": {"cooldown_hours": value}}).playing_cooldown_hours == 3, value
+
+
+def _refusing_rooms(guild: FakeGuild) -> None:
+    """Rooms Discord creates but will not delete."""
+
+    async def refuse(reason: str = "") -> None:
+        raise discord.Forbidden(SimpleNamespace(status=403, reason="no"), "no")
+
+    real_create = guild.create_voice_channel
+
+    async def create(name: str, **kwargs: Any) -> FakeVoice:
+        room = await real_create(name, **kwargs)
+        room.delete = refuse
+        return room
+
+    guild.create_voice_channel = create
+
+
+def _reloaded(cog: PlayingCog, store: CommunityStore) -> PlayingCog:
+    reloaded = PlayingCog(cog.bot, store=store, limits=cog.limits)
+    reloaded.lang_manager = FakeLang()
+    reloaded._now = lambda: NOW
+    return reloaded
+
+
+@pytest.mark.asyncio
+async def test_a_post_stays_used_across_a_reload_when_every_write_about_its_room_failed(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=3)
+    message_id = await _posted(cog, guild, store)
+    _refusing_rooms(guild)
+    with sqlite3.connect(store.path) as connection:  # the database rejects both writes, for real
+        connection.execute("CREATE TRIGGER no_rooms BEFORE INSERT ON temp_voice_rooms BEGIN SELECT RAISE(ABORT, 'locked'); END")
+        connection.execute(
+            "CREATE TRIGGER no_pointer BEFORE UPDATE OF voice_channel_id ON playing_posts WHEN NEW.voice_channel_id > 0"
+            " BEGIN SELECT RAISE(ABORT, 'locked'); END"
+        )
+    await cog.open_room(FakePress(guild, message_id))
+    with sqlite3.connect(store.path) as connection:  # the database recovers
+        connection.execute("DROP TRIGGER no_rooms")
+        connection.execute("DROP TRIGGER no_pointer")
+
+    again = FakePress(guild, message_id)
+    await _reloaded(cog, store).open_room(again)
+
+    assert len(guild.created) == 1 and again.followups == ["playing_room_closed|"]
+
+
+@pytest.mark.asyncio
+async def test_a_press_on_a_reloaded_cog_while_the_first_room_is_created_opens_no_second_room(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
+    message_id = await _posted(cog, guild, store)
+    gate = asyncio.Event()
+    real_create = guild.create_voice_channel
+
+    async def slow_create(name: str, **kwargs: Any) -> FakeVoice:
+        await gate.wait()
+        return await real_create(name, **kwargs)
+
+    guild.create_voice_channel = slow_create
+    first = asyncio.create_task(cog.open_room(FakePress(guild, message_id)))
+    await asyncio.sleep(0.01)
+    await cog.cog_unload()
+    second = FakePress(guild, message_id)
+    await _reloaded(cog, store).open_room(second)
+    gate.set()
+    await first
+
+    assert len(guild.created) == 1 and second.followups == ["playing_room_closed|"]
+
+
+@pytest.mark.asyncio
+async def test_players_who_join_one_voice_channel_while_the_post_is_written_get_no_post(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import cogs.playing as playing_module
+
+    holder: list = []
+
+    async def compose(*args: Any) -> str:
+        room = SimpleNamespace(channel=SimpleNamespace(id=700))
+        for member in holder[0].members.values():
+            member.voice = room
+        return "一起玩！ <@1> <@2> <@3>"
+
+    monkeypatch.setattr(playing_module, "compose_announcement", compose)
+    cog, guild, store = _cog(tmp_path)
+    holder.append(guild)
+    cog.bot.orchestrator = object()
+    _playing(cog, guild, "Valorant", 1, 2, 3)
+
+    assert await _check(cog, store) is None and guild.channel.sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_post_whose_record_fails_after_sending_still_counts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False)
+    _playing(cog, guild, "Valorant", 1, 2, 3)
+
+    def broken(*args: Any) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(store, "move_playing_post", broken)
+    assert await _check(cog, store) is not None
+    cog._now = lambda: NOW + 60
+    assert await _check(cog, store) is None  # in its cooldown: not sent again
+
+    assert len(guild.channel.sent) == 1 and store.count_playing_posts(GUILD_ID, 0) == 1
+
+
+def test_out_of_range_cooldowns_warn_and_use_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    import cogs.community_lib.limits as limits_module
+
+    warnings: list = []
+    monkeypatch.setattr(limits_module, "logger", SimpleNamespace(warning=warnings.append))
+    for value, expected in ((10**1000, 3), (float("nan"), 3), (float("inf"), 3), (-1, 3), (1e12, 720)):
+        # Through the module as it is now (another test may have reloaded it).
+        assert limits_module.CommunityLimits.from_config({"playing": {"cooldown_hours": value}}).playing_cooldown_hours == expected
+    assert len(warnings) == 5 and all("cooldown_hours" in warning for warning in warnings)
