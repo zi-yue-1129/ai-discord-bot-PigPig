@@ -120,3 +120,20 @@ async def test_a_malformed_user_id_is_refused() -> None:
     reply = await _tool(storage)(user_id="abc")
 
     assert "not a Discord user ID" in reply and storage.asked == []
+
+
+def test_words_are_kept_only_when_every_message_was_in_a_public_channel() -> None:
+    from llm.tools.user_stats import public_stats
+
+    guild = SimpleNamespace(default_role="@everyone", channels=[_channel(500, True), _channel(666, False)], threads=[])
+    public_only = {"total_messages": 10, "top_channels": {"500": 10}, "top_words": {"pizza": 3}, "top_emojis": {"😂": 2}}
+    shown = public_stats(guild, public_only)
+    assert shown["top_words"] == {"pizza": 3} and shown["top_emojis"] == {"😂": 2}
+
+    # Some messages were counted without a channel (older data): their words may be private.
+    assert public_stats(guild, {**public_only, "total_messages": 12})["top_words"] == {}
+    # One private channel is enough to drop them.
+    mixed = {**public_only, "total_messages": 11, "top_channels": {"500": 10, "666": 1}}
+    assert public_stats(guild, mixed)["top_words"] == {}
+    # The channel the answer goes to counts as visible.
+    assert public_stats(guild, mixed, also_visible=666)["top_words"] == {"pizza": 3}

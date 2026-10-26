@@ -234,31 +234,29 @@ def _is_hidden(runtime: Any, guild_id: int, user_id: str, db_path: Optional[str]
         return True
 
 
-def _is_public(guild: Any, channel: Any) -> bool:
-    """Whether every member (the @everyone role) can see ``channel`` and read its history."""
-    try:
-        permissions = channel.permissions_for(guild.default_role)
-    except (AttributeError, TypeError, discord.ClientException):
-        return False
-    return bool(permissions.view_channel and permissions.read_message_history)
-
-
 def public_stats(guild: Any, stats: Dict[str, Any], also_visible: Optional[int] = None) -> Dict[str, Any]:
     """The part of a member's all-time stats that may be shown to anyone in the server.
 
-    The all-time word and emoji counts (and so the word cloud) do not record which channel
-    they came from, so they are left out; channels are only listed when everyone can read them,
-    or when it is ``also_visible`` (the channel the answer is posted in).
+    Channels are only listed when everyone can read them, or when it is ``also_visible``
+    (the channel the answer is posted in). The all-time word and emoji counts (and so the
+    word cloud) do not record which channel they came from, so they are kept only when every
+    message of the member was counted in such a channel; otherwise they are left out.
     """
-    public = {str(c.id) for c in getattr(guild, "channels", []) if _is_public(guild, c)}
+    from cogs.community_lib.recap import public_channel_ids
+
+    public = set(public_channel_ids(guild))
     if also_visible is not None:
         public.add(str(also_visible))
     channels = stats.get("top_channels") or {}
+    shown = {channel: count for channel, count in channels.items() if str(channel) in public}
+    # Every message is counted in top_channels, so when all of it is visible (and it covers the
+    # total, i.e. nothing was counted without a channel) no private message fed the words.
+    only_public = bool(channels) and len(shown) == len(channels) and sum(channels.values()) >= stats.get("total_messages", 0)
     return {
         **stats,
-        "top_words": {},
-        "top_emojis": {},
-        "top_channels": {channel: count for channel, count in channels.items() if str(channel) in public},
+        "top_words": (stats.get("top_words") or {}) if only_public else {},
+        "top_emojis": (stats.get("top_emojis") or {}) if only_public else {},
+        "top_channels": shown,
     }
 
 
