@@ -250,5 +250,9 @@
     "What the roll is for (optional)": "這次擲骰是為了什麼（選填）",
     "📜 Show a \"previously on…\" of this channel's story": "📜 顯示這個頻道故事的前情提要",
     "🃏 Draw a character card picture (uses your image quota)": "🃏 畫一張角色卡（會用掉你的生圖額度）",
-    "The character to draw": "要畫的角色"
+    "The character to draw": "要畫的角色",
+    "Point out when several members play the same game": "有好幾位成員在玩同一款遊戲時提醒大家",
+    "Turn it on or off": "開啟或關閉",
+    "Where to post (defaults to the announcement channel)": "要發在哪個頻道（預設為公告頻道）",
+    "How many members must play the same game (default 3)": "至少要幾位成員玩同一款遊戲（預設 3）"
 }

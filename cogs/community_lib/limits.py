@@ -33,6 +33,13 @@ class CommunityLimits:
         missing_after_days: Silence after which a former regular is listed as missing.
         missing_min_messages: Messages someone needs to count as a former regular.
         missing_max: Most people listed as missing in one recap.
+        playing_min_minutes: How long each member must have been playing the game.
+        playing_cooldown_hours: Hours before the same game is pointed out again in a server.
+        playing_max_per_day: Posts per server in 24 hours (0 turns the feature off).
+        playing_use_ai: Whether the post is written by the model.
+        playing_max_mentions: Most people named in one post.
+        playing_max_rooms: Voice rooms the bot keeps open per server at once (0: no button).
+        playing_room_idle_minutes: A room nobody joined is deleted after this long.
     """
 
     default_timezone: str = ""
@@ -48,6 +55,13 @@ class CommunityLimits:
     missing_after_days: int = 30
     missing_min_messages: int = 50
     missing_max: int = 3
+    playing_min_minutes: float = 10
+    playing_cooldown_hours: float = 3
+    playing_max_per_day: int = 5
+    playing_use_ai: bool = True
+    playing_max_mentions: int = 10
+    playing_max_rooms: int = 3
+    playing_room_idle_minutes: float = 5
 
     @classmethod
     def from_config(cls, config: Optional[Mapping[str, Any]]) -> "CommunityLimits":
@@ -55,6 +69,7 @@ class CommunityLimits:
         welcome = config.get("welcome") or {}
         birthday = config.get("birthday") or {}
         weekly = config.get("weekly") or {}
+        playing = config.get("playing") or {}
         defaults = cls()
         return cls(
             default_timezone=str(config.get("default_timezone") or ""),
@@ -70,4 +85,11 @@ class CommunityLimits:
             missing_after_days=int(_number(weekly, "missing_after_days", defaults.missing_after_days, 1)),
             missing_min_messages=int(_number(weekly, "missing_min_messages", defaults.missing_min_messages)),
             missing_max=int(_number(weekly, "missing_max", defaults.missing_max)),
+            playing_min_minutes=_number(playing, "min_minutes", defaults.playing_min_minutes),
+            playing_cooldown_hours=_number(playing, "cooldown_hours", defaults.playing_cooldown_hours),
+            playing_max_per_day=int(_number(playing, "max_per_day", defaults.playing_max_per_day)),
+            playing_use_ai=bool(playing.get("use_ai", defaults.playing_use_ai)),
+            playing_max_mentions=int(_number(playing, "max_mentions", defaults.playing_max_mentions, 2)),
+            playing_max_rooms=int(_number(playing, "max_rooms", defaults.playing_max_rooms)),
+            playing_room_idle_minutes=_number(playing, "room_idle_minutes", defaults.playing_room_idle_minutes, 1),
         )

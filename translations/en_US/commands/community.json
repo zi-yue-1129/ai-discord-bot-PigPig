@@ -11,7 +11,7 @@
         "off": "off",
         "not_set": "not set",
         "host_timezone": "the bot's time zone",
-        "status": "**Community settings**\nAnnouncement channel: {announce}\nTime zone: {timezone}\nWelcome: {welcome} (channel: {welcome_channel}, farewell: {farewell})\nBirthdays: {birthday} (at {hour}:00, role: {role})\nAnniversaries: {anniversary}\nAchievement announcements: {achievements}\nWeekly recap: {weekly} ({weekly_day} {weekly_hour}:00, channel: {weekly_channel})",
+        "status": "**Community settings**\nAnnouncement channel: {announce}\nTime zone: {timezone}\nWelcome: {welcome} (channel: {welcome_channel}, farewell: {farewell})\nBirthdays: {birthday} (at {hour}:00, role: {role})\nAnniversaries: {anniversary}\nAchievement announcements: {achievements}\nWeekly recap: {weekly} ({weekly_day} {weekly_hour}:00, channel: {weekly_channel})\nWhat everyone is playing: {playing} (at least {playing_min} players, channel: {playing_channel})",
         "channel_set": "Community announcements will be posted in {channel}.",
         "invalid_timezone": "`{name}` is not a time zone I know. Use a name like `Asia/Taipei` or `Europe/London`.",
         "timezone_set": "Time zone set to `{name}`. It is now {time} there.",
@@ -68,6 +68,15 @@
         "title_talker": "Chatter King of the Week",
         "title_night_owl": "Night Owl King",
         "title_funny": "Laugh Maker",
-        "title_dj": "DJ of the Week"
+        "title_dj": "DJ of the Week",
+        "playing_on": "When at least {count} members play the same game, the bot will suggest they team up in voice. Members who used /leaderboard optout are never named.",
+        "playing_off": "\"What everyone is playing\" is off.",
+        "playing_fixed": "🎮 {mentions} are all playing **{game}** right now. Want to team up in voice?",
+        "playing_button": "Open a voice room",
+        "playing_room_ready": "Your voice room is ready: {channel}. It is deleted once everyone has left.",
+        "playing_room_exists": "There is already a voice room for this: {channel}",
+        "playing_expired": "This suggestion is too old; the voice room button no longer works.",
+        "playing_room_failed": "I could not open a voice room here (I may be missing the Manage Channels permission).",
+        "playing_room_limit": "There are already enough voice rooms open on this server. Join one of them, or wait until one empties."
     }
 }

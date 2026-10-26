@@ -26,7 +26,10 @@ CREATE TABLE IF NOT EXISTS guild_settings (
     weekly_enabled INTEGER NOT NULL DEFAULT 0,
     weekly_channel_id INTEGER,
     weekly_day INTEGER NOT NULL DEFAULT 6,
-    weekly_hour INTEGER NOT NULL DEFAULT 20
+    weekly_hour INTEGER NOT NULL DEFAULT 20,
+    playing_enabled INTEGER NOT NULL DEFAULT 0,
+    playing_channel_id INTEGER,
+    playing_min_players INTEGER NOT NULL DEFAULT 3
 );
 CREATE TABLE IF NOT EXISTS birthdays (
     guild_id INTEGER NOT NULL,
@@ -73,6 +76,21 @@ CREATE TABLE IF NOT EXISTS achievement_checked (
     user_id INTEGER NOT NULL,
     PRIMARY KEY (guild_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS playing_posts (
+    message_id INTEGER PRIMARY KEY,
+    guild_id INTEGER NOT NULL,
+    channel_id INTEGER NOT NULL,
+    game_key TEXT NOT NULL,
+    game TEXT NOT NULL,
+    posted_at REAL NOT NULL,
+    voice_channel_id INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_playing_posts_guild ON playing_posts (guild_id, posted_at);
+CREATE TABLE IF NOT EXISTS temp_voice_rooms (
+    channel_id INTEGER PRIMARY KEY,
+    guild_id INTEGER NOT NULL,
+    created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS birthday_roles (
     guild_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
@@ -92,6 +110,9 @@ _ADDED_COLUMNS = [
     ("guild_settings", "weekly_channel_id", "INTEGER"),
     ("guild_settings", "weekly_day", "INTEGER NOT NULL DEFAULT 6"),
     ("guild_settings", "weekly_hour", "INTEGER NOT NULL DEFAULT 20"),
+    ("guild_settings", "playing_enabled", "INTEGER NOT NULL DEFAULT 0"),
+    ("guild_settings", "playing_channel_id", "INTEGER"),
+    ("guild_settings", "playing_min_players", "INTEGER NOT NULL DEFAULT 3"),
 ]
 
 
@@ -118,6 +139,9 @@ class GuildSettings:
         weekly_channel_id: Channel for the recap; None uses the announcement channel.
         weekly_day: Local weekday the recap is posted (0 Monday ... 6 Sunday).
         weekly_hour: Local hour (0-23) the recap is posted.
+        playing_enabled: Whether the bot points out when several members play the same game.
+        playing_channel_id: Where those posts go; None uses the announcement channel.
+        playing_min_players: How many members must play the same game.
     """
 
     guild_id: int
@@ -136,6 +160,9 @@ class GuildSettings:
     weekly_channel_id: Optional[int] = None
     weekly_day: int = 6
     weekly_hour: int = 20
+    playing_enabled: bool = False
+    playing_channel_id: Optional[int] = None
+    playing_min_players: int = 3
 
 
 _COLUMNS = [f.name for f in fields(GuildSettings)]
@@ -211,6 +238,87 @@ class CommunityStore:
                 )
             ]
         return [self.get_settings(guild_id) for guild_id in ids]
+
+    def guilds_with_playing(self) -> List[GuildSettings]:
+        """Returns the settings of every guild with "what everyone is playing" on."""
+        with self._session() as connection:
+            ids = [guild_id for (guild_id,) in connection.execute("SELECT guild_id FROM guild_settings WHERE playing_enabled = 1")]
+        return [self.get_settings(guild_id) for guild_id in ids]
+
+    # ------------------------------------------------------------ playing
+    def add_playing_post(self, guild_id: int, channel_id: int, message_id: int, game_key: str, game: str, now: float) -> None:
+        """Records a post about members playing ``game`` (for the cooldown, the daily cap and its button)."""
+        with self._session() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO playing_posts (message_id, guild_id, channel_id, game_key, game, posted_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (message_id, guild_id, channel_id, game_key, game, now),
+            )
+
+    def last_playing_post(self, guild_id: int, game_key: str) -> Optional[float]:
+        """When the guild last got a post about this game, or None."""
+        with self._session() as connection:
+            row = connection.execute(
+                "SELECT MAX(posted_at) FROM playing_posts WHERE guild_id = ? AND game_key = ?", (guild_id, game_key)
+            ).fetchone()
+        return row[0] if row and row[0] is not None else None
+
+    def count_playing_posts(self, guild_id: int, since: float) -> int:
+        with self._session() as connection:
+            return int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM playing_posts WHERE guild_id = ? AND posted_at >= ?", (guild_id, since)
+                ).fetchone()[0]
+            )
+
+    def playing_post(self, message_id: int) -> Optional[Dict[str, Any]]:
+        """The post with this message, as a dict of its columns, or None."""
+        with self._session() as connection:
+            row = connection.execute(
+                "SELECT message_id, guild_id, channel_id, game_key, game, posted_at, voice_channel_id"
+                " FROM playing_posts WHERE message_id = ?",
+                (message_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        keys = ("message_id", "guild_id", "channel_id", "game_key", "game", "posted_at", "voice_channel_id")
+        return dict(zip(keys, row))
+
+    def set_playing_voice(self, message_id: int, voice_channel_id: int) -> None:
+        with self._session() as connection:
+            connection.execute(
+                "UPDATE playing_posts SET voice_channel_id = ? WHERE message_id = ?", (voice_channel_id, message_id)
+            )
+
+    def forget_playing_posts(self, before: float) -> None:
+        """Drops posts older than ``before`` (they no longer count for anything)."""
+        with self._session() as connection:
+            connection.execute("DELETE FROM playing_posts WHERE posted_at < ?", (before,))
+
+    def add_temp_voice(self, guild_id: int, channel_id: int, now: float) -> None:
+        """Remembers a voice room the bot made, so it is deleted once empty."""
+        with self._session() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO temp_voice_rooms (channel_id, guild_id, created_at) VALUES (?, ?, ?)",
+                (channel_id, guild_id, now),
+            )
+
+    def temp_voice_rooms(self, guild_id: Optional[int] = None) -> List[Tuple[int, int, float]]:
+        """Returns ``(guild_id, channel_id, created_at)`` for the bot's voice rooms (of one guild, if given)."""
+        with self._session() as connection:
+            if guild_id is None:
+                return connection.execute("SELECT guild_id, channel_id, created_at FROM temp_voice_rooms").fetchall()
+            return connection.execute(
+                "SELECT guild_id, channel_id, created_at FROM temp_voice_rooms WHERE guild_id = ?", (guild_id,)
+            ).fetchall()
+
+    def is_temp_voice(self, channel_id: int) -> bool:
+        with self._session() as connection:
+            return connection.execute("SELECT 1 FROM temp_voice_rooms WHERE channel_id = ?", (channel_id,)).fetchone() is not None
+
+    def forget_temp_voice(self, channel_id: int) -> None:
+        with self._session() as connection:
+            connection.execute("DELETE FROM temp_voice_rooms WHERE channel_id = ?", (channel_id,))
 
     # ------------------------------------------------------------ birthdays
     def set_birthday(self, guild_id: int, user_id: int, month: int, day: int) -> None:

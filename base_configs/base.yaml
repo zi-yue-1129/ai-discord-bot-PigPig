@@ -44,6 +44,14 @@ community:
     missing_after_days: 30    # former regulars silent this long are listed as missing...
     missing_min_messages: 50  # ...if they sent at least this many messages
     missing_max: 3            # at most this many in one recap (0 turns the list off)
+  playing:                    # "what everyone is playing" (/community playing)
+    min_minutes: 10           # each member must have been playing the game this long
+    cooldown_hours: 3         # the same game is pointed out at most this often per server
+    max_per_day: 5            # posts per server in 24 hours (0 turns the feature off)
+    use_ai: true              # false: a fixed text instead of a message written by the model
+    max_mentions: 10          # at most this many people are named in one post
+    max_rooms: 3              # voice rooms the bot keeps open per server (0: no "open a voice room" button)
+    room_idle_minutes: 5      # a room nobody joined is deleted after this long
   # Achievements members unlock from their message stats. Leave this out to use the built-in
   # list; a list here replaces it. Each "when" stat is a minimum and all must be reached:
   # total_messages, streak_days, gap_days (silence before a message), night_ratio (0-1 share

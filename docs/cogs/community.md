@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Community cog makes the bot part of the server: it welcomes new members, celebrates birthdays and yearly join anniversaries, and posts a weekly recap. Every feature is **off** until a server admin turns it on with `/community`. The bot owner sets the limits in the `community:` block of `base.yaml`.
+The Community cog makes the bot part of the server: it welcomes new members, celebrates birthdays and yearly join anniversaries, and posts a weekly recap, and notices when several members play the same game. Every feature is **off** until a server admin turns it on with `/community`. The bot owner sets the limits in the `community:` block of `base.yaml`.
 
 Messages are written by the model in the bot's own voice (the server's persona). Whenever the model is unavailable, over its budget, or the server is being raided, a fixed translated text is posted instead, so nothing is lost. Only the people being welcomed or celebrated can be pinged; `@everyone` and role pings are always blocked.
 
@@ -19,6 +19,7 @@ Messages are written by the model in the bot's own voice (the server's persona).
 | `/community anniversaries enabled` | Celebrates members who joined on this day in an earlier year (at the same hour) |
 | `/community weekly enabled [channel] [day] [hour]` | Posts the weekly recap (default Sunday 20:00, local) |
 | `/community weekly_preview` | Shows this week's recap so far, only to you |
+| `/community playing enabled [channel] [min_players]` | Points out when at least `min_players` members (default 3) play the same game; see [What everyone is playing](#what-everyone-is-playing) |
 | `/community achievements mode` | How unlocked achievements are announced: `off` (default), `reply` (🏆 reaction and a short reply) or `channel` (announcement channel). See [Leaderboards & Achievements](leaderboard.md) |
 
 ## Member commands (`/birthday`)
@@ -63,6 +64,17 @@ Only channels everyone can read (`@everyone` can view the channel and read its h
 
 Members who opted out with `/leaderboard optout` are never named, quoted or given a title. Weeks with fewer than `min_messages` messages are skipped. If the bot was down at the scheduled time, the recap is still posted within 24 hours, once (`job_runs`).
 
+## What everyone is playing
+
+When at least `min_players` members have each been playing the same game for `min_minutes` (from their Discord presence; only games count, not Spotify, streams or custom statuses), and they are not already all in one voice channel, the bot posts one line in the chosen channel naming them, e.g. "A, B and C are all playing Valorant. Want to team up in voice?". Games are matched by name, ignoring case and spacing.
+
+- Only members who can see that channel are named and counted, and members who opted out with `/leaderboard optout` never are. Bots never count.
+- The same game is pointed out at most once every `cooldown_hours` per server, and a server gets at most `max_per_day` posts in 24 hours. A post that could not be sent is tried again after 10 minutes.
+- The line is written by the model in the server persona (the game's name is passed as data, never as instructions), or a fixed text when `use_ai` is off or the model fails. Only the named players are pinged.
+- When the bot has **Manage Channels** where the post goes, it carries an **Open a voice room** button. It creates one temporary voice channel per post, next to the post's channel and open to the same people (it inherits a synced category's permissions, or copies the channel's own). A server has at most `max_rooms` such rooms at once. A room is deleted as soon as the last person leaves, or after `room_idle_minutes` if nobody joined. The button stops working after `cooldown_hours`.
+
+Presences are only kept in memory (who plays which game since when); nothing about them is written to disk. The bot already needs the presences intent for its member lookup tool.
+
 ## Owner settings (`base.yaml`)
 
 ```yaml
@@ -83,11 +95,19 @@ community:
     missing_after_days: 30
     missing_min_messages: 50
     missing_max: 3
+  playing:
+    min_minutes: 10
+    cooldown_hours: 3
+    max_per_day: 5            # 0 turns the feature off
+    use_ai: true
+    max_mentions: 10
+    max_rooms: 3              # 0: no voice room button
+    room_idle_minutes: 5
 ```
 
 ## Storage
 
-`data/community.db` (SQLite): `guild_settings`, `birthdays` (per server), `job_runs`, `birthday_roles`, and for the leaderboard cog `optouts`, `user_achievements`, `achievement_checked`, `titles`. Columns added later (such as `achievement_mode`) are added to older files on first use.
+`data/community.db` (SQLite): `guild_settings`, `birthdays` (per server), `job_runs`, `birthday_roles`, and for the leaderboard cog `optouts`, `user_achievements`, `achievement_checked`, `titles`, plus `playing_posts` (posts of the last two days, for the cooldown, the daily cap and the button) and `temp_voice_rooms` (rooms the bot opened and still has to delete). Columns added later (such as `achievement_mode`) are added to older files on first use.
 
 ## Code
 
@@ -97,4 +117,7 @@ community:
 - `cogs/community_lib/joins.py` — `JoinTracker` (batching, raids, AI budget)
 - `cogs/community_lib/limits.py` — `CommunityLimits` from `base.yaml`
 - `cogs/community_lib/recap.py` — weekly recap timing, numbers and layout
+- `cogs/playing.py` — `PlayingCog` (what everyone is playing, voice rooms)
+- `cogs/community_lib/playing.py` — `PlayingTracker` (who plays which game, from presences)
+- `addons/presence.py` — `current_game`, shared with the member lookup tool
 - `llm/announcement_writer.py` — `compose_announcement`, shared by community messages

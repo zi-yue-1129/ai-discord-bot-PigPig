@@ -11,7 +11,7 @@
         "off": "关闭",
         "not_set": "未设置",
         "host_timezone": "机器人的时区",
-        "status": "**社区设置**\n公告频道：{announce}\n时区：{timezone}\n新成员欢迎：{welcome}（频道：{welcome_channel}，离开通知：{farewell}）\n生日祝福：{birthday}（每天 {hour}:00，身份组：{role}）\n入群周年：{anniversary}\n成就公告：{achievements}\n每周回顾：{weekly}（每周{weekly_day} {weekly_hour}:00，频道：{weekly_channel}）",
+        "status": "**社区设置**\n公告频道：{announce}\n时区：{timezone}\n新成员欢迎：{welcome}（频道：{welcome_channel}，离开通知：{farewell}）\n生日祝福：{birthday}（每天 {hour}:00，身份组：{role}）\n入群周年：{anniversary}\n成就公告：{achievements}\n每周回顾：{weekly}（每周{weekly_day} {weekly_hour}:00，频道：{weekly_channel}）\n大家在玩什么：{playing}（至少 {playing_min} 人，频道：{playing_channel}）",
         "channel_set": "社区公告会发在 {channel}。",
         "invalid_timezone": "我不认识 `{name}` 这个时区，请使用像 `Asia/Shanghai` 这样的名称。",
         "timezone_set": "时区已设为 `{name}`，那里现在是 {time}。",
@@ -68,6 +68,15 @@
         "title_talker": "本周话王",
         "title_night_owl": "夜猫王",
         "title_funny": "笑点制造机",
-        "title_dj": "本周 DJ"
+        "title_dj": "本周 DJ",
+        "playing_on": "之后有 {count} 位以上成员在玩同一款游戏时，会提议大家一起开语音。用过 /leaderboard optout 的成员不会被点名。",
+        "playing_off": "已关闭「大家在玩什么」。",
+        "playing_fixed": "🎮 {mentions} 都在玩 **{game}**，要不要一起开语音？",
+        "playing_button": "开一个语音房",
+        "playing_room_ready": "语音房开好了：{channel}。所有人离开后会自动删除。",
+        "playing_room_exists": "已经有语音房了：{channel}",
+        "playing_expired": "这则提议太久了，按钮已经不能用了。",
+        "playing_room_failed": "没办法在这里开语音房（可能缺少「管理频道」权限）。",
+        "playing_room_limit": "这个服务器已经开了够多的语音房，请加入其中一个，或等有房间空出来。"
     }
 }
