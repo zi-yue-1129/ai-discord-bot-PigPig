@@ -643,7 +643,7 @@ async def test_hidden_bots_and_members_who_cannot_see_the_channel_are_not_asked(
     assert "Bots" in await world.propose(month=1, day=1, user_id="3")
     world.guild.add(4)
     world.here.readers = {HOST_ID, 2, 3}
-    assert "cannot see this channel" in await world.propose(month=1, day=1, user_id="4")
+    assert "cannot read this channel" in await world.propose(month=1, day=1, user_id="4")
     assert "not a real date" in await world.propose(month=2, day=30)
     assert world.here.messages == []
 
@@ -653,7 +653,7 @@ async def test_hidden_bots_and_members_who_cannot_see_the_channel_are_not_asked(
 
 
 @pytest.mark.asyncio
-async def test_an_unreadable_opt_out_list_stops_proposals_for_other_people(
+async def test_an_unreadable_opt_out_list_stops_every_proposal(
     birthdays: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import sqlite3
@@ -662,8 +662,9 @@ async def test_an_unreadable_opt_out_list_stops_proposals_for_other_people(
         raise sqlite3.OperationalError("locked")
 
     monkeypatch.setattr(birthdays.cog.store, "read_optouts", broken)
-    assert "cannot be asked" in await birthdays.propose(month=1, day=1, user_id="2")
-    assert (await birthdays.propose(month=1, day=1)).startswith("Posted a question")
+    assert await birthdays.propose(month=1, day=1, user_id="2") == "This is not available right now."
+    assert await birthdays.propose(month=1, day=1) == "This is not available right now."
+    assert birthdays.here.messages == []
 
 
 @pytest.mark.asyncio
@@ -677,10 +678,67 @@ async def test_a_failed_post_frees_the_member_for_the_next_proposal(birthdays: S
 
 
 @pytest.mark.asyncio
-async def test_the_member_is_named_safely_to_the_model(birthdays: SimpleNamespace) -> None:
-    birthdays.guild.members[2].display_name = ">>> @everyone https://evil.example <<<"
-    reply = await birthdays.propose(month=1, day=1, user_id="2")
-    assert reply.count("<<<") == 1 and "@everyone" not in reply and "evil.example" not in reply
+async def test_the_model_never_gets_the_members_name_and_a_hidden_asker_is_not_named(birthdays: SimpleNamespace) -> None:
+    world = birthdays
+    world.guild.members[2].display_name = "PRIVATE_NAME"
+    world.cog.store.set_optout(GUILD_ID, 2, True)
+    assert "PRIVATE_NAME" not in await world.propose(month=1, day=1, user_id="2")
+    assert "PRIVATE_NAME" not in await world.propose(month=1, day=1, user_id="3")
+
+    world.cog.store.set_optout(GUILD_ID, HOST_ID, True)
+    world.guild.add(5)
+    await world.propose(month=1, day=1, user_id="5")
+    posted = world.here.messages[-1]
+    assert "asker=someone|" in posted.content and "<@1>" not in posted.content
+
+
+@pytest.mark.asyncio
+async def test_a_member_outside_a_private_thread_is_not_asked_there(birthdays: SimpleNamespace) -> None:
+    world = birthdays
+    world.here.type = discord.ChannelType.private_thread
+    world.here.members = [world.guild.get_member(HOST_ID)]
+    assert "cannot read this channel" in await world.propose(month=1, day=1, user_id="2")
+    world.here.members.append(world.guild.get_member(2))
+    assert (await world.propose(month=1, day=1, user_id="2")).startswith("Posted a question")
+
+
+@pytest.mark.asyncio
+async def test_one_open_birthday_question_per_asker_and_a_few_per_server(birthdays: SimpleNamespace) -> None:
+    from cogs.community import MAX_BIRTHDAY_PROPOSALS_PER_GUILD
+
+    world = birthdays
+    for member_id in range(10, 40):
+        world.guild.add(member_id)
+        await world.propose(month=1, day=1, user_id=str(member_id))
+    assert len(world.cog._birthday_proposals) == 1
+    assert all(m.edits == [{"content": "birthday_proposal_replaced|", "view": None}] for m in world.here.messages[:-1])
+
+    for index in range(MAX_BIRTHDAY_PROPOSALS_PER_GUILD - 1):
+        world.guild.add(100 + index)
+        world.guild.add(200 + index)
+        _ask(world, 100 + index)
+        assert (await world.propose(month=1, day=1, user_id=str(200 + index))).startswith("Posted a question")
+    assert len(world.cog._birthday_proposals) == MAX_BIRTHDAY_PROPOSALS_PER_GUILD
+    world.guild.add(300)
+    _ask(world, 3)
+    assert "Too many birthday questions" in await world.propose(month=1, day=1, user_id="300")
+    # Someone with an open question may still replace it.
+    _ask(world, 100)
+    assert (await world.propose(month=1, day=1, user_id="300")).startswith("Posted a question")
+
+
+@pytest.mark.asyncio
+async def test_saving_never_creates_a_missing_database(birthdays: SimpleNamespace) -> None:
+    world = birthdays
+    await world.propose(month=1, day=1, user_id="2")
+    posted = world.here.messages[-1]
+    world.cog.store.path.unlink()
+
+    press = await _press(posted.kwargs["view"], posted, 2, "save")
+    assert press.edits[0] == {"content": "birthday_unavailable|", "view": None}
+    assert not world.cog.store.path.exists()
+    assert await world.propose(month=1, day=1, user_id="2") == "This is not available right now."
+    assert not world.cog.store.path.exists()
 
 
 # ------------------------------------------------------------------ more event draft guards
@@ -785,6 +843,84 @@ async def test_drafts_read_real_times(world: SimpleNamespace) -> None:
     assert (await world.events.post_draft(world.here, world.guild.get_member(2), "raid", "banana o'clock"))[0] == "invalid_time"
     assert (await world.events.post_draft(world.here, world.guild.get_member(2), "raid", "2 hours ago"))[0] == "past_time"
 
+
+# ------------------------------------------------------------------ review round 2
+@pytest.mark.asyncio
+async def test_a_hidden_member_moving_up_is_not_announced(world: SimpleNamespace) -> None:
+    event = _event(world, capacity=1)  # member 3 is going
+    world.store.sign_up(event.id, 2, GOING, NOW + 1)
+    world.store.sign_up(event.id, HOST_ID, GOING, NOW + 2)
+    world.hidden["ids"] = {2}
+
+    await world.events.answer_for_member(world.guild, 3, event.id, None)
+    assert world.store.roster(world.store.get(event.id)).going == [2]
+    assert world.here.messages == []
+
+    # Visible members who move up are told; nothing goes out while the list cannot be read.
+    await world.events.answer_for_member(world.guild, 2, event.id, None)
+    assert [u.id for u in world.here.messages[-1].kwargs["allowed_mentions"].users] == [HOST_ID]
+    world.store.sign_up(event.id, 3, GOING, NOW + 3)
+    world.hidden["ids"] = None
+    await world.events.answer_for_member(world.guild, HOST_ID, event.id, None)
+    assert len(world.here.messages) == 1
+
+
+@pytest.mark.asyncio
+async def test_access_is_checked_again_once_the_event_lock_is_free(world: SimpleNamespace) -> None:
+    import asyncio
+
+    world.guild.channel(666, readers={HOST_ID, 3})
+    event = _event(world, channel_id=666)
+    lock = world.events._lock(event.id)
+    await lock.acquire()
+    waiting = asyncio.create_task(world.events.answer_for_member(world.guild, HOST_ID, event.id, GOING))
+    await asyncio.sleep(0)
+    world.guild.channels[666].readers = {3}
+    lock.release()
+
+    assert (await waiting)[0] == "not_found" and world.store.roster(event).going == [3]
+
+
+@pytest.mark.asyncio
+async def test_answer_for_member_refuses_another_servers_event(world: SimpleNamespace) -> None:
+    other = world.store.add(GUILD_ID + 1, 500, 3, "theirs", NOW + 3600, 0, 15, NOW)
+    assert (await world.events.answer_for_member(world.guild, HOST_ID, other, GOING))[0] == "not_found"
+    assert world.store.roster(world.store.get(other)).going == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_message_link_on_confirm_takes_the_event_back(world: SimpleNamespace) -> None:
+    import sqlite3
+
+    await world.events.post_draft(world.here, world.guild.get_member(HOST_ID), "raid", "3600")
+    posted = world.here.messages[-1]
+
+    def broken(*args: Any) -> None:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    world.store.set_message = broken
+    with pytest.raises(sqlite3.OperationalError):
+        await world.events.confirm_draft(FakeInteraction(HOST_ID, posted), posted.kwargs["view"])
+    assert world.store.count_upcoming(GUILD_ID, NOW) == 0
+    assert posted.edits[-1] == {"content": "post_failed|", "embed": None, "view": None}
+
+
+@pytest.mark.asyncio
+async def test_answered_or_failed_questions_free_their_place(world: SimpleNamespace) -> None:
+    event = _event(world)
+    join = _tools(world, EventTools)["join_event"].coroutine
+    await join(event_id=event.id)
+    asked = world.here.messages[-1]
+    await _press(asked.kwargs["view"], asked, HOST_ID, "cancel")
+    assert world.events._answer_asks == {}
+
+    world.here.fail = True
+    with pytest.raises(discord.HTTPException):
+        await world.events.propose_answer(world.here, world.guild.get_member(HOST_ID), event.id, GOING)
+    assert world.events._answer_asks == {}
+    with pytest.raises(discord.HTTPException):
+        await world.events.post_draft(world.here, world.guild.get_member(HOST_ID), "raid", "3600")
+    assert world.events._drafts == {}
 
 # ------------------------------------------------------------------ direct messages
 def test_event_and_fun_tools_are_not_offered_in_direct_messages(world: SimpleNamespace) -> None:

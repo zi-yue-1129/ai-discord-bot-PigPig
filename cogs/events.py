@@ -322,7 +322,8 @@ class EventsCog(commands.Cog):
             await self._announce_promotion(interaction.channel, event, promoted)
 
     async def _apply_answer(
-        self, event_id: int, user_id: int, status: Optional[str], show: Callable[[Event, Roster], Awaitable[None]]
+        self, event_id: int, user_id: int, status: Optional[str], show: Callable[[Event, Roster], Awaitable[None]],
+        allowed: Optional[Callable[[Event], Awaitable[bool]]] = None,
     ) -> Tuple[Optional[str], Optional[Event], Optional[Roster], Optional[Roster]]:
         """Records going, maybe or leaving (``None``) under the event's lock, and shows the new
         roster with ``show`` when it changed.
@@ -338,6 +339,8 @@ class EventsCog(commands.Cog):
                 return "event_gone", None, None, None
             if event.starts_at <= self._now():
                 return "event_started", None, None, None
+            if allowed is not None and not await allowed(event):
+                return "not_found", None, None, None
             before = self.store.roster(event)
             if status is None:
                 changed = self.store.leave(event.id, user_id)
@@ -364,15 +367,17 @@ class EventsCog(commands.Cog):
         event = self.store.get(event_id)
         if event is None or event.guild_id != guild.id or event.status == CANCELLED:
             return "not_found", None, None
-        member = await current_member(guild, user_id)
         channel = guild.get_channel_or_thread(event.channel_id)
-        if member is None or not can_read(channel, member):
-            return "not_found", None, None
+
+        async def allowed(event: Event) -> bool:
+            # Checked once the event's lock is held: access may have been taken away while this waited.
+            member = await current_member(guild, user_id)
+            return member is not None and can_read(guild.get_channel_or_thread(event.channel_id), member)
 
         async def show(event: Event, roster: Roster) -> None:
             await self._refresh_message(event)
 
-        problem, event, before, after = await self._apply_answer(event.id, user_id, status, show)
+        problem, event, before, after = await self._apply_answer(event.id, user_id, status, show, allowed)
         if problem is not None:
             return problem, None, None
         promoted = [user for user in after.going if user in before.waiting]
@@ -436,7 +441,17 @@ class EventsCog(commands.Cog):
         return self._t(event.guild_id, "untitled_event", id=event.id, link=link)
 
     async def _announce_promotion(self, channel: Any, event: Event, user_ids: List[int]) -> None:
-        """Tells the people who moved up from the waiting list (and pings only them)."""
+        """Tells the people who moved up from the waiting list (and pings only them).
+
+        Hidden members are left out (they still moved up), and nothing is posted while the opt-out
+        list cannot be read.
+        """
+        hidden = self.hidden_ids(event.guild_id)
+        if hidden is None:
+            return
+        user_ids = [user for user in user_ids if user not in hidden]
+        if not user_ids:
+            return
         text = self._t(event.guild_id, "promoted", title=self._shown_title(event, channel))
         try:
             for chunk in mention_chunks(text, user_ids):
@@ -560,7 +575,16 @@ class EventsCog(commands.Cog):
             # counts against the limits without buttons or a reminder.
             self.store.delete(event_id)
             raise
-        self.store.set_message(event_id, interaction.message.id)
+        try:
+            self.store.set_message(event_id, interaction.message.id)
+        except Exception:
+            # The posted buttons could not find the event: take it back and say so on the message.
+            self.store.delete(event_id)
+            try:
+                await interaction.message.edit(content=self._t(draft.guild_id, "post_failed"), embed=None, view=None)
+            except discord.HTTPException:
+                self.logger.warning(f"events: could not close the message of event {event_id}", exc_info=True)
+            raise
         if self._wake is not None:
             self._wake.set()
 
@@ -630,7 +654,16 @@ class EventsCog(commands.Cog):
                 except discord.HTTPException:
                     pass
                 return
-        self.store.set_message(event_id, message_id)
+        try:
+            self.store.set_message(event_id, message_id)
+        except Exception:
+            # The posted buttons could not find the event: take it back and remove its message.
+            self.store.delete(event_id)
+            try:
+                await interaction.delete_original_response()
+            except discord.HTTPException:
+                self.logger.warning(f"events: could not remove the message of event {event_id}", exc_info=True)
+            raise
         if self._wake is not None:
             self._wake.set()
 

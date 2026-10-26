@@ -251,19 +251,22 @@ def recap_text(view: RecapView, title_name: Any) -> str:
     return "\n".join(lines)
 
 
+# Never the member's name: a refusal for a hidden member must not hand it to the model.
 _BIRTHDAY_PROPOSALS = {
     "proposed": (
-        "Posted a question with Save and Decline buttons for {name}. Nothing is saved until they press Save; "
-        "do not say it is saved."
+        "Posted a question with Save and Decline buttons for that member. Nothing is saved until they press "
+        "Save; do not say it is saved."
     ),
     "invalid_date": "That is not a real date. Ask for the right month and day.",
     "bot": "Bots do not have birthdays here.",
-    "cannot_see": "{name} cannot see this channel, so they cannot be asked here.",
+    "cannot_see": "That member cannot read this channel, so they cannot be asked here.",
     "blocked": (
-        "{name} cannot be asked about a birthday by other people. Do not retry; they can set it themselves with "
-        "/birthday set or by asking you."
+        "That member cannot be asked about a birthday by other people. Do not retry; they can set it "
+        "themselves with /birthday set or by asking you."
     ),
-    "pending": "{name} already has a birthday question waiting for their answer.",
+    "pending": "That member already has a birthday question waiting for their answer.",
+    "busy": "Too many birthday questions on this server are waiting for answers; try again later.",
+    "unavailable": UNAVAILABLE,
 }
 
 
@@ -471,9 +474,8 @@ class CommunityTools:
                 month, day = int(month), int(day)
             except (TypeError, ValueError):
                 return "That is not a valid date."
-            name = user_text(member.display_name)
             result = await community.propose_birthday(message.channel, message.author, member, month, day)
-            return _BIRTHDAY_PROPOSALS.get(result, "Could not ask them.").format(name=name)
+            return _BIRTHDAY_PROPOSALS.get(result, "Could not ask them.")
 
         info = {"target_agent_mode": "info"}
         community_group = {**info, "tool_group": "community"}

@@ -24,6 +24,7 @@ from addons.confirm import ConfirmView, ask
 from addons.logging import get_logger
 from addons.settings import base_config
 from addons.tokens import tokens
+from addons.visibility import can_read
 from function import func
 from llm.announcement_writer import compose_announcement
 
@@ -48,6 +49,8 @@ MESSAGE_LIMIT = 2000
 MAX_RETRY_SECONDS = 3600
 # How long a birthday the AI proposed waits for its member to answer.
 PROPOSAL_SECONDS = 3600
+# Birthday proposals that may wait for an answer at once in one server (one per asker).
+MAX_BIRTHDAY_PROPOSALS_PER_GUILD = 5
 # A birthday role must not carry any of these: the bot hands it out without a moderator.
 _UNSAFE_ROLE_PERMISSIONS = discord.Permissions.elevated() | discord.Permissions(
     mute_members=True, deafen_members=True, move_members=True, manage_nicknames=True, mention_everyone=True
@@ -113,6 +116,12 @@ class BirthdayProposalView(discord.ui.View):
             await interaction.response.send_message(self.cog._t(self.guild_id, "birthday_proposal_done"), ephemeral=True)
             return
         store = self.cog.store
+        try:
+            # Saving must not create a missing database (an empty opt-out list would read as "nobody hidden").
+            store.read_optouts(self.guild_id)
+        except sqlite3.Error:
+            await interaction.response.edit_message(content=self.cog._t(self.guild_id, "birthday_unavailable"), view=None)
+            return
         store.set_birthday(self.guild_id, self.target_id, self.month, self.day)
         # Saying yes is the member asking for it themselves, so proposals are welcome again.
         store.block_birthday_proposals(self.guild_id, self.target_id, False)
@@ -136,14 +145,18 @@ class BirthdayProposalView(discord.ui.View):
             text = self.cog._t(self.guild_id, "birthday_proposal_declined", target=f"<@{self.target_id}>")
         await interaction.response.edit_message(content=text, view=None)
 
-    async def on_timeout(self) -> None:
-        # Not answering is not a decline: later proposals are still asked.
+    async def close(self, key: str) -> None:
+        """Ends the proposal unanswered: "birthday_proposal_expired" or "birthday_proposal_replaced"."""
         if not self._finish() or self.message is None:
             return
         try:
-            await self.message.edit(content=self.cog._t(self.guild_id, "birthday_proposal_expired"), view=None)
+            await self.message.edit(content=self.cog._t(self.guild_id, key), view=None)
         except discord.HTTPException:
             pass
+
+    async def on_timeout(self) -> None:
+        # Not answering is not a decline: later proposals are still asked.
+        await self.close("birthday_proposal_expired")
 
 
 class CommunityCog(commands.Cog):
@@ -874,10 +887,12 @@ class CommunityCog(commands.Cog):
 
         Nothing is saved until they press Save. Once they decline a proposal someone else made, later
         proposals from other people are turned away here until they ask for one themselves (in chat or
-        with /birthday set). Members hidden with /leaderboard optout are never asked on someone else's behalf.
+        with /birthday set). Members hidden with /leaderboard optout are never asked on someone else's
+        behalf, and a hidden asker is not named. The database is only read here, never created.
 
         Returns:
-            "proposed", or a problem: "invalid_date", "bot", "cannot_see", "blocked" or "pending".
+            "proposed", or a problem: "invalid_date", "bot", "cannot_see", "blocked", "pending", "busy"
+            (too many open proposals on the server) or "unavailable" (the database cannot be read).
         """
         if not is_valid_birthday(month, day):
             return "invalid_date"
@@ -887,34 +902,41 @@ class CommunityCog(commands.Cog):
         key = (guild_id, target.id)
         if key in self._birthday_proposals:
             return "pending"
-        try:
-            can_see = channel.permissions_for(target).view_channel
-        except Exception:
-            can_see = False
-        if not can_see:
+        # can_read also knows that a private thread reaches only its members.
+        if not can_read(channel, target):
             return "cannot_see"
-        if asker.id != target.id:
-            try:
-                hidden = self.store.read_optouts(guild_id)
-            except sqlite3.Error:
-                return "blocked"
-            if target.id in hidden or self.store.birthday_proposals_blocked(guild_id, target.id):
-                return "blocked"
+        try:
+            hidden = self.store.read_optouts(guild_id)
+            self.store.read_birthday(guild_id, target.id)
+        except sqlite3.Error:
+            return "unavailable"
+        if asker.id != target.id and (
+            target.id in hidden or self.store.birthday_proposals_blocked(guild_id, target.id)
+        ):
+            return "blocked"
+        # One open proposal per asker (a new one replaces it) and a few per server.
+        previous = next(
+            (view for (guild, _), view in self._birthday_proposals.items() if guild == guild_id and view.asker_id == asker.id),
+            None,
+        )
+        open_here = sum(1 for (guild, _) in self._birthday_proposals if guild == guild_id)
+        if previous is None and open_here >= MAX_BIRTHDAY_PROPOSALS_PER_GUILD:
+            return "busy"
         view = BirthdayProposalView(self, guild_id, asker.id, target.id, month, day)
         # Reserved before the await, so two quick requests cannot both ping the member.
         self._birthday_proposals[key] = view
+        if previous is not None:
+            await previous.close("birthday_proposal_replaced")
         if asker.id == target.id:
             text = self._t(guild_id, "birthday_proposal_self", target=target.mention, month=month, day=day)
         else:
-            text = self._t(
-                guild_id, "birthday_proposal", target=target.mention, asker=asker.mention, month=month, day=day
-            )
+            shown_asker = self._t(guild_id, "someone") if asker.id in hidden else asker.mention
+            text = self._t(guild_id, "birthday_proposal", target=target.mention, asker=shown_asker, month=month, day=day)
         try:
             # Only the member being asked is pinged.
             view.message = await channel.send(text, view=view, allowed_mentions=discord.AllowedMentions(users=[target]))
         except Exception:
-            self._birthday_proposals.pop(key, None)
-            view.stop()
+            view._finish()
             raise
         return "proposed"
 

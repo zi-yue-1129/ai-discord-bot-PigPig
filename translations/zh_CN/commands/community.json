@@ -99,6 +99,8 @@
         "ask_done": "这个问题已经回答过了。",
         "ask_cancelled": "已取消，什么都没有变。",
         "ask_expired": "太久没有回答，什么都没有变。",
-        "ask_replaced": "已被新的询问取代，什么都没有变。"
+        "ask_replaced": "已被新的询问取代，什么都没有变。",
+        "birthday_proposal_replaced": "同一位提问者发了新的提议，这条已取消，没有保存。",
+        "someone": "有人"
     }
 }

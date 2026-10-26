@@ -99,6 +99,8 @@
         "ask_done": "This was already answered.",
         "ask_cancelled": "Cancelled; nothing changed.",
         "ask_expired": "No answer in time; nothing changed.",
-        "ask_replaced": "Replaced by a newer question; nothing changed."
+        "ask_replaced": "Replaced by a newer question; nothing changed.",
+        "birthday_proposal_replaced": "Replaced by a newer proposal from the same person; nothing was saved.",
+        "someone": "Someone"
     }
 }
