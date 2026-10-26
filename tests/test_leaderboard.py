@@ -462,6 +462,31 @@ async def test_the_stats_cog_counts_public_words_only_in_channels_everyone_can_r
     assert await storage.get_user_public_terms("10", str(GUILD_ID), "word", ["5", "6"]) == [("pizza", 1)]
 
 
+@pytest.mark.asyncio
+async def test_a_real_channel_with_a_role_deny_is_not_counted_as_public(storage: StatsStorage) -> None:
+    """The unpatched rule, with real discord.py channels: a role denied history is not public."""
+    import discord
+
+    from test_visibility import _guild, _member, _overwrite, _role
+
+    denied = _guild(
+        roles=[_role(2, discord.Permissions.none(), 1)],
+        members=[_member(5, [2]), _member(6)],
+        overwrites=[_overwrite(2, 0, deny=discord.Permissions(read_message_history=True))],
+    )
+    stats_cog = StatsCog(SimpleNamespace(procedural_storage=SimpleNamespace(db=storage.db)))
+    for guild, text in [(_guild(), "pizza"), (denied, "secretproject")]:
+        await stats_cog.on_message(SimpleNamespace(
+            guild=guild,
+            author=SimpleNamespace(id=10, bot=False),
+            channel=guild.get_channel(10),
+            content=text,
+            created_at=datetime(2026, 10, 25, 4, 0, tzinfo=timezone.utc),
+        ))
+
+    assert await storage.get_user_public_terms("10", "1", "word", ["10"]) == [("pizza", 1)]
+
+
 # ------------------------------------------------------------------ translations
 
 

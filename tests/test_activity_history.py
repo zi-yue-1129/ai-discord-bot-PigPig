@@ -313,3 +313,38 @@ async def test_a_failed_public_word_write_keeps_the_other_counts(storage: StatsS
     assert (await storage.get_user_stats(USER, GUILD))["total_messages"] == 2
     assert await storage.get_weekly_terms(GUILD, "2026-10-19", "word") == [("pizza", 2)]
     assert await storage.get_user_public_terms(USER, GUILD, "word", ["1"]) == []
+
+
+@pytest.mark.asyncio
+async def test_one_message_adds_a_bounded_number_of_new_public_words(storage: StatsStorage) -> None:
+    import cogs.memory.db.stats_storage as module
+
+    many = " ".join(f"word{chr(97 + i // 26)}{chr(97 + i % 26)}" for i in range(300))
+    await storage.upsert_user_stats(USER, GUILD, "pizza pizza " + many, "1", "2026-10-20T04:00:00Z", public=True)
+
+    words = dict(await storage.get_user_public_terms(USER, GUILD, "word", ["1"], limit=1000))
+    assert len(words) == module.MAX_NEW_PUBLIC_TERMS_PER_MESSAGE and words["pizza"] == 2
+    # Terms already counted are not limited.
+    await storage.upsert_user_stats(USER, GUILD, many, "1", "2026-10-20T04:01:00Z", public=True)
+    assert len(await storage.get_user_public_terms(USER, GUILD, "word", ["1"], limit=1000)) == 2 * module.MAX_NEW_PUBLIC_TERMS_PER_MESSAGE
+
+
+def test_an_old_database_gets_the_public_words_scope_index(tmp_path: Path) -> None:
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE user_public_terms (guild_id TEXT NOT NULL, user_id TEXT NOT NULL, channel_id TEXT NOT NULL, "
+            "kind TEXT NOT NULL, term TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0, "
+            "PRIMARY KEY (guild_id, user_id, kind, term, channel_id))"
+        )
+    with DatabaseConnection(path).get_connection():  # the first connection runs the schema upgrade
+        pass
+    with sqlite3.connect(path) as conn:
+        plan = conn.execute(
+            "EXPLAIN QUERY PLAN SELECT term, count FROM user_public_terms "
+            "WHERE guild_id = ? AND user_id = ? AND channel_id = ? AND kind = ? ORDER BY count, term LIMIT 1",
+            ("1", "2", "3", "word"),
+        ).fetchall()
+    assert any("idx_user_public_terms_scope" in str(row) for row in plan)

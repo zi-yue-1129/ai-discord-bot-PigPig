@@ -121,6 +121,11 @@ def create_tables(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    # Writes look up one (member, channel, kind) scope and its least used term.
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_user_public_terms_scope "
+        "ON user_public_terms (guild_id, user_id, channel_id, kind, count)"
+    )
 
     # Net reaction count per message, for "most reacted message" style rankings
     cursor.execute(

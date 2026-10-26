@@ -6,9 +6,7 @@ from typing import Optional
 
 import aiosqlite
 
-# Every table keyed by (user_id, guild_id) that is built from a member's messages.
-# Each erase path goes through ``delete_member_stats`` so a new table cannot be missed.
-MEMBER_STATS_TABLES = ("user_stats", "user_public_terms")
+from cogs.memory.db.member_tables import MEMBER_STATS_TABLES
 
 
 async def delete_member_stats(

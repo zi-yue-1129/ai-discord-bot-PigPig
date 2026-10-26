@@ -415,6 +415,7 @@ async def delete_episodic_by_guild(
         "detail": "Episodic memory deleted for guild",
         "user_id": user_id,
         "guild_id": guild_id,
+        "deleted_rows": removed,
     })
 
 

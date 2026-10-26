@@ -58,6 +58,8 @@ _DISCORD_EMOJI_RE = re.compile(r"<a?:\w+:\d+>")
 _MAX_TOP_WORDS = 200
 # How many words (and emojis) per member and channel ``user_public_terms`` keeps after a prune.
 MAX_PUBLIC_TERMS = 200
+# New terms one message may add to its author's public counts (the most repeated first).
+MAX_NEW_PUBLIC_TERMS_PER_MESSAGE = 40
 # Longer "words" are spam (one long run of letters), not something people say.
 MAX_WORD_CHARS = 20
 
@@ -645,16 +647,23 @@ def _add_user_public_terms(
     Each (member, channel, kind) keeps at most ``MAX_PUBLIC_TERMS`` terms with the Space-Saving
     rule of ``_add_words``: when it is full, a new term replaces the least used one and inherits
     its count, so a term used often enough always gets in instead of being pruned every day.
+    One message adds at most ``MAX_NEW_PUBLIC_TERMS_PER_MESSAGE`` new terms, so a wall of
+    distinct words cannot hold the write lock for long.
     """
     counts = [("emoji", term, n) for term, n in Counter(emojis).items()]
     counts += [("word", term, n) for term, n in Counter(words).items()]
+    counts.sort(key=lambda count: -count[2])
     scope = (guild_id, user_id, str(channel_id))
     where = "guild_id = ? AND user_id = ? AND channel_id = ? AND kind = ?"
+    new_terms = 0
     for kind, term, n in counts:
         if conn.execute(
             f"UPDATE user_public_terms SET count = count + ? WHERE {where} AND term = ?", (n, *scope, kind, term)
         ).rowcount:
             continue
+        if new_terms >= MAX_NEW_PUBLIC_TERMS_PER_MESSAGE:
+            continue
+        new_terms += 1
         carried = 0
         size = conn.execute(f"SELECT COUNT(*) FROM user_public_terms WHERE {where}", (*scope, kind)).fetchone()[0]
         if size >= MAX_PUBLIC_TERMS:

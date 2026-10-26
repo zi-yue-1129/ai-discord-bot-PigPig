@@ -18,6 +18,16 @@ GUILD = "903273027993743381"
 OTHER_GUILD = "111111111111111111"
 
 
+def _run(coroutine: Any) -> Any:
+    """Runs a coroutine on a private loop. Not ``asyncio.run``: it would leave the thread
+    without a current event loop, which breaks the tests that run after these."""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coroutine)
+    finally:
+        loop.close()
+
+
 def _seed(path: Path) -> StatsStorage:
     db = DatabaseConnection(path)
     with db.get_connection() as conn:
@@ -28,12 +38,12 @@ def _seed(path: Path) -> StatsStorage:
         for guild in (GUILD, OTHER_GUILD):
             await storage.upsert_user_stats(USER, guild, "publicword", "1", "2026-10-20T04:00:00Z", public=True)
 
-    asyncio.run(write())
+    _run(write())
     return storage
 
 
 def _words(storage: StatsStorage, guild: str) -> list:
-    return asyncio.run(storage.get_user_public_terms(USER, guild, "word", ["1"]))
+    return _run(storage.get_user_public_terms(USER, guild, "word", ["1"]))
 
 
 def _client(monkeypatch: pytest.MonkeyPatch, db_path: Path, payload: dict[str, Any]) -> Any:
@@ -75,9 +85,9 @@ def test_each_erase_path_removes_public_words_and_they_do_not_come_back(
     for guild in (GUILD, OTHER_GUILD):
         assert bool(_words(storage, guild)) == (guild in left)
     # A new message starts a fresh profile: the erased words do not reappear.
-    asyncio.run(storage.upsert_user_stats(USER, GUILD, "freshword", "1", "2026-10-21T04:00:00Z", public=True))
+    _run(storage.upsert_user_stats(USER, GUILD, "freshword", "1", "2026-10-21T04:00:00Z", public=True))
     assert _words(storage, GUILD) == [("freshword", 1)]
-    assert asyncio.run(storage.get_user_stats(USER, GUILD))["total_messages"] == 1
+    assert _run(storage.get_user_stats(USER, GUILD))["total_messages"] == 1
 
 
 def test_erasing_works_on_a_database_without_the_public_words_table(tmp_path: Path) -> None:
@@ -91,4 +101,4 @@ def test_erasing_works_on_a_database_without_the_public_words_table(tmp_path: Pa
             await db.execute("INSERT INTO user_stats VALUES (?, ?)", (USER, GUILD))
             return await delete_member_stats(db, USER, GUILD)
 
-    assert asyncio.run(run()) == {"user_stats": 1, "user_public_terms": 0}
+    assert _run(run()) == {"user_stats": 1, "user_public_terms": 0}
