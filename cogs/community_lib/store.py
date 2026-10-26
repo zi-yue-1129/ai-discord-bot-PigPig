@@ -7,7 +7,7 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Set, Tuple, Union
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS guild_settings (
@@ -84,7 +84,8 @@ CREATE TABLE IF NOT EXISTS playing_posts (
     game TEXT NOT NULL,
     posted_at REAL NOT NULL,
     voice_channel_id INTEGER,
-    room_claimed_at REAL
+    room_claimed_at REAL,
+    sent INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_playing_posts_guild ON playing_posts (guild_id, posted_at);
 CREATE TABLE IF NOT EXISTS temp_voice_rooms (
@@ -117,6 +118,7 @@ _ADDED_COLUMNS = [
     ("guild_settings", "playing_min_players", "INTEGER NOT NULL DEFAULT 3"),
     ("temp_voice_rooms", "post_message_id", "INTEGER"),
     ("playing_posts", "room_claimed_at", "REAL"),
+    ("playing_posts", "sent", "INTEGER NOT NULL DEFAULT 1"),
 ]
 
 
@@ -250,14 +252,24 @@ class CommunityStore:
         return [self.get_settings(guild_id) for guild_id in ids]
 
     # ------------------------------------------------------------ playing
-    def add_playing_post(self, guild_id: int, channel_id: int, message_id: int, game_key: str, game: str, now: float) -> None:
-        """Records a post about members playing ``game`` (for the cooldown, the daily cap and its button)."""
+    def add_playing_post(
+        self, guild_id: int, channel_id: int, message_id: int, game_key: str, game: str, now: float, sent: bool = True
+    ) -> None:
+        """Records a post about members playing ``game`` (for the cooldown, the daily cap and its button).
+
+        ``sent=False`` records it just before it is sent; :meth:`move_playing_post` marks it sent.
+        """
         with self._session() as connection:
             connection.execute(
-                "INSERT OR REPLACE INTO playing_posts (message_id, guild_id, channel_id, game_key, game, posted_at)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (message_id, guild_id, channel_id, game_key, game, now),
+                "INSERT OR REPLACE INTO playing_posts (message_id, guild_id, channel_id, game_key, game, posted_at, sent)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (message_id, guild_id, channel_id, game_key, game, now, int(sent)),
             )
+
+    def forget_unsent_playing_posts(self, before: float) -> None:
+        """Drops posts recorded before ``before`` for a send that never finished."""
+        with self._session() as connection:
+            connection.execute("DELETE FROM playing_posts WHERE sent = 0 AND posted_at < ?", (before,))
 
     def last_playing_post(self, guild_id: int, game_key: str) -> Optional[float]:
         """When the guild last got a post about this game, or None."""
@@ -289,9 +301,11 @@ class CommunityStore:
         return dict(zip(keys, row))
 
     def move_playing_post(self, old_message_id: int, message_id: int) -> None:
-        """Gives a post recorded before it was sent its real message id."""
+        """Gives a post recorded before it was sent its real message id, and marks it sent."""
         with self._session() as connection:
-            connection.execute("UPDATE playing_posts SET message_id = ? WHERE message_id = ?", (message_id, old_message_id))
+            connection.execute(
+                "UPDATE playing_posts SET message_id = ?, sent = 1 WHERE message_id = ?", (message_id, old_message_id)
+            )
 
     def forget_playing_post(self, message_id: int) -> None:
         with self._session() as connection:
@@ -315,13 +329,18 @@ class CommunityStore:
             )
             return cursor.rowcount == 1
 
-    def release_stale_claims(self, before: float) -> None:
-        """Frees claims made before ``before`` that never got a room (the bot stopped meanwhile)."""
+    def release_stale_claims(self, before: float, keep: Iterable[int] = ()) -> None:
+        """Frees claims made before ``before`` (or at an unknown time) that never got a room, except
+        the posts in ``keep``."""
+        keep = list(keep)
+        marks = ",".join("?" * len(keep))
         with self._session() as connection:
             connection.execute(
-                "UPDATE playing_posts SET voice_channel_id = NULL WHERE voice_channel_id = -1 AND room_claimed_at < ?"
-                " AND message_id NOT IN (SELECT post_message_id FROM temp_voice_rooms WHERE post_message_id IS NOT NULL)",
-                (before,),
+                "UPDATE playing_posts SET voice_channel_id = NULL"
+                " WHERE voice_channel_id = -1 AND (room_claimed_at IS NULL OR room_claimed_at < ?)"
+                " AND message_id NOT IN (SELECT post_message_id FROM temp_voice_rooms WHERE post_message_id IS NOT NULL)"
+                + (f" AND message_id NOT IN ({marks})" if keep else ""),
+                (before, *keep),
             )
 
     def playing_rooms(self, guild_id: Optional[int] = None) -> List[Tuple[int, int, float]]:

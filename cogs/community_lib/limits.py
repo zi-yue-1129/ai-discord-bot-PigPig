@@ -105,9 +105,9 @@ class CommunityLimits:
             missing_max=int(_number(weekly, "missing_max", defaults.missing_max)),
             playing_min_minutes=_number(playing, "min_minutes", defaults.playing_min_minutes),
             playing_cooldown_hours=_number(playing, "cooldown_hours", defaults.playing_cooldown_hours, maximum=30 * 24),
-            playing_max_per_day=int(_number(playing, "max_per_day", defaults.playing_max_per_day)),
+            playing_max_per_day=int(_number(playing, "max_per_day", defaults.playing_max_per_day, maximum=1000)),
             playing_use_ai=bool(playing.get("use_ai", defaults.playing_use_ai)),
-            playing_max_mentions=int(_number(playing, "max_mentions", defaults.playing_max_mentions, 2)),
-            playing_max_rooms=int(_number(playing, "max_rooms", defaults.playing_max_rooms)),
+            playing_max_mentions=int(_number(playing, "max_mentions", defaults.playing_max_mentions, 2, maximum=50)),
+            playing_max_rooms=int(_number(playing, "max_rooms", defaults.playing_max_rooms, maximum=50)),
             playing_room_idle_minutes=_number(playing, "room_idle_minutes", defaults.playing_room_idle_minutes, 1),
         )

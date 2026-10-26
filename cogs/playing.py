@@ -38,6 +38,10 @@ FAILURE_BACKOFF_SECONDS = 600
 # Posts older than this no longer count for anything and are dropped.
 POST_RETENTION_SECONDS = 2 * 86400
 ROOM_NAME_LIMIT = 90
+# Creating a voice room is given up after this long; a claim older than STALE_CLAIM_SECONDS
+# without a room can then no longer belong to a creation still running, and is freed.
+CREATE_TIMEOUT_SECONDS = 60
+STALE_CLAIM_SECONDS = 180
 # A post's voice_channel_id: -1 while its room is being opened, this once it was opened and taken back.
 USED_NO_ROOM = -2
 # A post's button works at least this long, also with a cooldown of 0.
@@ -147,17 +151,18 @@ class PlayingCog(commands.Cog):
         self._orphans: Dict[int, int] = {}
         # Their posts: post message id -> channel id.
         self._orphan_posts: Dict[int, int] = {}
-        # Posts recorded before sending whose send failed and whose record could not be removed yet.
-        self._unsent: List[int] = []
+        # Voice rooms being created, cancelled on unload so that no other copy of the cog races them.
+        self._creating: set = set()
 
     async def cog_load(self) -> None:
         self.lang_manager = LanguageManager.get_instance(self.bot)
-        # A claim older than this never got its room (the bot stopped while creating it).
-        self.store.release_stale_claims(self._now() - 60)
+        self._forget_abandoned()
         self.bot.add_view(self.view)
         self._task = asyncio.create_task(self._run())
 
     async def cog_unload(self) -> None:
+        for task in list(self._creating):
+            task.cancel()  # its press frees the claim
         for channel_id, guild_id in list(self._orphans.items()):
             self._record_orphan(guild_id, channel_id)  # the next copy of the cog only knows what is on record
         for view in [self.view, *self._sent_views]:
@@ -166,6 +171,16 @@ class PlayingCog(commands.Cog):
         if self._task is not None:
             self._task.cancel()
             self._task = None
+
+    def _forget_abandoned(self) -> None:
+        """Frees what an interrupted run left behind: room claims that never got a room (a creation
+        never outlives CREATE_TIMEOUT_SECONDS), and records of posts whose send never finished."""
+        now = self._now()
+        try:
+            self.store.release_stale_claims(now - STALE_CLAIM_SECONDS, keep=self._orphan_posts)
+            self.store.forget_unsent_playing_posts(now - FAILURE_BACKOFF_SECONDS)
+        except Exception:
+            self.logger.warning("playing: could not free abandoned claims and posts, will retry", exc_info=True)
 
     def _t(self, guild_id: Any, key: str, **kwargs: Any) -> str:
         if self.lang_manager is None:
@@ -228,12 +243,7 @@ class PlayingCog(commands.Cog):
     async def check_all(self) -> None:
         now = self._now()
         # First, so that posts that never went out stop counting before anything is checked.
-        for pending in list(self._unsent):
-            try:
-                self.store.forget_playing_post(pending)
-                self._unsent.remove(pending)
-            except Exception:
-                self.logger.warning(f"playing: could not remove unsent post {pending}, will retry", exc_info=True)
+        self._forget_abandoned()
         for settings in self.store.guilds_with_playing():
             guild = self.bot.get_guild(settings.guild_id)
             if guild is not None:
@@ -370,7 +380,7 @@ class PlayingCog(commands.Cog):
         # Recorded before it is sent (the cooldown and the daily cap count it even if the database
         # fails afterwards), under a stand-in id until the message exists.
         pending = -time.time_ns()
-        self.store.add_playing_post(guild.id, channel.id, pending, group.key, group.name, self._now())
+        self.store.add_playing_post(guild.id, channel.id, pending, group.key, group.name, self._now(), sent=False)
         message = None
         try:
             if view is not None:
@@ -384,11 +394,10 @@ class PlayingCog(commands.Cog):
             return None
         finally:
             if message is None:
-                # Not posted (also when cancelled): its record must not count.
-                self._unsent.append(pending)
+                # Not posted (also when cancelled): its record must not count. If the database
+                # refuses now, _forget_abandoned removes it once the backoff is over.
                 try:
                     self.store.forget_playing_post(pending)
-                    self._unsent.remove(pending)
                 except Exception:
                     self.logger.warning(f"playing: could not remove unsent post {pending}, will retry", exc_info=True)
         try:
@@ -450,24 +459,32 @@ class PlayingCog(commands.Cog):
                 await interaction.followup.send(self._t(guild.id, key), ephemeral=True)
                 return
             room = None
+            creation = asyncio.create_task(self._create_room(guild, channel, post["game"]))
+            self._creating.add(creation)
             try:
-                room = await self._create_room(guild, channel, post["game"])
-            except discord.HTTPException:
+                room = await asyncio.wait_for(creation, CREATE_TIMEOUT_SECONDS)
+            except (discord.HTTPException, asyncio.TimeoutError):
                 self.logger.warning(f"playing: could not open a voice room in guild {guild.id}", exc_info=True)
                 await interaction.followup.send(self._t(guild.id, "playing_room_failed"), ephemeral=True)
                 return
+            except asyncio.CancelledError:
+                cancelling = getattr(asyncio.current_task(), "cancelling", None)  # Python 3.11+
+                if not creation.cancelled() or (cancelling is not None and cancelling()):
+                    raise  # this press itself is being cancelled
+                # The creation was stopped by the cog unloading: this press gets an answer anyway.
+                await interaction.followup.send(self._t(guild.id, "playing_room_failed"), ephemeral=True)
+                return
             finally:
+                self._creating.discard(creation)
                 if room is None:
                     # Not created (also when cancelled): the post may try again.
                     self.store.release_playing_post(message.id)
-            try:
-                # The post points to its room first: one write is enough for the cleanup to find it.
-                self.store.set_playing_voice(message.id, room.id)
-                self.store.add_temp_voice(guild.id, room.id, self._now(), message.id)
-            except Exception as error:
+            # Either record is enough for the cleanup and the room limit to find the room.
+            errors = self._record_room(guild.id, room.id, message.id)
+            if len(errors) == 2:
                 # An untracked room would never be deleted: take it back.
-                self.logger.error(f"playing: could not record voice room {room.id}", exc_info=True)
-                await func.report_error(error, "playing: recording a voice room")
+                self.logger.error(f"playing: could not record voice room {room.id}")
+                await func.report_error(errors[0], "playing: recording a voice room")
                 if not await self._delete_room(room):
                     self._keep_orphan(guild.id, room.id, message.id)
                 else:
@@ -475,6 +492,24 @@ class PlayingCog(commands.Cog):
                 await interaction.followup.send(self._t(guild.id, "playing_room_failed"), ephemeral=True)
                 return
         await interaction.followup.send(self._t(guild.id, "playing_room_ready", channel=room.mention), ephemeral=True)
+
+    def _record_room(self, guild_id: int, channel_id: int, post_message_id: Optional[int], created_at: Optional[float] = None) -> list:
+        """Records a room both ways, each tried on its own: the post's pointer, and the room's row.
+        Returns the errors (none when both worked)."""
+        errors = []
+        if post_message_id is not None:
+            try:
+                self.store.set_playing_voice(post_message_id, channel_id)
+            except Exception as error:
+                self.logger.warning(f"playing: could not point post {post_message_id} to room {channel_id}", exc_info=True)
+                errors.append(error)
+        try:
+            if not self.store.is_temp_voice(channel_id):
+                self.store.add_temp_voice(guild_id, channel_id, self._now() if created_at is None else created_at, post_message_id)
+        except Exception as error:
+            self.logger.warning(f"playing: could not record voice room {channel_id}", exc_info=True)
+            errors.append(error)
+        return errors
 
     def _open_rooms(self, guild: discord.Guild) -> set:
         """The bot's rooms that still exist in ``guild``, however they are on record."""
@@ -525,13 +560,7 @@ class PlayingCog(commands.Cog):
     def _record_orphan(self, guild_id: int, channel_id: int) -> None:
         """Best effort: with the row (and its post) on record, a restart still finds the room."""
         post = next((post for post, room in self._orphan_posts.items() if room == channel_id), None)
-        try:
-            if post is not None:
-                self.store.set_playing_voice(post, channel_id)
-            if not self.store.is_temp_voice(channel_id):
-                self.store.add_temp_voice(guild_id, channel_id, 0, post)
-        except Exception:
-            self.logger.warning(f"playing: could not record voice room {channel_id} for a retry", exc_info=True)
+        self._record_room(guild_id, channel_id, post, created_at=0)
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState) -> None:
