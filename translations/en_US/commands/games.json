@@ -42,6 +42,18 @@
         "song_answer": "It was **[{title}]({url})**",
         "song_winner": "{user} got it in {seconds} s!",
         "song_nobody": "Nobody got it!",
-        "song_interrupted": "Someone started the music, so guess the song stops here."
+        "song_interrupted": "Someone started the music, so guess the song stops here.",
+        "offer": "🎮 {user} wants to start {game}. Press Start to begin (valid for {seconds} seconds; only {user} can press it).",
+        "offer_start": "Start",
+        "offer_cancel": "Cancel",
+        "offer_not_yours": "Only the person who asked for this game can press this button.",
+        "offer_started": "🎮 {user} started {game}!",
+        "offer_cancelled": "This game was cancelled.",
+        "offer_expired": "This game offer has expired.",
+        "offer_limit": "This server already has several game offers waiting to be answered; deal with those first.",
+        "game_quiz": "a server quiz",
+        "game_chain": "a word chain",
+        "game_guess_song": "guess the song",
+        "offer_denied": "You can't start a game in this channel right now (you need to be able to send messages and use commands here)."
     }
 }

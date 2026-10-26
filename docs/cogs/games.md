@@ -25,6 +25,10 @@ How a game goes:
 
 Only one game runs per channel at a time, and a player can host one game at a time. Every model call a game makes counts as one use of the host's chat quota (the `chat` rate limit), fallback models included: each attempt at writing a quiz question and each attempt at the bot's word chain move. Starting a game costs nothing by itself. When the quota runs out, the quiz plays the questions it already has (or says the host hit the limit if it has none), and a word chain ends with a message. At most 3 model calls for games run at once across the bot; these limits live on the bot, so they survive a reload of the cog, and unloading the cog stops running games. Games can't be started in the music request channel. The quiz needs the memory system (Qdrant) and a working model; otherwise it says so.
 
+## Asking the AI for a game
+
+The AI's `start_server_game` tool (see [community tools](../llm/tools/community_tools.md)) does not start a game itself. It posts an offer with **Start** and **Cancel** buttons that only the member who asked can press; the offer pings nobody and expires after 2 minutes. A member has one open offer at a time (a new one replaces it) and a server at most 3. Pressing Start checks that the member may still read the channel (in a private thread: is in it), post and use commands there (a locked or archived thread needs Manage Threads) and runs the same checks as the slash command again and starts the game in the background with that member as host, charged to their quota like `/game`.
+
 ## `/game chain [homophones]`
 
 A word chain in the channel. The bot posts the first word; each next word has to start with the last character of the one before.
