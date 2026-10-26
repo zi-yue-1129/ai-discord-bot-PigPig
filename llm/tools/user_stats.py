@@ -237,10 +237,11 @@ def _is_hidden(runtime: Any, guild_id: int, user_id: str, db_path: Optional[str]
 def public_stats(guild: Any, stats: Dict[str, Any], also_visible: Optional[int] = None) -> Dict[str, Any]:
     """The part of a member's all-time stats that may be shown to anyone in the server.
 
-    Channels are only listed when everyone can read them, or when it is ``also_visible``
-    (the channel the answer is posted in). The all-time word and emoji counts (and so the
-    word cloud) do not record which channel they came from, so they are kept only when every
-    message of the member was counted in such a channel; otherwise they are left out.
+    Channels are only listed when everyone can read them (``recap.is_public``), or when it is
+    ``also_visible`` (the channel the answer is posted in). The all-time word and emoji counts
+    (and so the word cloud) are left out: they record neither the channel nor whether it was
+    public when the words were written, so even a channel that is public today cannot vouch
+    for them.
     """
     from cogs.community_lib.recap import public_channel_ids
 
@@ -248,15 +249,11 @@ def public_stats(guild: Any, stats: Dict[str, Any], also_visible: Optional[int] 
     if also_visible is not None:
         public.add(str(also_visible))
     channels = stats.get("top_channels") or {}
-    shown = {channel: count for channel, count in channels.items() if str(channel) in public}
-    # Every message is counted in top_channels, so when all of it is visible (and it covers the
-    # total, i.e. nothing was counted without a channel) no private message fed the words.
-    only_public = bool(channels) and len(shown) == len(channels) and sum(channels.values()) >= stats.get("total_messages", 0)
     return {
         **stats,
-        "top_words": (stats.get("top_words") or {}) if only_public else {},
-        "top_emojis": (stats.get("top_emojis") or {}) if only_public else {},
-        "top_channels": shown,
+        "top_words": {},
+        "top_emojis": {},
+        "top_channels": {channel: count for channel, count in channels.items() if str(channel) in public},
     }
 
 

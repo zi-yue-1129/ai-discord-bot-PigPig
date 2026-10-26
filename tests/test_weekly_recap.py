@@ -131,6 +131,9 @@ class FakeChannel:
         self.public = public
         self.sent: List[dict] = []
         self.fail_sends = 0
+        self.type = discord.ChannelType.text
+        self.guild: Any = None  # set when added to a FakeGuild
+        self.overwrites: dict = {}
 
     def permissions_for(self, role: Any) -> SimpleNamespace:
         assert role == "@everyone"
@@ -159,6 +162,16 @@ class FakeMember:
 class ChannelMap(dict):
     """Channels by id, iterated like ``guild.channels`` (the channels themselves)."""
 
+    def __init__(self, guild: Any, channels: dict) -> None:
+        super().__init__()
+        self.guild = guild
+        for channel_id, channel in channels.items():
+            self[channel_id] = channel
+
+    def __setitem__(self, channel_id: int, channel: Any) -> None:
+        channel.guild = self.guild
+        super().__setitem__(channel_id, channel)
+
     def __iter__(self) -> Any:
         return iter(list(self.values()))
 
@@ -170,7 +183,7 @@ class FakeGuild:
         self.system_channel = None
         self.default_role = "@everyone"
         self.channel = FakeChannel(500, {2: FakeMessage("best joke ever")})
-        self.channels = ChannelMap({500: self.channel, 501: FakeChannel(501)})
+        self.channels = ChannelMap(self, {500: self.channel, 501: FakeChannel(501)})
         self.members = {i: FakeMember(i) for i in (10, 11, 12, 13)}
         self.members[99] = FakeMember(99, bot=True)
         self.threads: list = []
@@ -424,7 +437,24 @@ def test_a_private_thread_under_a_public_channel_is_not_public(guild: FakeGuild)
 
     everyone_can = lambda role: SimpleNamespace(view_channel=True, read_message_history=True)
     private = SimpleNamespace(id=901, type=discord.ChannelType.private_thread, permissions_for=everyone_can)
-    public = SimpleNamespace(id=902, type=discord.ChannelType.public_thread, permissions_for=everyone_can)
+    public = SimpleNamespace(id=902, type=discord.ChannelType.public_thread, permissions_for=everyone_can, parent=guild.channel)
 
     assert is_public(guild, private) is False
     assert is_public(guild, public) is True
+
+
+class _Overwrite:
+    def __init__(self, **deny: bool) -> None:
+        self.deny = discord.Permissions(**deny)
+
+    def pair(self) -> tuple:
+        return discord.Permissions.none(), self.deny
+
+
+def test_a_channel_that_denies_a_role_is_not_public(guild: FakeGuild) -> None:
+    from cogs.community_lib.recap import is_public, public_channel_ids
+
+    guild.channels[501].overwrites = {"staff-only-role": _Overwrite(view_channel=True)}
+
+    assert is_public(guild, guild.channels[501]) is False
+    assert public_channel_ids(guild) == ["500"]
