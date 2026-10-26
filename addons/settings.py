@@ -176,6 +176,14 @@ class LLMConfig:
         self.llm_call_timeout: float = float(self.data.get("llm_call_timeout", 60))
         # Most tokens one chat model call may generate (reasoning included); 0 means no cap.
         self.max_output_tokens: int = int(self.data.get("max_output_tokens", 8192))
+        # Optional tool groups and the channels they are limited to (see llm/tools_factory.py).
+        tool_groups = self.data.get("tool_groups") or {}
+        if not isinstance(tool_groups, dict):
+            logger.warning(
+                f"llm.yaml tool_groups must be a mapping of group names, not {type(tool_groups).__name__}; ignored"
+            )
+            tool_groups = {}
+        self.tool_groups: dict = tool_groups
         self.reasoning_optimization_prompt: str = self.data.get(
             "reasoning_optimization_prompt", 
             "\n\n[CRITICAL SYSTEM RULE]: Think efficiently and use minimal reasoning. Strict limit: keep any internal reasoning or <think> process extremely brief (under 3 sentences). Output final results and call tools immediately without extensive reflection."

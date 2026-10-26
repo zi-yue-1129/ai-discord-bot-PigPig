@@ -99,7 +99,7 @@ _CONFIG_ALLOWED_KEYS: dict[str, set[str]] = {
     "llm": {
         "model_priorities", "google_search_agent",
         "llm_call_timeout", "reasoning_optimization_prompt", "ollama_url", "vllm_url",
-        "max_output_tokens", "openai_endpoints",
+        "max_output_tokens", "openai_endpoints", "tool_groups",
     },
     "memory": {
         "enabled", "procedural_cache_ttl", "procedural_data_path", "episodic_data_path",
