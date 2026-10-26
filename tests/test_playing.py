@@ -30,12 +30,15 @@ class FakeLang:
 
 
 class FakeVoice:
-    def __init__(self, room_id: int, guild: "FakeGuild", members: Optional[list] = None) -> None:
+    def __init__(self, room_id: int, guild: "FakeGuild", members: Optional[list] = None, name: str = "") -> None:
         self.id = room_id
         self.guild = guild
         self.members = members or []
         self.mention = f"<#{room_id}>"
         self.deleted = False
+        self.name = name
+        self.type = discord.ChannelType.voice
+        self.category_id = None
 
     async def delete(self, reason: str = "") -> None:
         self.deleted = True
@@ -108,10 +111,14 @@ class FakeGuild:
     def permissions_for(self, member: Any) -> Any:
         return SimpleNamespace(manage_channels=self.bot_manages_channels)
 
+    @property
+    def voice_channels(self) -> list:
+        return [channel for channel in self.channels.values() if isinstance(channel, FakeVoice)]
+
     async def create_voice_channel(self, name: str, **kwargs: Any) -> FakeVoice:
         if self.create_fails:
             raise discord.Forbidden(SimpleNamespace(status=403, reason="no"), "no")
-        room = FakeVoice(next(_IDS), self)
+        room = FakeVoice(next(_IDS), self, name=name)
         self.channels[room.id] = room
         self.created.append({"name": name, **kwargs})
         return room
@@ -334,7 +341,8 @@ async def test_the_button_opens_one_room_for_the_post_with_the_channels_audience
     assert first.deferred == {"ephemeral": True, "thinking": True}
     assert first.followups[0].startswith("playing_room_ready|channel=<#")
     assert second.followups[0].startswith("playing_room_exists|channel=<#")
-    assert len(guild.created) == 1 and guild.created[0]["name"] == "Valorant"
+    # The room is named after the game and carries its claim's token, which is how the bot knows it as its own.
+    assert len(guild.created) == 1 and guild.created[0]["name"] == f"Valorant · #{_short_token(store, message_id)}"
     assert guild.created[0]["overwrites"] == {"role": "overwrite"}  # open to the same people as the channel
 
 
@@ -1506,3 +1514,170 @@ def test_an_older_database_keeps_posts_that_opened_a_room_used(tmp_path: Path) -
     reopened = CommunityStore(path)
 
     assert [reopened.playing_post(m)["room_used_at"] is not None for m in (1, 2, 3, 4)] == [True, True, False, True]
+
+
+# ---------------------------------------------------- a room's token is its identity (issue #374)
+
+
+def _short_token(store: CommunityStore, message_id: int) -> str:
+    with sqlite3.connect(store.path) as connection:
+        return connection.execute("SELECT room_token FROM playing_posts WHERE message_id = ?", (message_id,)).fetchone()[0][:6]
+
+
+def _hanging_after_creating(guild: FakeGuild, gate: Optional[asyncio.Event] = None) -> None:
+    """Discord accepts the creation (the channel exists, its event may even have arrived) but the
+    HTTP answer does not come back: until ``gate`` opens, or for good."""
+    real_create = guild.create_voice_channel
+
+    async def create(name: str, **kwargs: Any) -> FakeVoice:
+        room = await real_create(name, **kwargs)
+        await (gate or asyncio.Event()).wait()
+        return room
+
+    guild.create_voice_channel = create
+
+
+@pytest.mark.asyncio
+async def test_a_room_whose_answer_never_came_back_is_adopted_by_its_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import cogs.playing as playing_module
+
+    monkeypatch.setattr(playing_module, "CREATE_TIMEOUT_SECONDS", 0.01)
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
+    first_post = await _posted(cog, guild, store)
+    _playing(cog, guild, "Apex", 4, 5, 6)
+    await _check(cog, store)
+    with sqlite3.connect(store.path) as connection:
+        second_post = connection.execute("SELECT message_id FROM playing_posts WHERE game_key = 'apex'").fetchone()[0]
+    _hanging_after_creating(guild)
+
+    press = FakePress(guild, first_post)
+    await cog.open_room(press)
+    room = guild.voice_channels[0]
+
+    # The room was found by its token: it is on record, the post is used, nothing was deleted.
+    assert press.followups == [f"playing_room_ready|channel={room.mention}"]
+    assert store.is_temp_voice(room.id) and store.playing_post(first_post)["voice_channel_id"] == room.id
+    cog._now = lambda: NOW + 181  # the claim would have expired by now
+    await cog.check_all()
+    other = FakePress(guild, second_post)
+    await cog.open_room(other)
+    assert other.followups == ["playing_room_limit|"] and len(guild.created) == 1 and not room.deleted
+
+
+@pytest.mark.asyncio
+async def test_a_room_that_appears_after_the_request_gave_up_is_adopted_when_its_event_arrives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import cogs.playing as playing_module
+
+    monkeypatch.setattr(playing_module, "CREATE_TIMEOUT_SECONDS", 0.01)
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
+    message_id = await _posted(cog, guild, store)
+
+    async def hang(name: str, **kwargs: Any) -> FakeVoice:
+        await asyncio.Event().wait()
+
+    guild.create_voice_channel = hang
+    press = FakePress(guild, message_id)
+    await cog.open_room(press)
+    assert press.followups == ["playing_room_failed|"] and store.playing_post(message_id)["voice_channel_id"] == -1
+
+    late = FakeVoice(next(_IDS), guild, name=f"Valorant · #{_short_token(store, message_id)}")
+    guild.channels[late.id] = late  # Discord made it after all
+    await cog.on_guild_channel_create(late)
+
+    assert store.is_temp_voice(late.id) and store.playing_post(message_id)["voice_channel_id"] == late.id
+    again = FakePress(guild, message_id)
+    await cog.open_room(again)
+    assert again.followups == [f"playing_room_exists|channel={late.mention}"] and not late.deleted
+
+
+@pytest.mark.asyncio
+async def test_a_stale_claim_looks_for_its_room_before_it_is_freed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import cogs.playing as playing_module
+
+    monkeypatch.setattr(playing_module, "CREATE_TIMEOUT_SECONDS", 0.01)
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
+    message_id = await _posted(cog, guild, store)
+
+    async def hang(name: str, **kwargs: Any) -> FakeVoice:
+        await asyncio.Event().wait()
+
+    guild.create_voice_channel = hang
+    await cog.open_room(FakePress(guild, message_id))
+    late = FakeVoice(next(_IDS), guild, name=f"Valorant · #{_short_token(store, message_id)}")
+    guild.channels[late.id] = late  # cached, but its event was never seen by the cog
+
+    cog._now = lambda: NOW + 181
+    await cog.check_all()
+
+    assert store.is_temp_voice(late.id) and store.playing_post(message_id)["voice_channel_id"] == late.id
+    assert store.playing_post(message_id)["room_used_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_a_members_channel_is_never_adopted_or_deleted_whatever_its_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import cogs.playing as playing_module
+
+    monkeypatch.setattr(playing_module, "CREATE_TIMEOUT_SECONDS", 0.01)
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
+    message_id = await _posted(cog, guild, store)
+
+    async def hang(name: str, **kwargs: Any) -> FakeVoice:
+        await asyncio.Event().wait()
+
+    guild.create_voice_channel = hang
+    await cog.open_room(FakePress(guild, message_id))
+    names = ["Valorant", "Valorant · #ffffff", "Valorant · #zzzzzz", "Valorant #" + _short_token(store, message_id)]
+    strangers = []
+    for name in names:
+        stranger = FakeVoice(next(_IDS), guild, name=name)
+        guild.channels[stranger.id] = stranger
+        strangers.append(stranger)
+        await cog.on_guild_channel_create(stranger)  # the real event path, not a cache edit
+    cog._now = lambda: NOW + 3600
+    await cog.check_all()
+
+    assert all(not room.deleted and not store.is_temp_voice(room.id) for room in strangers)
+    assert store.playing_post(message_id)["voice_channel_id"] is None  # the claim itself ran out
+
+
+@pytest.mark.asyncio
+async def test_a_token_whose_claim_is_gone_adopts_nothing(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
+    message_id = await _posted(cog, guild, store)
+    assert store.claim_playing_post(message_id, 0, 1, NOW, "abcdef123456")
+    store.release_playing_post(message_id, "abcdef123456")  # the claim was given up
+    stray = FakeVoice(next(_IDS), guild, name="Valorant · #abcdef")
+    guild.channels[stray.id] = stray
+
+    await cog.on_guild_channel_create(stray)
+
+    assert not store.is_temp_voice(stray.id) and not stray.deleted
+    assert store.playing_post(message_id)["room_used_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_room_adopted_while_its_request_is_still_pending_is_not_taken_back(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
+    message_id = await _posted(cog, guild, store)
+    gate = asyncio.Event()
+    _hanging_after_creating(guild, gate)
+    press = FakePress(guild, message_id)
+    opening = asyncio.create_task(cog.open_room(press))
+    await asyncio.sleep(0.01)
+    room = guild.voice_channels[0]
+    await cog.on_guild_channel_create(room)  # the event is faster than the HTTP answer
+    gate.set()
+    await opening
+
+    assert press.followups == [f"playing_room_ready|channel={room.mention}"]
+    assert not room.deleted and store.is_temp_voice(room.id) and len(guild.created) == 1
+
+
+def test_a_rooms_name_carries_its_claims_token_within_discords_limit() -> None:
+    from cogs.playing import room_label
+
+    label = room_label("x" * 500, "0123456789abcdef")
+    assert label.endswith(" · #012345") and len(label) <= 100
+    assert room_label("Valorant", "0123456789abcdef") == "Valorant · #012345"

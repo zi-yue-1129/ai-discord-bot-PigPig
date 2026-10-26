@@ -353,6 +353,15 @@ class CommunityStore:
             )
             return cursor.rowcount == 1
 
+    def open_claims(self, guild_id: int) -> List[Tuple[int, str]]:
+        """``(message_id, token)`` of the guild's claims whose room is not known yet."""
+        with self._session() as connection:
+            return connection.execute(
+                "SELECT message_id, room_token FROM playing_posts"
+                " WHERE guild_id = ? AND voice_channel_id = -1 AND room_used_at IS NULL AND room_token IS NOT NULL",
+                (guild_id,),
+            ).fetchall()
+
     def mark_playing_post_sent(self, message_id: int) -> None:
         with self._session() as connection:
             connection.execute("UPDATE playing_posts SET sent = 1 WHERE message_id = ?", (message_id,))
