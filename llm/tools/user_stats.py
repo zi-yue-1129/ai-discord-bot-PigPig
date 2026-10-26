@@ -113,7 +113,7 @@ class UserStatsTools:
             Sends a PNG stats image (word cloud + activity chart) to the channel,
             and returns a brief text summary for use in conversation.
             Call this whenever a user asks about their stats, activity, message count,
-            word cloud, or usage history.
+            word cloud, usage history, server rank or badges.
 
             Args:
                 user_id: Optional Discord user ID. Defaults to message sender.
@@ -175,6 +175,11 @@ class UserStatsTools:
                 "top_emojis_prefix": t("image", "top_emojis", emojis="").rstrip(),
             }
 
+            # Everything that awaits is read before the image goes out, so a member who hides themselves
+            # meanwhile is refused below with no image already posted. (Only the send itself, which can
+            # wait on Discord's rate limit, is left between the last check and the post.)
+            extras = await _profile_extras(runtime, message.guild, effective_id)
+
             # Generate and send the PNG image
             try:
                 loop = asyncio.get_running_loop()
@@ -186,9 +191,11 @@ class UserStatsTools:
                     avatar_url,
                     image_labels,
                 )
-                # Drawing the image awaited: if a channel in it stopped being public meanwhile,
-                # send no image (the text below is rebuilt from what is public now).
+                # Drawing the image awaited: if a channel in it stopped being public, or the member
+                # hid themselves meanwhile, send no image (the text below is checked again too).
                 if public_view(message.guild, all_time, terms, also_visible) != stats:
+                    raise _ChannelsChanged()
+                if _is_hidden(runtime, message.guild.id, effective_id):
                     raise _ChannelsChanged()
                 await message.channel.send(
                     file=discord.File(
@@ -205,8 +212,12 @@ class UserStatsTools:
                     pass
                 _logger.error("get_user_stats image failed: %s", e)
 
+            # The member may have hidden themselves while the image was drawn or sent.
+            if _is_hidden(runtime, message.guild.id, effective_id):
+                return "This member chose to hide their stats (/leaderboard optout). Do not share or guess them."
             # Always return text summary regardless of image success/failure
-            return _format_text_card(display_name, public_view(message.guild, all_time, terms, also_visible), t)
+            card = _format_text_card(display_name, public_view(message.guild, all_time, terms, also_visible), t)
+            return "\n".join([card, *extras])
 
         _info_meta = {"target_agent_mode": "info"}
         return [
@@ -214,8 +225,26 @@ class UserStatsTools:
         ]
 
 
+async def _profile_extras(runtime: Any, guild: Any, user_id: str) -> List[str]:
+    """The member's all-time rank and badges (as on /profile); empty when unavailable.
+
+    The rotating titles are left out: the weekly recap awards them from activity in every channel,
+    private ones included, and from songs requested anywhere.
+    """
+    bot = getattr(runtime, "bot", None)
+    cog = bot.get_cog("LeaderboardCog") if bot is not None else None
+    member = guild.get_member(int(user_id)) if cog is not None else None
+    if member is None:
+        return []
+    try:
+        return await cog.profile_extras(guild, member, titles=False)
+    except Exception:
+        _logger.error("get_user_stats: could not read the member's rank, titles and badges", exc_info=True)
+        return []
+
+
 class _ChannelsChanged(Exception):
-    """A channel stopped being public while the stats image was drawn."""
+    """A channel stopped being public, or the member hid themselves, while the stats image was drawn."""
 
 
 def _is_hidden(runtime: Any, guild_id: int, user_id: str, db_path: Optional[str] = None) -> bool:

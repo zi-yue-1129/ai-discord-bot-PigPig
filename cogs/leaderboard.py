@@ -303,24 +303,34 @@ class LeaderboardCog(commands.Cog):
         if not stats:
             return self._r(guild.id, "no_stats", name=member.display_name)
         terms = await fetch_public_terms(storage, guild, str(member.id))
-        place = ranked = None
-        if not self.store.is_opted_out(guild.id, member.id):
-            ranked = await self.rankings(guild, "messages", "all") or []
-            place = next((place for place, (m, _) in enumerate(ranked, start=1) if m.id == member.id), None)
+        extras = await self.profile_extras(guild, member)
         # Built after the last await, so a channel made private meanwhile is left out.
         shown = public_view(guild, stats, terms)
         lines = [_format_text_card(member.display_name, shown, _make_t(self.bot, str(guild.id)))]
-        if place is not None:
-            lines.append(self._r(guild.id, "profile_rank", rank=place, total=len(ranked)))
-        titles = self.store.titles_of(guild.id, member.id)
-        if titles:
-            names = self._r(guild.id, "list_joiner").join(self._title(guild.id, title_id) for title_id in titles)
+        return "\n".join(lines + extras)
+
+    async def profile_extras(self, guild: discord.Guild, member: Any, titles: bool = True) -> List[str]:
+        """The profile lines after the stats card: all-time rank (unless hidden), titles and badges.
+
+        Args:
+            titles: Include the rotating titles. The weekly recap awards them from activity in
+                every channel (and from the music log), so answers posted for everyone leave them out.
+        """
+        lines = []
+        if not self.store.is_opted_out(guild.id, member.id):
+            ranked = await self.rankings(guild, "messages", "all") or []
+            place = next((place for place, (m, _) in enumerate(ranked, start=1) if m.id == member.id), None)
+            if place is not None:
+                lines.append(self._r(guild.id, "profile_rank", rank=place, total=len(ranked)))
+        held = self.store.titles_of(guild.id, member.id) if titles else []
+        if held:
+            names = self._r(guild.id, "list_joiner").join(self._title(guild.id, title_id) for title_id in held)
             lines.append(self._r(guild.id, "profile_titles", titles=names))
         unlocked = [self._by_id[i] for i, _ in self.store.achievements(guild.id, member.id) if i in self._by_id]
         if unlocked:
             badges = " ".join(a.emoji for a in unlocked)
             lines.append(self._r(guild.id, "profile_badges", badges=badges, done=len(unlocked), total=len(self.achievements)))
-        return "\n".join(lines)
+        return lines
 
     @app_commands.command(name="achievements", description="Show which achievements a member has unlocked")
     @app_commands.describe(user="Whose achievements to show (defaults to you)")
