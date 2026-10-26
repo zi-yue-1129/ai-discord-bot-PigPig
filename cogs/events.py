@@ -309,16 +309,24 @@ class EventsCog(commands.Cog):
         self.store.sign_up(event_id, interaction.user.id, GOING, now)
         event = self.store.get(event_id)
         try:
-            await interaction.response.send_message(
+            callback = await interaction.response.send_message(
                 embed=self.render(event, self.store.roster(event)),
                 view=self._localised_view(guild_id),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
-            message = await interaction.original_response()
         except discord.HTTPException:
+            # Nothing was posted: the event goes too.
             self.store.delete(event_id)
             raise
-        self.store.set_message(event_id, message.id)
+        # The message is posted from here on, so the event stays whatever happens next.
+        message_id = getattr(callback, "message_id", None)
+        if message_id is None:
+            try:
+                message_id = (await interaction.original_response()).id
+            except discord.HTTPException:
+                self.logger.warning(f"events: posted event {event_id} but could not look up its message", exc_info=True)
+                return
+        self.store.set_message(event_id, message_id)
         if self._wake is not None:
             self._wake.set()
 

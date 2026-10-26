@@ -1,4 +1,5 @@
 import asyncio
+import re
 import base64
 import io
 from datetime import date
@@ -23,6 +24,7 @@ from function import func
 RECAP_DB_PATH = "data/story_recaps.db"
 # Messages read back for a recap.
 RECAP_HISTORY = 40
+_WEBHOOK_ID = re.compile(r"/webhooks/(\d+)/")
 RECAP_LINE_CHARS = 400
 EMBED_DESCRIPTION_LIMIT = 4000
 CARD_DESCRIPTION_CHARS = 2000
@@ -172,14 +174,20 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
         in_story = self._active_story(guild_id, interaction.channel_id) is not None
         if in_story:
             text += "\n" + self._t(guild_id, "story", "addons", "roll_in_story")
+        roll = None
         if in_story:
             note = f"{interaction.user.display_name} rolled {result.describe()}"
             if reason:
                 note += f" for: {reason}"
-            # Queued before the reply goes out: a story message right after the roll shows up must see
-            # it. The roll stands even if the reply then fails, since the story may already have used it.
-            self.story_manager.add_dice_result(interaction.channel_id, note)
-        await interaction.response.send_message(text, allowed_mentions=discord.AllowedMentions.none())
+            # Queued before the reply goes out: a story message right after the roll shows up must see it.
+            roll = self.story_manager.add_dice_result(interaction.channel_id, note)
+        try:
+            await interaction.response.send_message(text, allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException:
+            # Nobody saw the roll: it is taken back unless a turn already used it.
+            if roll is not None:
+                self.story_manager.discard_dice_result(interaction.channel_id, roll)
+            raise
 
     # ----------------------------------------------------------------- recap
     async def _recap_text(self, channel: Any, instance: Any, user_id: Optional[int], before: Any = None) -> Optional[str]:
@@ -187,9 +195,12 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
         guild_id = instance.guild_id
         lines: List[str] = []
         bot_id = getattr(self.bot.user, "id", None)
+        # Story characters speak through webhooks, in embeds like the bot's own story messages.
+        webhook_ids = self._story_webhook_ids(instance)
         try:
             async for message in channel.history(limit=RECAP_HISTORY, before=before):
-                if message.author.id == bot_id and message.embeds:
+                from_story = message.author.id == bot_id or getattr(message, "webhook_id", None) in webhook_ids
+                if from_story and message.embeds:
                     content = message.embeds[0].description or ""
                 else:
                     content = message.content
@@ -215,6 +226,17 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
         if not text and instance.summaries:
             text = instance.summaries[-1]
         return text.strip()[:EMBED_DESCRIPTION_LIMIT] if text else None
+
+    def _story_webhook_ids(self, instance: Any) -> set:
+        """The ids of the webhooks the story's characters speak through."""
+        character_db = getattr(self.story_manager, "character_db", None)
+        ids = set()
+        for character_id in getattr(instance, "active_character_ids", None) or []:
+            character = character_db.get_character(character_id) if character_db is not None else None
+            found = _WEBHOOK_ID.search(getattr(character, "webhook_url", None) or "")
+            if found:
+                ids.add(int(found.group(1)))
+        return ids
 
     def _recap_embed(self, guild_id: int, text: str) -> discord.Embed:
         return discord.Embed(

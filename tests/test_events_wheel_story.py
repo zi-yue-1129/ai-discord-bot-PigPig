@@ -16,6 +16,7 @@ from cogs.events import MAX_DELIVERY_ATTEMPTS, RETRY_DELAY_SECONDS, EventsCog, m
 from cogs.events_lib.store import CANCELLED, GOING, MAYBE, OPEN, REMINDED, EventStore
 from cogs.games_lib import wheel
 from cogs.story import dice
+from cogs.story.manager import MAX_PENDING_DICE, StoryManager
 from cogs.story.recap_store import RecapStore
 from cogs.story_manager import StoryManagerCog, card_prompt
 from cogs.wheel import WheelCog
@@ -487,9 +488,13 @@ def test_too_many_dice_are_refused(notation: str) -> None:
 
 
 class FakeStoryManager:
+    # The real queue of pending rolls.
+    add_dice_result = StoryManager.add_dice_result
+    discard_dice_result = StoryManager.discard_dice_result
+
     def __init__(self, instance: Any, characters: Optional[dict] = None) -> None:
         self.instance = instance
-        self.dice: List[tuple] = []
+        self.dice_results: dict = {}
         self.character_db = SimpleNamespace(
             get_character=lambda character_id: (characters or {}).get(character_id),
             get_selectable_characters=lambda guild_id, user_id: [
@@ -500,8 +505,9 @@ class FakeStoryManager:
     def _get_db(self, guild_id: int) -> Any:
         return SimpleNamespace(get_story_instance=lambda channel_id: self.instance if channel_id == 500 else None)
 
-    def add_dice_result(self, channel_id: int, text: str) -> None:
-        self.dice.append((channel_id, text))
+    @property
+    def dice(self) -> List[tuple]:
+        return [(channel_id, roll.text) for channel_id, rolls in self.dice_results.items() for roll in rolls]
 
 
 def _story_cog(instance: Any = None, characters: Optional[dict] = None, **bot_attrs: Any) -> StoryManagerCog:
@@ -546,7 +552,7 @@ def test_the_story_manager_keeps_the_latest_few_dice_for_the_next_turn() -> None
     manager = SimpleNamespace(dice_results={})
     for index in range(MAX_PENDING_DICE + 3):
         StoryManager.add_dice_result(manager, 500, f"roll {index}")
-    assert manager.dice_results[500] == [f"roll {i}" for i in range(3, MAX_PENDING_DICE + 3)]
+    assert [roll.text for roll in manager.dice_results[500]] == [f"roll {i}" for i in range(3, MAX_PENDING_DICE + 3)]
 
 
 @pytest.mark.asyncio
@@ -1387,52 +1393,7 @@ async def test_the_audience_is_decided_after_the_requester_is_looked_up_again(mo
 
 
 @pytest.mark.asyncio
-async def test_a_roll_is_queued_for_the_story_before_its_reply_shows_up() -> None:
-    cog = _story_cog(_instance())
-    interaction = FakeInteraction(user_id=5)
-    seen_when_sent: list = []
-    send = interaction._send_message
-
-    async def send_and_look(content: Any = None, **kwargs: Any) -> None:
-        # A story message handled while the reply is on its way must already find the roll.
-        seen_when_sent.append(list(cog.story_manager.dice))
-        await send(content, **kwargs)
-
-    interaction.response.send_message = send_and_look
-    await StoryManagerCog.roll.callback(cog, interaction, "1d20", None)
-    assert len(seen_when_sent[0]) == 1
-
-    # The story may already have used the roll by the time a reply fails, so the roll stands.
-    failing = FakeInteraction(user_id=5)
-
-    async def fail(content: Any = None, **kwargs: Any) -> None:
-        raise discord.HTTPException(SimpleNamespace(status=500, reason="boom"), "boom")
-
-    failing.response.send_message = fail
-    with pytest.raises(discord.HTTPException):
-        await StoryManagerCog.roll.callback(cog, failing, "1d20", None)
-    assert len(cog.story_manager.dice) == 2
-
-
-def test_pending_rolls_are_consumed_once_and_never_carry_over_into_another_story() -> None:
-    from cogs.story.manager import MAX_PENDING_DICE, StoryManager
-
-    manager = SimpleNamespace(dice_results={})
-    for number in range(MAX_PENDING_DICE + 2):
-        StoryManager.add_dice_result(manager, 500, f"rolled {number}")
-    StoryManager.add_dice_result(manager, 501, "elsewhere")
-    # What the GM turn does: take the channel's pending rolls.
-    assert manager.dice_results.pop(500, None) == [f"rolled {n}" for n in range(2, MAX_PENDING_DICE + 2)]
-
-    StoryManager.add_dice_result(manager, 500, "left over")
-    StoryManager.clear_dice_results(manager, 500)  # the story ends (or a new one starts)
-    StoryManager.clear_dice_results(manager, 502)
-    assert manager.dice_results == {501: ["elsewhere"]}
-
-
-@pytest.mark.asyncio
 async def test_ending_a_story_forgets_its_pending_rolls() -> None:
-    from cogs.story.manager import StoryManager
     from cogs.story.ui import views
 
     saved: list = []
@@ -1456,3 +1417,179 @@ async def test_ending_a_story_forgets_its_pending_rolls() -> None:
 
     assert saved == [instance] and instance.is_active is False
     assert manager.dice_results == {501: ["elsewhere"]}
+
+
+
+class _NoTyping:
+    def __init__(self, channel: Any) -> None:
+        pass
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc: Any) -> None:
+        return None
+
+
+def _real_story_manager(monkeypatch: pytest.MonkeyPatch, plan: Any) -> tuple:
+    """A real StoryManager whose GM turn stops at the plan (``plan``: what the agent returns, or an exception)."""
+    import cogs.story.manager as story_module
+
+    prompts: list = []
+
+    class PromptEngine:
+        async def build_gm_prompt(self, **kwargs: Any) -> str:
+            prompts.append(kwargs.get("dice_results"))
+            return "prompt"
+
+    class Agent:
+        async def ainvoke(self, payload: Any) -> Any:
+            if isinstance(plan, Exception):
+                raise plan
+            return plan
+
+    monkeypatch.setitem(story_module.__dict__, "SafeTyping", _NoTyping)
+    monkeypatch.setitem(story_module.__dict__, "ModelManager", lambda: SimpleNamespace(get_model=lambda *a, **k: ("m", None)))
+    monkeypatch.setitem(story_module.__dict__, "create_model_instance", lambda *a, **k: object())
+    monkeypatch.setitem(story_module.__dict__, "create_agent", lambda *a, **k: Agent())
+    monkeypatch.setattr(story_module.func, "report_error", lambda *a, **k: asyncio.sleep(0))
+
+    instance = SimpleNamespace(
+        guild_id=GUILD_ID, channel_id=500, is_active=True, world_name="w", active_character_ids=[], outlines=[], summaries=[],
+    )
+    db = SimpleNamespace(get_story_instance=lambda channel_id: instance, get_world=lambda name: SimpleNamespace(world_name=name))
+    manager = StoryManager.__new__(StoryManager)
+    manager._initialized = True
+    manager.bot = SimpleNamespace(user=SimpleNamespace(id=1))
+    manager._get_db = lambda guild_id: db
+    manager.character_db = SimpleNamespace(get_character=lambda character_id: None)
+    manager.interventions = {}
+    manager.dice_results = {}
+    manager.prompt_engine = PromptEngine()
+    manager.language_manager = FakeLang()
+    manager.logger = SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None, error=lambda *a, **k: None)
+    manager._extract_structured_response = lambda response, model, name: response
+    return manager, prompts
+
+
+def _story_message(replies: list) -> Any:
+    async def reply(content: Any = None, **kwargs: Any) -> None:
+        replies.append(content)
+
+    return SimpleNamespace(
+        guild=SimpleNamespace(id=GUILD_ID), channel=SimpleNamespace(id=500), content="我撬鎖", reply=reply,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("plan", [RuntimeError("model down"), None])
+async def test_a_failed_gm_turn_keeps_the_rolls_for_the_next_one(monkeypatch: pytest.MonkeyPatch, plan: Any) -> None:
+    manager, prompts = _real_story_manager(monkeypatch, plan)
+    manager.add_dice_result(500, "a rolled 3")
+    replies: list = []
+
+    await manager.process_story_message(_story_message(replies))
+    manager.add_dice_result(500, "b rolled 18")
+
+    assert prompts == [["a rolled 3"]] and len(replies) == 1
+    assert [roll.text for roll in manager.dice_results[500]] == ["a rolled 3", "b rolled 18"]
+
+
+@pytest.mark.asyncio
+async def test_a_roll_whose_reply_failed_is_taken_back_only_while_it_is_still_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager, prompts = _real_story_manager(monkeypatch, RuntimeError("model down"))
+    cog = _story_cog(_instance())
+    cog.story_manager = manager
+    real_roll = dice.roll
+    monkeypatch.setattr(dice, "roll", lambda notation: real_roll(notation, random.Random(7)))  # the same roll every time
+
+    async def fail(content: Any = None, **kwargs: Any) -> None:
+        raise discord.HTTPException(SimpleNamespace(status=500, reason="boom"), "boom")
+
+    # Two identical rolls: the one whose reply failed goes, the one people saw stays.
+    seen = FakeInteraction(user_id=5)
+    await StoryManagerCog.roll.callback(cog, seen, "1d20", None)
+    unseen = FakeInteraction(user_id=5)
+    unseen.response.send_message = fail
+    with pytest.raises(discord.HTTPException):
+        await StoryManagerCog.roll.callback(cog, unseen, "1d20", None)
+    assert len(manager.dice_results[500]) == 1 and manager.dice_results[500][0].text.startswith("user5 rolled")
+
+    # A story message is handled while a roll's reply is in flight: the roll is in that turn's prompt.
+    # The turn fails, and then the reply fails too: the roll does not come back for a later turn.
+    replies: list = []
+    in_flight = FakeInteraction(user_id=6)
+
+    async def story_turn_then_fail(content: Any = None, **kwargs: Any) -> None:
+        await manager.process_story_message(_story_message(replies))
+        raise discord.HTTPException(SimpleNamespace(status=500, reason="boom"), "boom")
+
+    in_flight.response.send_message = story_turn_then_fail
+    with pytest.raises(discord.HTTPException):
+        await StoryManagerCog.roll.callback(cog, in_flight, "1d20", None)
+    assert any("user6 rolled" in text for text in prompts[-1])
+    assert [roll.text for roll in manager.dice_results[500]] == [prompts[-1][0]]
+    assert all("user6" not in roll.text for roll in manager.dice_results[500])
+
+
+@pytest.mark.asyncio
+async def test_a_posted_event_is_kept_when_its_message_cannot_be_looked_up(store: EventStore) -> None:
+    from datetime import datetime
+
+    cog = _events_cog(store, FakeChannel())
+    cog.parse_time = lambda text: datetime.fromtimestamp(NOW + float(text))
+    interaction = FakeInteraction(user_id=1)
+
+    async def posted(**kwargs: Any) -> Any:
+        return SimpleNamespace(message_id=4242)
+
+    interaction.response.send_message = posted
+    await EventsCog.create.callback(cog, interaction, "Valorant 五排", "7200", 0, 15)
+    assert store.by_message(4242) is not None
+
+    lost = FakeInteraction(user_id=2)
+
+    async def posted_without_id(**kwargs: Any) -> Any:
+        return None
+
+    async def lookup_fails() -> Any:
+        raise discord.HTTPException(SimpleNamespace(status=500, reason="boom"), "boom")
+
+    lost.response.send_message = posted_without_id
+    lost.original_response = lookup_fails
+    await EventsCog.create.callback(cog, lost, "Apex", "10800", 0, 15)
+    assert [event.title for event in store.upcoming(GUILD_ID, NOW)] == ["Valorant 五排", "Apex"]
+
+
+@pytest.mark.asyncio
+async def test_the_recap_includes_what_story_characters_said_through_their_webhooks(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list = []
+
+    async def write(orchestrator: Any, guild_id: str, language: str, summaries: Any, lines: Any, charge: Any) -> str:
+        captured.extend(lines)
+        return "recap"
+
+    monkeypatch.setitem(StoryManagerCog._recap_text.__globals__, "write_recap", write)
+    king = SimpleNamespace(webhook_url="https://discord.com/api/webhooks/777/token")
+    cog = _story_cog(_instance(active_character_ids=["king"]), characters={"king": king}, orchestrator=object())
+    channel = FakeChannel()
+
+    def message(author: str, author_id: int, content: str = "", embed: Optional[str] = None, webhook_id: Any = None) -> Any:
+        embeds = [SimpleNamespace(description=embed)] if embed else []
+        return SimpleNamespace(
+            author=SimpleNamespace(id=author_id, display_name=author), content=content, embeds=embeds, webhook_id=webhook_id
+        )
+
+    newest_first = [
+        message("player", 5, "國王怎麼了？"),
+        message("國王", 777, embed="國王倒下了。", webhook_id=777),
+        message("other", 888, embed="無關的通知", webhook_id=888),
+    ]
+
+    async def history(limit: int, before: Any = None) -> Any:
+        for item in newest_first:
+            yield item
+
+    channel.history = history
+    await cog._recap_text(channel, cog.story_manager.instance, 5)
+    assert captured == ["國王: 國王倒下了。", "player: 國王怎麼了？"]

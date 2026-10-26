@@ -41,6 +41,17 @@ T = TypeVar('T', bound=BaseModel)
 MAX_PENDING_DICE = 5
 
 
+class PendingRoll:
+    """A /roll result waiting for the next GM turn; each roll is its own object, so two rolls
+    with the same text are never mixed up."""
+
+    __slots__ = ("text", "discarded")
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.discarded = False
+
+
 class StoryManager:
     """
     The core manager for story logic. It coordinates the database, state,
@@ -60,7 +71,7 @@ class StoryManager:
         self.language_manager: LanguageManager = cast(LanguageManager, self.bot.get_cog("LanguageManager"))
         self.interventions: Dict[int, str] = {}
         # /roll results per story channel, used (and cleared) by the next GM turn.
-        self.dice_results: Dict[int, List[str]] = {}
+        self.dice_results: Dict[int, List[PendingRoll]] = {}
 
     def _get_db(self, guild_id: int) -> StoryDB:
         """Gets or creates a database connection for a specific guild."""
@@ -162,11 +173,32 @@ class StoryManager:
         self.interventions[channel_id] = text
         self.logger.info(f"Intervention added for channel {channel_id}.")
 
-    def add_dice_result(self, channel_id: int, text: str) -> None:
+    def add_dice_result(self, channel_id: int, text: str) -> "PendingRoll":
         """Remembers a /roll result for the channel's next GM turn (the latest few only)."""
+        roll = PendingRoll(text)
         results = self.dice_results.setdefault(channel_id, [])
-        results.append(text)
+        results.append(roll)
         del results[:-MAX_PENDING_DICE]
+        return roll
+
+    def discard_dice_result(self, channel_id: int, roll: "PendingRoll") -> None:
+        """Takes back this roll (whose reply never showed), if it is still waiting for a turn."""
+        roll.discarded = True
+        results = self.dice_results.get(channel_id)
+        if results and any(pending is roll for pending in results):
+            results[:] = [pending for pending in results if pending is not roll]
+            if not results:
+                del self.dice_results[channel_id]
+
+    def _take_dice_results(self, channel_id: int) -> List["PendingRoll"]:
+        return self.dice_results.pop(channel_id, None) or []
+
+    def _return_dice_results(self, channel_id: int, rolls: List["PendingRoll"]) -> None:
+        """Puts back the rolls of a turn that failed before using them, ahead of newer ones."""
+        kept = [roll for roll in rolls if not roll.discarded]
+        if kept:
+            results = kept + self.dice_results.get(channel_id, [])
+            self.dice_results[channel_id] = results[-MAX_PENDING_DICE:]
 
     def clear_dice_results(self, channel_id: int) -> None:
         """Forgets the channel's pending rolls, so they never carry over into another story."""
@@ -422,11 +454,15 @@ class StoryManager:
             f"V5 Orchestrator: Processing message in c:{channel_id} w:{world.world_name}"
         )
 
+        pending_rolls: List[PendingRoll] = []
+        rolls_used = True
         async with SafeTyping(message.channel):
             try:
                 # --- Step 1: Call GM Agent for a structured plan ---
                 intervention_text = self.interventions.pop(channel_id, None)
-                dice_results = self.dice_results.pop(channel_id, None)
+                pending_rolls = self._take_dice_results(channel_id)
+                rolls_used = not pending_rolls
+                dice_results = [roll.text for roll in pending_rolls] or None
                 if intervention_text:
                     self.logger.info(
                         f"Applying intervention for channel {channel_id}: {intervention_text}"
@@ -478,12 +514,16 @@ class StoryManager:
                 # Use unified method to extract structured response
                 gm_plan = self._extract_structured_response(response, GMActionPlan, "GM Agent")
                 if not gm_plan:
+                    # No turn came of it: the rolls wait for the next one.
+                    self._return_dice_results(channel_id, pending_rolls)
+                    rolls_used = True
                     await message.reply(
                         self.language_manager.translate(str(guild_id), "story", "errors", "gm_plan_failed"),
                         allowed_mentions=_ALLOWED_MENTIONS
                     )
                     return
 
+                rolls_used = True
                 # --- Step 3: Execute the plan (NARRATE or DIALOGUE) ---
                 event_text_for_log = ""
                 latest_location = story_instance.current_location
@@ -690,6 +730,9 @@ class StoryManager:
                     db.save_story_instance(updated_instance)
 
             except Exception as e:
+                # A turn that failed before the GM planned it never used the rolls.
+                if not rolls_used:
+                    self._return_dice_results(channel_id, pending_rolls)
                 self.logger.error(
                     f"An unexpected error occurred in V5 story generation: {e}",
                     exc_info=True
