@@ -80,6 +80,8 @@ class TasteStore:
             connection = sqlite3.connect(self.path, timeout=10)
             try:
                 if not self._ready:
+                    # WAL: a long chart read on a worker thread never makes the player's writes wait.
+                    connection.execute("PRAGMA journal_mode=WAL")
                     connection.executescript(_SCHEMA)
                     _add_missing_columns(connection)
                     self._ready = True
@@ -87,6 +89,23 @@ class TasteStore:
                     yield connection
             finally:
                 connection.close()
+
+    @contextmanager
+    def _reader(self) -> Iterator[sqlite3.Connection]:
+        """Yields a connection for reading only, without the store's lock.
+
+        Chart reads run on worker threads and may be slow; holding the lock would make the
+        player's writes on the event loop wait for them. The database is in WAL mode, so the
+        read does not block writers in SQLite either.
+        """
+        if not self._ready:
+            with self._session():
+                pass
+        connection = sqlite3.connect(self.path, timeout=10)
+        try:
+            yield connection
+        finally:
+            connection.close()
 
     def load(self, guild_id: int, history_size: int) -> Tuple[List[str], Counter, Counter]:
         """Reads a guild's saved taste.
@@ -201,7 +220,7 @@ class TasteStore:
         Returns:
             ``(video_id, title, plays, skips)`` tuples, most played first.
         """
-        with self._session() as connection:
+        with self._reader() as connection:
             return connection.execute(
                 "SELECT video_id, MAX(title), COUNT(*) AS plays, SUM(skipped) FROM play_events "
                 "WHERE guild_id = ? AND played_at >= ? AND played_at < ? "
@@ -216,7 +235,7 @@ class TasteStore:
             ``(video_id, title, requester_id, skipped, text_channel_id, voice_channel_id)`` tuples;
             the channels are None for songs logged before they were recorded.
         """
-        with self._session() as connection:
+        with self._reader() as connection:
             return connection.execute(
                 "SELECT video_id, title, requester_id, skipped, text_channel_id, voice_channel_id FROM play_events "
                 "WHERE guild_id = ? AND played_at >= ? AND played_at < ? ORDER BY played_at DESC LIMIT ?",

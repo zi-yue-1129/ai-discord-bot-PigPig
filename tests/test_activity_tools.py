@@ -67,6 +67,7 @@ class FakeResponse:
     def __init__(self) -> None:
         self.sent: List[tuple] = []
         self.edited: List[dict] = []
+        self.on_defer: Any = None  # runs while the press is being acknowledged
 
     async def send_message(self, content: Any = None, **kwargs: Any) -> None:
         self.sent.append((content, kwargs))
@@ -76,6 +77,8 @@ class FakeResponse:
 
     async def defer(self) -> None:
         self.deferred = True
+        if self.on_defer is not None:
+            await self.on_defer()
 
 
 def _member(member_id: int, bot: bool = False, voice: Any = None, name: Optional[str] = None) -> Any:
@@ -106,9 +109,10 @@ def _tool(cls: Any, runtime: Any) -> Any:
     return tools[0] if tools else None
 
 
-async def _press(view: GameOfferView, key: str, user: Any) -> FakeResponse:
+async def _press(view: GameOfferView, key: str, user: Any, on_defer: Any = None) -> FakeResponse:
     """Presses the offer's button whose label is ``key`` as ``user``."""
     response = FakeResponse()
+    response.on_defer = on_defer
     async def edit_original_response(**kwargs: Any) -> None:
         response.edited.append(kwargs)
 
@@ -307,18 +311,117 @@ async def test_a_game_cancelled_before_it_ran_frees_the_channel_and_host(games: 
     guild = SimpleNamespace(id=GUILD_ID)
     _hold_chain(games, monkeypatch)
 
-    assert games.start_game("chain", guild, channel, host) is None
+    assert await games.start_game("chain", guild, channel, host) is None
     assert games.limits.running == {channel.id} and games.limits.hosts == {HOST_ID}
     await games.cog_unload()  # before the task's first step
     await asyncio.sleep(0)
     await asyncio.sleep(0)
 
     assert games.limits.running == set() and games.limits.hosts == set() and games._tasks == set()
-    # A new game can start right away.
-    assert games.start_game("chain", guild, channel, host) is None
-    await games.cog_unload()
+    # The unloaded cog starts nothing more; a reloaded one (sharing the limits) can start right away.
+    assert await games.start_game("chain", guild, channel, host) == "unavailable|"
+    fresh = GamesCog(games.bot, store=games.store)
+    fresh.lang_manager = FakeLang()
+    assert fresh.limits is games.limits
+    _hold_chain(fresh, monkeypatch)
+    assert await fresh.start_game("chain", guild, channel, host) is None
+    await fresh.cog_unload()
     await asyncio.sleep(0.01)
     assert games.limits.running == set() and games.limits.hosts == set()
+
+
+@pytest.mark.asyncio
+async def test_round_two_game_regressions(games: GamesCog, monkeypatch: pytest.MonkeyPatch) -> None:
+    channel = FakeChannel()
+    host = _member(HOST_ID)
+    members = {HOST_ID: host}
+    tool = _tool(GameTools, _runtime({"GamesCog": games}, channel, members))
+
+    # The offer lasts two minutes, and days below 1 become 1.
+    assert GAME_OFFER_SECONDS == 120
+    games.bot.orchestrator = object()
+    games.bot.vector_manager = SimpleNamespace(store=SimpleNamespace(sample_memories=None))
+    await tool.coroutine(game="quiz", days=-5)
+    view = channel.sent[-1][1]["view"]
+    assert view.options["days"] == 1 and view.timeout == 120
+    await view.expire()
+
+    # Start plays with the host as they are now, not the snapshot taken when the AI offered.
+    await tool.coroutine(game="chain")
+    view = channel.sent[-1][1]["view"]
+    now_host = _member(HOST_ID, name="renamed")
+    members[HOST_ID] = now_host
+    hosts: list = []
+
+    async def play_chain(guild: Any, channel: Any, host: Any, homophones: bool, announce: Any) -> None:
+        hosts.append(host)
+
+    monkeypatch.setattr(games, "_play_chain", play_chain)
+    await _press(view, "offer_start", host)
+    await asyncio.sleep(0.01)
+    assert hosts == [now_host]
+
+
+def test_thread_games_need_the_thread_send_permission() -> None:
+    thread = SimpleNamespace(type=discord.ChannelType.public_thread)
+    host = _member(HOST_ID)
+
+    def allowed(**flags: bool) -> bool:
+        thread.permissions_for = lambda member: SimpleNamespace(view_channel=True, use_application_commands=True, **flags)
+        return GamesCog.host_may_play(thread, host)
+
+    assert allowed(send_messages=False, send_messages_in_threads=True)
+    assert not allowed(send_messages=True, send_messages_in_threads=False)
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_offer_post_leaves_no_offer(games: GamesCog) -> None:
+    channel = FakeChannel()
+
+    async def cancelled(*args: Any, **kwargs: Any) -> Any:
+        raise asyncio.CancelledError()
+
+    channel.send = cancelled
+    tool = _tool(GameTools, _runtime({"GamesCog": games}, channel, {HOST_ID: _member(HOST_ID)}))
+    with pytest.raises(asyncio.CancelledError):
+        await tool.coroutine(game="chain")
+    assert games._offers == {}
+
+
+@pytest.mark.asyncio
+async def test_a_start_press_waiting_while_the_cog_unloads_starts_nothing(games: GamesCog, monkeypatch: pytest.MonkeyPatch) -> None:
+    channel = FakeChannel()
+    tool = _tool(GameTools, _runtime({"GamesCog": games}, channel, {HOST_ID: _member(HOST_ID)}))
+    _hold_chain(games, monkeypatch)
+    await tool.coroutine(game="chain")
+    view = channel.sent[0][1]["view"]
+
+    pressed = await _press(view, "offer_start", _member(HOST_ID), on_defer=games.cog_unload)
+
+    assert pressed.edited[0]["content"] == "unavailable|"
+    assert games._tasks == set() and games.limits.running == set() and games.limits.hosts == set()
+
+
+@pytest.mark.asyncio
+async def test_the_song_pool_is_read_off_the_event_loop(games: GamesCog, monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    loop_thread = threading.current_thread()
+    music = SimpleNamespace(youtube=object(), queue_manager=SimpleNamespace(is_queue_empty=lambda guild_id: True))
+    games.bot.get_cog = lambda name: music if name == "YTMusic" else None
+    seen: list = []
+
+    def song_pool(music: Any, guild_id: int) -> list:
+        seen.append(threading.current_thread() is not loop_thread)
+        return [("a", "A"), ("b", "B"), ("c", "C")]
+
+    monkeypatch.setattr(games, "song_pool", song_pool)
+    channel = FakeChannel()
+    host = _member(HOST_ID, voice=SimpleNamespace(channel=SimpleNamespace(id=1, mention="#voice")))
+    tool = _tool(GameTools, _runtime({"GamesCog": games}, channel, {HOST_ID: host}))
+
+    assert (await tool.coroutine(game="guess_song")).startswith("Posted a Start button")
+    assert seen == [True]
 
 
 # ------------------------------------------------------------------ who is playing
@@ -584,3 +687,67 @@ async def test_databases_are_read_off_the_event_loop(song_world: SimpleNamespace
     await _tool(PlayingTools, runtime).coroutine()
 
     assert seen == [True] * 4
+
+
+@pytest.mark.asyncio
+async def test_someone_who_hides_while_the_tools_read_is_left_out(song_world: SimpleNamespace, playing: PlayingCog, monkeypatch: pytest.MonkeyPatch) -> None:
+    hidden: set = set()
+    leaderboard = SimpleNamespace(store=SimpleNamespace(read_optouts=lambda guild_id: set(hidden)))
+    members = {HOST_ID: _member(HOST_ID), 12: _member(12)}
+
+    # who_is_playing: user10 hides while the server settings are read.
+    playing.tracker.update(GUILD_ID, HOST_ID, ("Minecraft", None), time.time())
+    playing.store.update_settings(GUILD_ID, playing_enabled=True)
+    feature_on = playing._feature_on
+
+    def hide_while_reading(guild_id: int) -> bool:
+        hidden.add(HOST_ID)
+        return feature_on(guild_id)
+
+    monkeypatch.setattr(playing, "_feature_on", hide_while_reading)
+    runtime = _runtime({"PlayingCog": playing, "LeaderboardCog": leaderboard}, FakeChannel(), members)
+    assert "user10" not in await _tool(PlayingTools, runtime).coroutine()
+
+    # get_popular_songs: the requester hides while the play log is read.
+    hidden.clear()
+    song_world.taste.add_play_event(
+        GUILD_ID, "h", "Hidden pick", requester_id=12, autoplay=False, text_channel_id=PUBLIC_TEXT, voice_channel_id=PUBLIC_VOICE
+    )
+    read = song_world.taste.plays_with_places
+
+    def hide_while_reading_log(*args: Any) -> list:
+        hidden.add(12)
+        return read(*args)
+
+    monkeypatch.setattr(song_world.taste, "plays_with_places", hide_while_reading_log)
+    cogs = {"YTMusic": SimpleNamespace(_taste_store=song_world.taste), "LeaderboardCog": leaderboard}
+    text = await _tool(PopularSongTools, _runtime(cogs, FakeChannel(HERE), members, song_world.guild)).coroutine()
+    assert "Hidden pick" not in text
+
+
+def test_a_slow_chart_read_does_not_hold_up_the_players_writes(tmp_path: Path) -> None:
+    import threading
+
+    taste = TasteStore(tmp_path / "taste.db")
+    taste.add_play_event(GUILD_ID, "a", "A", requester_id=1, autoplay=False)
+    reading, done = threading.Event(), threading.Event()
+
+    def slow_read() -> None:
+        with taste._reader() as connection:
+            connection.execute("BEGIN")
+            connection.execute("SELECT * FROM play_events").fetchall()
+            reading.set()
+            done.wait(2)  # a read transaction still open, as during a slow query
+            connection.rollback()
+
+    reader = threading.Thread(target=slow_read)
+    reader.start()
+    try:
+        assert reading.wait(2)
+        started = time.monotonic()
+        assert taste.add_play_event(GUILD_ID, "b", "B", requester_id=1, autoplay=False) is not None
+        taste.add_played(GUILD_ID, "b", keep=10)
+        assert time.monotonic() - started < 0.5
+    finally:
+        done.set()
+        reader.join()

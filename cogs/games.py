@@ -137,7 +137,7 @@ class GameOfferView(discord.ui.View):
         if host is None or not self.cog.host_may_play(self.channel, host):
             text = self.cog._t(self.guild.id, "offer_denied")
         else:
-            problem = self.cog.start_game(self.game, self.guild, self.channel, host, **self.options)
+            problem = await self.cog.start_game(self.game, self.guild, self.channel, host, **self.options)
             text = problem if problem is not None else self.cog._t(
                 self.guild.id, "offer_started", user=host.mention, game=self.cog._t(self.guild.id, f"game_{self.game}")
             )
@@ -190,11 +190,14 @@ class GamesCog(commands.Cog):
         self.guess_seconds: float = song_guess.GUESS_SECONDS
         # Open offers from the AI's start_server_game tool, by host.
         self._offers: Dict[int, GameOfferView] = {}
+        # Set on unload: a Start press still waiting on Discord must not start a game afterwards.
+        self._unloaded = False
 
     async def cog_load(self) -> None:
         self.lang_manager = LanguageManager.get_instance(self.bot)
 
     async def cog_unload(self) -> None:
+        self._unloaded = True
         # A running game would keep posting (and playing) with nobody left to answer it.
         for task in list(self._tasks):
             task.cancel()
@@ -261,10 +264,13 @@ class GamesCog(commands.Cog):
         self.limits.hosts.discard(host_id)
         self._tasks.discard(_current_task())
 
-    def _start_problem(self, game: str, guild: Any, channel: Any, host: Any) -> Tuple[Optional[str], list]:
-        """Why ``game`` cannot start (the text to tell the host), or None, and the song pool for guess the song."""
+    async def _start_problem(self, game: str, guild: Any, channel: Any, host: Any) -> Tuple[Optional[str], list]:
+        """Why ``game`` cannot start (the text to tell the host), or None, and the song pool for guess the song.
+
+        Nothing is awaited after the last check, so a caller may claim the channel right after.
+        """
         if game == "guess_song":
-            return self._song_problem(guild, channel, host)
+            return await self._song_problem(guild, channel, host)
         problem = self._busy_at(guild.id, channel, host.id)
         if problem is None and game == "quiz" and (self._memory_store() is None or getattr(self.bot, "orchestrator", None) is None):
             problem = self._t(guild.id, "unavailable")
@@ -309,9 +315,11 @@ class GamesCog(commands.Cog):
             options.update(days=max(1, min(int(days), 3650)) if days else None, this_channel=bool(this_channel))
         if not self.host_may_play(channel, host):
             return self._t(guild.id, "offer_denied")
-        problem, _ = self._start_problem(game, guild, channel, host)
+        problem, _ = await self._start_problem(game, guild, channel, host)
         if problem is not None:
             return problem
+        if self._unloaded:
+            return self._t(guild.id, "unavailable")
         previous = self._offers.get(host.id)
         others = [offer for offer in self._offers.values() if offer.guild.id == guild.id and offer is not previous]
         if len(others) >= MAX_GAME_OFFERS:
@@ -330,9 +338,13 @@ class GamesCog(commands.Cog):
         except discord.HTTPException:
             offer.close()
             return self._t(guild.id, "failed")
+        except BaseException:
+            # Cancelled (or anything else): an offer with no message would hold a place until unload.
+            offer.close()
+            raise
         return None
 
-    def start_game(
+    async def start_game(
         self, game: str, guild: Any, channel: Any, host: Any, rounds: int = 5, *, homophones: bool = False,
         days: Optional[int] = None, this_channel: bool = False,
     ) -> Optional[str]:
@@ -347,7 +359,9 @@ class GamesCog(commands.Cog):
         if game not in GAMES:
             raise ValueError(f"unknown game {game!r}")
         rounds = max(3, min(int(rounds), 10))
-        problem, pool = self._start_problem(game, guild, channel, host)
+        problem, pool = await self._start_problem(game, guild, channel, host)
+        if problem is None and self._unloaded:
+            problem = self._t(guild.id, "unavailable")
         if problem is not None:
             return problem
 
@@ -901,7 +915,7 @@ class GamesCog(commands.Cog):
     @app_commands.describe(rounds="How many songs (3-10)")
     async def guess_song(self, interaction: discord.Interaction, rounds: app_commands.Range[int, 3, 10] = 5) -> None:
         guild, channel = interaction.guild, interaction.channel
-        text, pool = self._song_problem(guild, channel, interaction.user)
+        text, pool = await self._song_problem(guild, channel, interaction.user)
         if text:
             await interaction.response.send_message(text, ephemeral=True)
             return
@@ -909,8 +923,21 @@ class GamesCog(commands.Cog):
         self.limits.song_guilds.add(guild.id)
         await self._play_song_game(guild, channel, interaction.user, pool, rounds, interaction.response.send_message)
 
-    def _song_problem(self, guild: Any, channel: Any, host: Any) -> Tuple[Optional[str], list]:
-        """Why guess the song cannot start (the text to tell the host), or None, and the song pool."""
+    async def _song_problem(self, guild: Any, channel: Any, host: Any) -> Tuple[Optional[str], list]:
+        """Why guess the song cannot start (the text to tell the host), or None, and the song pool.
+
+        The pool is read on a worker thread, then everything is checked again: another game or
+        music may have started meanwhile.
+        """
+        problem = self._song_check(guild, channel, host, None)
+        if problem is not None:
+            return problem, []
+        pool = await asyncio.to_thread(self.song_pool, self.bot.get_cog("YTMusic"), guild.id)
+        problem = self._song_check(guild, channel, host, pool)
+        return problem, pool if problem is None else []
+
+    def _song_check(self, guild: Any, channel: Any, host: Any, pool: Optional[list]) -> Optional[str]:
+        """The text telling the host why guess the song cannot start, or None (``pool``: None when not read yet)."""
         voice = getattr(host, "voice", None)
         music = self.bot.get_cog("YTMusic")
         problem = None
@@ -922,12 +949,11 @@ class GamesCog(commands.Cog):
             problem = "song_other_game"
         elif self._music_busy(guild.voice_client, music, guild.id):
             problem = "song_music_playing"
-        pool = self.song_pool(music, guild.id) if problem is None else []
-        if problem is None and len(pool) < MIN_SONGS:
+        elif pool is not None and len(pool) < MIN_SONGS:
             problem = "song_not_enough"
         if problem:
-            return self._t(guild.id, problem, count=MIN_SONGS), []
-        return self._busy_at(guild.id, channel, host.id), pool
+            return self._t(guild.id, problem, count=MIN_SONGS)
+        return self._busy_at(guild.id, channel, host.id)
 
     async def _play_song_game(
         self, guild: Any, channel: Any, host: Any, pool: list, rounds: int, announce: Callable[[str], Awaitable[Any]]

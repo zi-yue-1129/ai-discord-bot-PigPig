@@ -156,6 +156,10 @@ class PlayingTools:
             except Exception:
                 _logger.error("who_is_playing: could not read the server's settings", exc_info=True)
                 return UNAVAILABLE
+            # Read again as the last await: someone may have hidden themselves meanwhile.
+            hidden = await asyncio.to_thread(hidden_member_ids, runtime, guild.id)
+            if hidden is None:
+                return UNAVAILABLE
             found: List[tuple] = []
             for group in playing.tracker.groups(guild.id, time.time(), 0):
                 # Only members who can see this channel, are not bots and did not hide themselves;
@@ -214,14 +218,15 @@ class PopularSongTools:
             except (TypeError, ValueError):
                 limit = 5
             # On worker threads: a locked database must not stall the event loop.
-            hidden = await asyncio.to_thread(hidden_member_ids, runtime, guild.id)
-            if hidden is None:
-                return UNAVAILABLE
             now = time.time()
             try:
                 rows = await asyncio.to_thread(taste.plays_with_places, guild.id, now - days * 86400, now + 1)
             except Exception:
                 _logger.error("get_popular_songs: could not read the play log", exc_info=True)
+                return UNAVAILABLE
+            # Read after the play log (the last await), so someone who just hid is left out.
+            hidden = await asyncio.to_thread(hidden_member_ids, runtime, guild.id)
+            if hidden is None:
                 return UNAVAILABLE
             lookup = getattr(guild, "get_channel_or_thread", None) or guild.get_channel
             places: Dict[int, bool] = {}
