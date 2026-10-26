@@ -6,16 +6,21 @@ import math
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
+from addons.logging import get_logger
+
+logger = get_logger(server_id="Bot", source=__name__)
+
 
 def _number(
     raw: Mapping[str, Any], key: str, default: float, minimum: float = 0, maximum: float = math.inf
 ) -> float:
-    """Reads a number, falling back to ``default`` when it is missing or invalid (also infinite or
-    NaN); values above ``maximum`` are capped to it."""
-    try:
-        value = float(raw.get(key, default))
-    except (TypeError, ValueError):
+    """Reads a number, falling back to ``default`` when it is missing or invalid (not a number,
+    true/false, a quoted string, infinite or NaN); values above ``maximum`` are capped to it."""
+    raw_value = raw.get(key, default)
+    if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+        logger.warning(f"community limit {key!r} is not a number ({raw_value!r}), using {default}")
         return default
+    value = float(raw_value)
     if not math.isfinite(value) or value < minimum:
         return default
     return min(value, maximum)

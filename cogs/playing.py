@@ -81,7 +81,8 @@ def safe_post_text(text: str, mentions: List[str], game: str) -> bool:
     the shown game name, which is safe where it appears as given."""
     if any(mention not in text for mention in mentions):
         return False
-    text = _plain(text.replace(game, " "))
+    # The name is replaced, not removed, so that it cannot hide a domain it forms with the text around it.
+    text = _plain(text.replace(game, "GAME"))
     named = {int(user_id) for user_id in _USER_MENTION.findall(" ".join(mentions))}
     for match in _MENTION.finditer(text):
         user = _USER_MENTION.fullmatch(match.group())
@@ -267,6 +268,18 @@ class PlayingCog(commands.Cog):
                 return await self._post(guild, channel, group, players, minimum)
         return None
 
+    def _still_allowed(self, guild_id: int, key: str) -> Optional[int]:
+        """The minimum number of players for a post about ``key`` as the settings are now, or None
+        when no post may go out (turned off, daily cap reached, game in its cooldown)."""
+        now = self._now()
+        settings = self.store.get_settings(guild_id)
+        if not settings.playing_enabled or self.store.count_playing_posts(guild_id, now - 86400) >= self.limits.playing_max_per_day:
+            return None
+        last = self.store.last_playing_post(guild_id, key)
+        if last is not None and now - last < self.limits.playing_cooldown_hours * 3600:
+            return None
+        return max(2, settings.playing_min_players)
+
     def _can_open_rooms(self, channel: Any) -> bool:
         if self.limits.playing_max_rooms <= 0:
             return False
@@ -307,7 +320,8 @@ class PlayingCog(commands.Cog):
                 await func.report_error(error, "playing: composing a post")
         # Checked again after writing it: from here to the send nothing is awaited.
         eligible = self._still_eligible(guild, channel, group, players)
-        if len(eligible) < minimum or not self._feature_on(guild.id):
+        minimum = self._still_allowed(guild.id, group.key)
+        if minimum is None or len(eligible) < minimum:
             return None
         if [member.id for member in eligible[:cap]] != [member.id for member in named]:
             # The written text may name someone who can no longer be named.
@@ -429,6 +443,19 @@ class PlayingCog(commands.Cog):
             self.store.add_temp_voice(guild_id, channel_id, 0)  # best effort: survives a restart when it works
         except Exception:
             self.logger.warning(f"playing: could not record voice room {channel_id} for a retry", exc_info=True)
+        self._save_post_rooms()
+
+    def _save_post_rooms(self) -> None:
+        """Stores the rooms posts opened that are only known in memory, so a reload still knows
+        those posts are used up."""
+        for message_id, room_id in self._post_rooms.items():
+            try:
+                post = self.store.playing_post(message_id)
+                if post is not None and not post["voice_channel_id"]:
+                    self.store.set_playing_voice(message_id, room_id)
+            except Exception:
+                self.logger.warning(f"playing: could not record the room of post {message_id}, will retry", exc_info=True)
+                return
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState) -> None:
@@ -441,6 +468,7 @@ class PlayingCog(commands.Cog):
     async def cleanup_rooms(self) -> None:
         """Deletes the bot's rooms that are gone, empty after someone left, or never joined in time."""
         now = self._now()
+        self._save_post_rooms()
         for channel_id, guild_id in list(self._orphans.items()):
             guild = self.bot.get_guild(guild_id)
             room = guild.get_channel(channel_id) if guild is not None else None

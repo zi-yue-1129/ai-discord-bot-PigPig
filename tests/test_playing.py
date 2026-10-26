@@ -671,6 +671,7 @@ async def test_a_threshold_above_the_mention_cap_still_posts_naming_the_first_pl
         "一起玩！ <@1> <@2> <@3> https\u200b://evil.example",
         "一起玩！ <@1> <@2> <@3> ＠everyone",
         "一起玩！ <@1> <@2> <@3> @\u200beveryone",
+        "<@1> <@2> <@3> visit Valorant.com",  # the game's name forms a domain with the text
     ],
 )
 async def test_an_unusable_written_post_falls_back_to_the_fixed_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reply: str) -> None:
@@ -925,3 +926,75 @@ async def test_denied_pressers_are_not_shown_an_existing_room(tmp_path: Path) ->
         await cog.open_room(press)
 
     assert [press.followups for press in (timed_out, bot)] == [["playing_room_denied|"]] * 2
+
+
+@pytest.mark.asyncio
+async def test_a_reloaded_cog_knows_the_post_of_an_orphaned_room_is_used(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False)
+    message_id = await _posted(cog, guild, store)
+    real_set = store.set_playing_voice
+    calls: list = []
+
+    def fails_once(*args: Any) -> None:
+        calls.append(args)
+        if len(calls) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        real_set(*args)
+
+    async def refuse(reason: str = "") -> None:
+        raise discord.Forbidden(SimpleNamespace(status=403, reason="no"), "no")
+
+    real_create = guild.create_voice_channel
+
+    async def create(name: str, **kwargs: Any) -> FakeVoice:
+        room = await real_create(name, **kwargs)
+        room.delete = refuse
+        return room
+
+    guild.create_voice_channel = create
+    monkeypatch.setattr(store, "set_playing_voice", fails_once)
+    await cog.open_room(FakePress(guild, message_id))
+
+    reloaded = PlayingCog(cog.bot, store=store, limits=cog.limits)
+    reloaded.lang_manager = FakeLang()
+    reloaded._now = lambda: NOW
+    again = FakePress(guild, message_id)
+    await reloaded.open_room(again)
+
+    assert len(guild.created) == 1 and again.followups[0].startswith("playing_room_exists|")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["min_players", "daily_cap"])
+async def test_settings_changed_while_the_post_is_written_are_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    import cogs.playing as playing_module
+
+    holder: list = []
+
+    async def compose(*args: Any) -> str:
+        cog, store = holder[0]
+        if change == "min_players":
+            store.update_settings(GUILD_ID, playing_min_players=4)
+        else:
+            cog.limits = CommunityLimits(playing_max_per_day=1)
+        return "一起玩！ <@1> <@2> <@3>"
+
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_per_day=2)
+    if change == "daily_cap":
+        await _posted_game(cog, guild, store, "Apex")  # one post today already
+    monkeypatch.setattr(playing_module, "compose_announcement", compose)
+    cog.limits = CommunityLimits(playing_max_per_day=2)
+    holder.append((cog, store))
+    cog.bot.orchestrator = object()
+    sent = len(guild.channel.sent)
+    _playing(cog, guild, "Valorant", 7, 8, 9)
+
+    assert await _check(cog, store) is None and len(guild.channel.sent) == sent
+    assert store.last_playing_post(GUILD_ID, "valorant") is None
+
+
+def test_boolean_and_quoted_cooldowns_are_not_numbers() -> None:
+    for value in (False, True, "0", "5"):
+        assert CommunityLimits.from_config({"playing": {"cooldown_hours": value}}).playing_cooldown_hours == 3, value
