@@ -33,8 +33,8 @@ class FakeStorage:
 
 
 class FakeOptouts:
-    def is_opted_out(self, guild_id: int, user_id: int) -> bool:
-        return guild_id == GUILD_ID and user_id == HIDDEN_ID
+    def read_optouts(self, guild_id: int) -> set:
+        return {HIDDEN_ID} if guild_id == GUILD_ID else set()
 
 
 def _channel(channel_id: int, public: bool) -> Any:
@@ -99,7 +99,7 @@ def test_the_opt_out_list_fails_closed() -> None:
     from llm.tools.user_stats import _is_hidden
 
     class Broken:
-        def is_opted_out(self, guild_id: int, user_id: int) -> bool:
+        def read_optouts(self, guild_id: int) -> set:
             raise RuntimeError("database is locked")
 
     runtime = SimpleNamespace(bot=SimpleNamespace(get_cog=lambda name: SimpleNamespace(store=Broken())))

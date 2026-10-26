@@ -45,7 +45,8 @@ def __init__(self, runtime: "OrchestratorRequest"):
 
 - **Activity Tracking**: Uses a sophisticated duration helper to show how long a user has been playing a game or listening to Spotify.
 - **Mentions Parsing**: Correctly handles `<@123>` and `<@!123>` mention formats for user lookups.
-- **Privacy Awareness**: Only shows online member counts and public profile data available to the bot's permission level, and never the status or activity of a member hidden with `/leaderboard optout`. The opt-out list comes from the leaderboard cog, or from `data/community.db` when the cog is not loaded; a missing or unreadable file counts as "cannot be read" (fail closed).
+- **Privacy Awareness**: Only shows online member counts and public profile data available to the bot's permission level, and never the status or activity of a member hidden with `/leaderboard optout`. The opt-out list is read read-only from `data/community.db` (through the leaderboard cog's store, or directly when the cog is not loaded) and never creates or migrates the file: a missing, empty, locked or corrupt file, or one without the `optouts` table, counts as "cannot be read" (fail closed), so lost data never reads as "nobody is hidden".
+- **Not covered yet**: voice channel member lists (shown for any voice channel, including private ones, and including hidden members), birthday wishes and the birthday role, and memory, summaries and weekly recap totals do not look at `/leaderboard optout`.
 - **Target Mode**: Routed to the **Info Agent** (`target_agent_mode = "info"`).
 
 ## Usage Examples

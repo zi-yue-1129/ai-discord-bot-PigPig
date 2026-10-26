@@ -228,53 +228,42 @@ def _is_hidden(runtime: Any, guild_id: int, user_id: str, db_path: Optional[str]
             (defaults to ``COMMUNITY_DB_PATH``).
     """
     try:
-        store = _optout_store(runtime, db_path)
-        return bool(store.is_opted_out(int(guild_id), int(user_id)))
-    except Exception:
-        # Any failure (database locked or missing, bad id) means we cannot tell whether the member
-        # opted out; refusing the lookup is the safe answer, so the tool carries on with that.
-        _logger.error("get_user_stats: could not read the opt-out list; treating the member as hidden", exc_info=True)
+        user = int(user_id)
+    except (TypeError, ValueError):
         return True
-
-
-def _optout_store(runtime: Any, db_path: Optional[str]) -> Any:
-    """The store holding ``/leaderboard optout``: the leaderboard cog's, or the database file itself.
-
-    Raises:
-        FileNotFoundError: The cog is not loaded and the file does not exist. Opening it would create an
-            empty list that says nobody is hidden, so callers treat this like any failure to read it.
-    """
-    bot = getattr(runtime, "bot", None)
-    cog = bot.get_cog("LeaderboardCog") if bot is not None else None
-    store = getattr(cog, "store", None)
-    if store is not None:
-        return store
-    import os
-
-    from cogs.community_lib.store import CommunityStore
-
-    if db_path is None:
-        from cogs.community import COMMUNITY_DB_PATH as db_path
-    if not os.path.isfile(db_path):
-        raise FileNotFoundError(db_path)
-    return CommunityStore(db_path)
+    hidden = hidden_member_ids(runtime, guild_id, db_path)
+    return hidden is None or user in hidden
 
 
 def hidden_member_ids(runtime: Any, guild_id: int, db_path: Optional[str] = None) -> Optional[Set[int]]:
     """The members of ``guild_id`` who hid themselves with ``/leaderboard optout``.
 
     Returns None when the opt-out list cannot be read; callers must then treat everyone as hidden.
+    The list is read without creating or migrating anything, so a lost or empty database file never
+    reads as "nobody is hidden".
 
     Args:
         db_path: The community database to read when the leaderboard cog is not loaded
             (defaults to ``COMMUNITY_DB_PATH``).
     """
+    bot = getattr(runtime, "bot", None)
+    cog = bot.get_cog("LeaderboardCog") if bot is not None else None
+    store = getattr(cog, "store", None)
     try:
-        store = _optout_store(runtime, db_path)
-        return {int(user_id) for user_id in store.optouts(int(guild_id))}
+        if store is None:
+            # The leaderboard cog is not loaded: read its opt-out list directly.
+            from cogs.community_lib.store import CommunityStore
+
+            if db_path is None:
+                from cogs.community import COMMUNITY_DB_PATH as db_path
+            store = CommunityStore(db_path)
+        hidden = store.read_optouts(int(guild_id))
+        if not isinstance(hidden, (set, frozenset)):
+            raise TypeError(f"opt-out list is {type(hidden).__name__}, not a set")
+        return {int(user_id) for user_id in hidden}
     except Exception:
-        # Any failure (database locked or missing, bad id) means we cannot tell who opted out;
-        # hiding everyone is the safe answer, so the tools carry on with that.
+        # Any failure (database locked, missing or not initialised, bad id) means we cannot tell who
+        # opted out; hiding everyone is the safe answer, so the tools carry on with that.
         _logger.error("could not read the opt-out list; treating every member as hidden", exc_info=True)
         return None
 

@@ -26,11 +26,7 @@ class FakeOptouts:
         if self.broken:
             raise RuntimeError("database is locked")
 
-    def is_opted_out(self, guild_id: int, user_id: int) -> bool:
-        self._check()
-        return guild_id == GUILD_ID and user_id in self.hidden
-
-    def optouts(self, guild_id: int) -> Set[int]:
+    def read_optouts(self, guild_id: int) -> Set[int]:
         self._check()
         return set(self.hidden) if guild_id == GUILD_ID else set()
 
@@ -185,3 +181,88 @@ def test_the_stored_opt_outs_are_read_without_the_leaderboard_cog(tmp_path: Any)
     CommunityStore(path).set_optout(GUILD_ID, HIDDEN_ID, True)
 
     assert hidden_member_ids(_without_cog(), GUILD_ID, db_path=path) == {HIDDEN_ID}
+
+
+def _with_store(store: Any) -> Any:
+    return SimpleNamespace(bot=SimpleNamespace(get_cog=lambda name: SimpleNamespace(store=store)))
+
+
+def test_a_lost_database_behind_a_loaded_cog_counts_as_unreadable(tmp_path: Any) -> None:
+    from cogs.community_lib.store import CommunityStore
+    from llm.tools.user_stats import _is_hidden, hidden_member_ids
+
+    path = tmp_path / "community.db"
+    store = CommunityStore(path)  # the cog is loaded, the file was never created (or was lost)
+
+    assert hidden_member_ids(_with_store(store), GUILD_ID) is None
+    assert _is_hidden(_with_store(store), GUILD_ID, str(AUTHOR_ID)) is True
+    assert not path.exists()
+
+
+def test_a_database_deleted_after_use_counts_as_unreadable(tmp_path: Any) -> None:
+    from cogs.community_lib.store import CommunityStore
+    from llm.tools.user_stats import hidden_member_ids
+
+    path = tmp_path / "community.db"
+    store = CommunityStore(path)
+    store.set_optout(GUILD_ID, HIDDEN_ID, True)
+    assert hidden_member_ids(_with_store(store), GUILD_ID) == {HIDDEN_ID}
+    path.unlink()
+
+    assert hidden_member_ids(_with_store(store), GUILD_ID) is None
+    assert hidden_member_ids(_without_cog(), GUILD_ID, db_path=str(path)) is None
+    assert not path.exists()
+
+
+def test_an_empty_database_file_counts_as_unreadable(tmp_path: Any) -> None:
+    from llm.tools.user_stats import hidden_member_ids
+
+    path = tmp_path / "community.db"
+    path.write_bytes(b"")
+
+    assert hidden_member_ids(_without_cog(), GUILD_ID, db_path=str(path)) is None
+    assert path.stat().st_size == 0  # not initialised into an empty opt-out list
+
+
+def test_a_locked_database_counts_as_unreadable(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    import sqlite3
+
+    from cogs.community_lib import store as store_module
+    from cogs.community_lib.store import CommunityStore
+    from llm.tools.user_stats import hidden_member_ids
+
+    path = tmp_path / "community.db"
+    store = CommunityStore(path)
+    store.set_optout(GUILD_ID, HIDDEN_ID, True)
+    monkeypatch.setattr(store_module, "OPTOUT_READ_TIMEOUT", 0.1)
+    holder = sqlite3.connect(path)
+    try:
+        holder.execute("BEGIN EXCLUSIVE")
+        assert hidden_member_ids(_with_store(store), GUILD_ID) is None
+    finally:
+        holder.rollback()
+        holder.close()
+
+
+def test_a_healthy_empty_opt_out_list_shows_everyone(tmp_path: Any) -> None:
+    from cogs.community_lib.store import CommunityStore
+    from llm.tools.user_stats import hidden_member_ids
+
+    store = CommunityStore(tmp_path / "community.db")
+    store.set_optout(GUILD_ID, HIDDEN_ID, False)  # creates the tables, hides nobody
+    runtime = _runtime(store)
+
+    assert hidden_member_ids(runtime, GUILD_ID) == set()
+    assert "Secret Game" in _info(runtime)(user_id=str(HIDDEN_ID))
+    assert "user11" in _participants(runtime)()
+
+
+def test_an_opt_out_list_of_none_hides_everyone() -> None:
+    class ReturnsNone:
+        def read_optouts(self, guild_id: int) -> None:
+            return None
+
+    runtime = _runtime(ReturnsNone())  # type: ignore[arg-type]
+
+    assert "Secret Game" not in _info(runtime)(user_id=str(AUTHOR_ID))
+    assert "user10" not in _participants(runtime)()

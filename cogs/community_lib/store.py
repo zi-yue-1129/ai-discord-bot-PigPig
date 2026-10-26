@@ -9,6 +9,9 @@ from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Set, Tuple, Union
 
+# How long a read-only opt-out check waits for a locked database before it counts as unreadable.
+OPTOUT_READ_TIMEOUT = 5.0
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS guild_settings (
     guild_id INTEGER PRIMARY KEY,
@@ -501,6 +504,20 @@ class CommunityStore:
 
     def is_opted_out(self, guild_id: int, user_id: int) -> bool:
         return user_id in self.optouts(guild_id)
+
+    def read_optouts(self, guild_id: int) -> Set[int]:
+        """Like ``optouts`` but read-only, for privacy checks that must fail closed.
+
+        Never creates or migrates the file: a missing file, a missing ``optouts`` table or a file that is not
+        a database raises ``sqlite3.Error`` instead of reading as "nobody opted out".
+        """
+        uri = f"{self.path.resolve().as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=OPTOUT_READ_TIMEOUT)
+        try:
+            rows = connection.execute("SELECT user_id FROM optouts WHERE guild_id = ?", (guild_id,)).fetchall()
+        finally:
+            connection.close()
+        return {user_id for (user_id,) in rows}
 
     # ------------------------------------------------------------ achievements
     def unlock(self, guild_id: int, user_id: int, achievement_ids: List[str], now: float) -> List[str]:
