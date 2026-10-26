@@ -206,8 +206,22 @@ class CommunityStore:
         self._ready = False
 
     @contextmanager
-    def _session(self) -> Iterator[sqlite3.Connection]:
-        """Yields a connection (folder and tables created the first time) that commits and closes."""
+    def _session(self, create: bool = True) -> Iterator[sqlite3.Connection]:
+        """Yields a connection (folder and tables created the first time) that commits and closes.
+
+        With ``create=False`` the file is opened read-write but never created or migrated: a missing
+        file or table raises ``sqlite3.Error`` (for writes that must not bring back a lost database).
+        """
+        if not create:
+            with self._lock:
+                uri = f"{self.path.resolve().as_uri()}?mode=rw"
+                connection = sqlite3.connect(uri, uri=True, timeout=10)
+                try:
+                    with connection:
+                        yield connection
+                finally:
+                    connection.close()
+            return
         with self._lock:
             if not self._ready:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -223,9 +237,9 @@ class CommunityStore:
                 connection.close()
 
     # ------------------------------------------------------------ settings
-    def get_settings(self, guild_id: int) -> GuildSettings:
-        """Returns a guild's settings (defaults when it has none)."""
-        with self._session() as connection:
+    def get_settings(self, guild_id: int, create: bool = True) -> GuildSettings:
+        """Returns a guild's settings (defaults when it has none); see ``_session`` for ``create``."""
+        with self._session(create) as connection:
             row = connection.execute(
                 f"SELECT {', '.join(_COLUMNS)} FROM guild_settings WHERE guild_id = ?", (guild_id,)
             ).fetchone()
@@ -517,17 +531,17 @@ class CommunityStore:
             connection.execute("DELETE FROM temp_voice_rooms WHERE channel_id = ?", (channel_id,))
 
     # ------------------------------------------------------------ birthdays
-    def set_birthday(self, guild_id: int, user_id: int, month: int, day: int) -> None:
-        """Saves (or replaces) a member's birthday in one guild."""
-        with self._session() as connection:
+    def set_birthday(self, guild_id: int, user_id: int, month: int, day: int, create: bool = True) -> None:
+        """Saves (or replaces) a member's birthday in one guild; see ``_session`` for ``create``."""
+        with self._session(create) as connection:
             connection.execute(
                 "INSERT OR REPLACE INTO birthdays (guild_id, user_id, month, day) VALUES (?, ?, ?, ?)",
                 (guild_id, user_id, month, day),
             )
 
-    def remove_birthday(self, guild_id: int, user_id: int) -> bool:
+    def remove_birthday(self, guild_id: int, user_id: int, create: bool = True) -> bool:
         """Deletes a member's birthday in one guild; returns whether one was saved."""
-        with self._session() as connection:
+        with self._session(create) as connection:
             cursor = connection.execute("DELETE FROM birthdays WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
             return cursor.rowcount > 0
 
@@ -560,9 +574,9 @@ class CommunityStore:
             ).fetchall()
 
     # ------------------------------------------------------------ job runs
-    def block_birthday_proposals(self, guild_id: int, user_id: int, blocked: bool) -> None:
+    def block_birthday_proposals(self, guild_id: int, user_id: int, blocked: bool, create: bool = True) -> None:
         """Turns away (or allows again) birthdays other people propose for a member through the AI."""
-        with self._session() as connection:
+        with self._session(create) as connection:
             if blocked:
                 connection.execute(
                     "INSERT OR IGNORE INTO birthday_declines (guild_id, user_id) VALUES (?, ?)", (guild_id, user_id)

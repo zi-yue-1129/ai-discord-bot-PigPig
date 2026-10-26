@@ -117,17 +117,25 @@ class BirthdayProposalView(discord.ui.View):
             return
         # Acknowledged before the database is touched: a locked database must not outlast Discord's 3 seconds.
         await interaction.response.defer()
-        store = self.cog.store
-        if not await asyncio.to_thread(self.cog.database_ready, self.guild_id):
+
+        def work() -> Optional[bool]:
+            # On a worker thread, and never creating the file: a database lost meanwhile stays lost.
+            store = self.cog.store
+            if not self.cog.database_ready(self.guild_id):
+                return None
+            store.set_birthday(self.guild_id, self.target_id, self.month, self.day, create=False)
+            # Saying yes is the member asking for it themselves, so proposals are welcome again.
+            store.block_birthday_proposals(self.guild_id, self.target_id, False, create=False)
+            return store.get_settings(self.guild_id, create=False).birthday_enabled
+
+        enabled = await self.cog._off_loop(work)
+        if enabled is None:
             await interaction.edit_original_response(content=self.cog._t(self.guild_id, "birthday_unavailable"), view=None)
             return
-        store.set_birthday(self.guild_id, self.target_id, self.month, self.day)
-        # Saying yes is the member asking for it themselves, so proposals are welcome again.
-        store.block_birthday_proposals(self.guild_id, self.target_id, False)
         text = self.cog._t(
             self.guild_id, "birthday_proposal_saved", target=f"<@{self.target_id}>", month=self.month, day=self.day
         )
-        if not store.get_settings(self.guild_id).birthday_enabled:
+        if not enabled:
             text += "\n" + self.cog._t(self.guild_id, "birthday_feature_off")
         await interaction.edit_original_response(content=text, view=None)
 
@@ -137,14 +145,21 @@ class BirthdayProposalView(discord.ui.View):
             await interaction.response.send_message(self.cog._t(self.guild_id, "birthday_proposal_done"), ephemeral=True)
             return
         await interaction.response.defer()
-        if not await asyncio.to_thread(self.cog.database_ready, self.guild_id):
+
+        def work() -> Optional[bool]:
+            if not self.cog.database_ready(self.guild_id):
+                return None
+            if self.asker_id != self.target_id:
+                self.cog.store.block_birthday_proposals(self.guild_id, self.target_id, True, create=False)
+            return True
+
+        if await self.cog._off_loop(work) is None:
             await interaction.edit_original_response(content=self.cog._t(self.guild_id, "birthday_unavailable"), view=None)
             return
         if self.asker_id == self.target_id:
             # Turning down one's own request changes nothing for other people's proposals.
             text = self.cog._t(self.guild_id, "birthday_proposal_declined_self")
         else:
-            self.cog.store.block_birthday_proposals(self.guild_id, self.target_id, True)
             text = self.cog._t(self.guild_id, "birthday_proposal_declined", target=f"<@{self.target_id}>")
         await interaction.edit_original_response(content=text, view=None)
 
@@ -933,14 +948,27 @@ class CommunityCog(commands.Cog):
         view = BirthdayProposalView(self, guild_id, asker.id, target.id, month, day)
         # Reserved before the await, so two quick requests cannot both ping the member.
         self._birthday_proposals[key] = view
-        if asker.id == target.id:
-            text = self._t(guild_id, "birthday_proposal_self", target=target.mention, month=month, day=day)
-        else:
+
+        def proposal_text(hidden: Set[int]) -> str:
+            if asker.id == target.id:
+                return self._t(guild_id, "birthday_proposal_self", target=target.mention, month=month, day=day)
             shown_asker = self._t(guild_id, "someone") if asker.id in hidden else asker.mention
-            text = self._t(guild_id, "birthday_proposal", target=target.mention, asker=shown_asker, month=month, day=day)
+            return self._t(guild_id, "birthday_proposal", target=target.mention, asker=shown_asker, month=month, day=day)
+
+        text = proposal_text(hidden)
         try:
             if previous is not None:
                 await previous.close("birthday_proposal_replaced")
+                # That edit took a while: who is hidden is read again before anyone is named.
+                try:
+                    hidden = self.store.read_optouts(guild_id)
+                except sqlite3.Error:
+                    view._finish()
+                    return "unavailable"
+                if asker.id != target.id and target.id in hidden:
+                    view._finish()
+                    return "blocked"
+                text = proposal_text(hidden)
             # Only the member being asked is pinged.
             view.message = await channel.send(text, view=view, allowed_mentions=discord.AllowedMentions(users=[target]))
         except BaseException:
@@ -966,6 +994,14 @@ class CommunityCog(commands.Cog):
             return False
         self._proposal_times[key] = recent + [now]
         return True
+
+    async def _off_loop(self, work: Callable[[], Any]) -> Any:
+        """Runs a database step on a worker thread; None when the database is missing or fails."""
+        try:
+            return await asyncio.to_thread(work)
+        except sqlite3.Error:
+            self.logger.warning("community: a birthday button could not reach the database", exc_info=True)
+            return None
 
     def database_ready(self, guild_id: int) -> bool:
         """Whether the community database exists and its opt-out list can be read, checked read-only.
@@ -997,9 +1033,14 @@ class CommunityCog(commands.Cog):
             return "unavailable"
 
         async def on_confirm() -> str:
-            if not await asyncio.to_thread(self.database_ready, guild_id):
+            def work() -> Optional[bool]:
+                if not self.database_ready(guild_id):
+                    return None
+                return self.store.remove_birthday(guild_id, member.id, create=False)
+
+            removed = await self._off_loop(work)
+            if removed is None:
                 return self._t(guild_id, "birthday_unavailable")
-            removed = self.store.remove_birthday(guild_id, member.id)
             return f"<@{member.id}> " + self._t(guild_id, "birthday_removed" if removed else "birthday_none")
 
         view = ConfirmView(

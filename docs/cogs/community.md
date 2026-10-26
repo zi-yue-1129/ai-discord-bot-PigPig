@@ -40,7 +40,8 @@ When someone asks the AI to remember a birthday (their own or another member's),
 - A proposal that nobody answers expires after an hour (`PROPOSAL_SECONDS`) and is not a decline.
 - Each member may have the AI propose birthdays for other people at most `birthday.proposals_per_hour` times an hour (owner setting, default 3; each one pings someone, and replacing an open question still counts). Asking for oneself does not count.
 - One question per member at a time, one open question per asker (a new one replaces it) and at most 5 per server (`MAX_BIRTHDAY_PROPOSALS_PER_GUILD`). Bots, members who cannot read the channel (for a private thread: who are not in it) and, on someone else's behalf, members hidden with `/leaderboard optout` are not asked. A hidden asker is not named in the question, and the model's replies never name the member.
-- The community database is only read when proposing, and checked again (read-only) before Save; when it is missing or unreadable nothing is asked or saved, so it is never created as an empty file.
+- The community database is only read when proposing. The Save, Decline and removal Confirm buttons answer Discord first, then check it and write on a worker thread with a connection that cannot create the file (`create=False`), so a missing database is never created as an empty file. Who is hidden is read again after a replaced proposal is closed, right before the new one is posted.
+- The buttons are not persistent: after a restart an open question's buttons no longer answer, and nothing was saved.
 
 ## Welcomes
 

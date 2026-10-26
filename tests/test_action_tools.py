@@ -1213,6 +1213,53 @@ async def test_a_late_question_whose_close_fails_is_retried_then_deleted() -> No
     await close_late(SimpleNamespace(edit=failing_edit, delete=delete), "replaced")
     assert calls == ["edit", "edit", "delete"]
 
+# ------------------------------------------------------------------ review round 7
+@pytest.mark.asyncio
+async def test_who_is_hidden_is_read_again_after_the_replaced_proposal_is_closed(birthdays: SimpleNamespace) -> None:
+    world = birthdays
+    await world.propose(month=1, day=1, user_id="2")
+    first = world.here.messages[-1]
+
+    async def hide_while_editing(**kwargs: Any) -> None:
+        world.cog.store.set_optout(GUILD_ID, 3, True)
+
+    first.edit = hide_while_editing
+    reply = await world.propose(month=1, day=1, user_id="3")
+
+    assert "cannot be asked" in reply and len(world.here.messages) == 1
+    assert world.cog._birthday_proposals == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("button", ["save", "decline", "remove"])
+async def test_a_database_lost_after_the_check_is_not_created_again(birthdays: SimpleNamespace, button: str) -> None:
+    import threading
+
+    world = birthdays
+    world.cog.store.set_birthday(GUILD_ID, HOST_ID, 3, 5)
+    if button == "remove":
+        await _tools(world, CommunityTools)["remove_my_birthday"].coroutine()
+        posted, presser, callback = world.here.messages[-1], HOST_ID, "confirm"
+    else:
+        await world.propose(month=1, day=1, user_id="2")
+        posted, presser, callback = world.here.messages[-1], 2, button
+    ready = world.cog.database_ready
+    threads = []
+
+    def ready_then_lost(guild_id: int) -> bool:
+        threads.append(threading.current_thread() is threading.main_thread())
+        answer = ready(guild_id)
+        world.cog.store.path.unlink()
+        return answer
+
+    world.cog.database_ready = ready_then_lost
+    press = await _press(posted.kwargs["view"], posted, presser, callback)
+
+    assert press.edits[-1] == {"content": "birthday_unavailable|", "view": None}
+    assert not world.cog.store.path.exists()
+    # The check (and the writes after it) run on a worker thread, not the event loop's.
+    assert threads == [False]
+
 # ------------------------------------------------------------------ direct messages
 def test_event_and_fun_tools_are_not_offered_in_direct_messages(world: SimpleNamespace) -> None:
     world.runtime.message = SimpleNamespace(guild=None, author=world.guild.get_member(HOST_ID), channel=world.here)
