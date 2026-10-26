@@ -1,0 +1,13 @@
+{
+    "responses": {
+        "title": "🎡 {user} 转动了轮盘",
+        "result": "结果：{option}",
+        "too_few": "至少要给 {minimum} 个选项，用逗号分开，例如“火锅, 拉面, 咖喱”。",
+        "busy": "这个频道的轮盘正在转，等它停下来吧。",
+        "food_unavailable": "找餐厅的功能目前没有启用。",
+        "rate_limited": "你的使用次数用完了，{seconds} 秒后再试。",
+        "food_failed": "找餐厅时出了点问题，稍后再试。",
+        "food_none": "附近找不到足够的“{keyword}”餐厅来转轮盘。",
+        "food_title": "🎡 今天吃什么？（{keyword}）"
+    }
+}

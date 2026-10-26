@@ -1601,3 +1601,19 @@ Potential improvements:
 - **Multimedia Stories**: Support for audio, video, and interactive elements
 - **AI Co-author**: Advanced AI assistance for plot development and character creation
 - **Story Marketplace**: Platform for sharing and discovering stories
+
+## Story add-ons
+
+### `/roll dice_notation [reason]`
+
+Rolls dice in any channel: `d20`, `2d6+3`, `4d6-1`, `d8+d6+2` (up to 100 dice, 1000 sides, 10 terms). The result shows each die, e.g. `2d6+3 → [4, 2] + 3 = 9`. In a channel with a running story, the result (and the reason, if given) is handed to the story's next GM turn, which has to follow it: a low roll fails or goes badly, a high roll succeeds. The latest 5 rolls are kept until the next story message; they are lost on a restart, and dropped when the story ends or a new one starts in the channel. A roll is handed over before its reply is posted, so a story message sent right after it sees it; a turn that starts while the reply is being sent waits briefly for it and uses the roll only if the reply went out; a roll whose reply failed is never used. A turn that fails before the GM plans it keeps its rolls for the next one.
+
+### `/story recap` and the daily recap
+
+`/story recap` posts a "previously on…" of the channel's story: the model writes it from the story's last saved summaries and the latest 40 messages (including what the characters said through their webhooks) (at most 6000 characters in all: summaries up to half, the newest messages the rest). It counts as one use of the chat quota of whoever asked (fallback models included); without quota or a working model, the latest saved summary is shown instead. Only members who can read the channel's message history can ask for it, and it is posted for the channel only when everyone who can see the channel can read its history; otherwise only the requester sees it. That is decided from the channel's permissions alone: `@everyone` must see the channel and read its history and no role or member overwrite may deny either (private threads never qualify). It is checked again right before posting, after the model has written the recap, with the requester looked up again (so a role taken away meanwhile counts).
+
+The bot also posts this recap by itself before the first story message of a new day, when the story moved on on an earlier day. It follows the same rule (checked again right before posting), so it is skipped in role-restricted story channels and private threads; `/story recap` still works there, privately. The day the story last moved on is kept per channel in `data/story_recaps.db`. Two messages at once post one recap. The model call is charged to the member whose message started the day; a recap that fails is not tried again that day, and the story goes on without it.
+
+### `/story card character`
+
+Draws a character card picture with the image generator from the character's name, description and attributes, and posts it with those details. The list offers this server's public characters and your own private ones. A private character's card is shown only to you. It counts as one use of your image quota (the `image` rate limit); a character you cannot pick is refused without using it. The card is drawn with an image history of its own that is dropped afterwards, so its details never reach other members' image requests in the channel.
