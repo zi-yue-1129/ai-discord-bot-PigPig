@@ -328,7 +328,7 @@ class CommunityCog(commands.Cog):
         greeting nor marked by the birthday role. When the opt-out list cannot be read this raises,
         and the job is retried: nobody is named while it is unknown who is hidden.
         """
-        hidden = self.store.optouts(guild.id)
+        hidden = self.store.read_optouts(guild.id)
         ids = [user_id for user_id in birthdays_on(local.date(), self.store.birthdays(guild.id)) if user_id not in hidden]
         members = [m for m in (guild.get_member(user_id) for user_id in ids) if m is not None and not m.bot]
         return members[: self.limits.birthday_max_mentions]
@@ -416,7 +416,7 @@ class CommunityCog(commands.Cog):
     async def celebrate_anniversaries(self, guild: discord.Guild, settings: GuildSettings, local: datetime) -> bool:
         """Posts one message for every member who joined on this day in an earlier year; False when it could not be posted."""
         zone = local.tzinfo
-        hidden = self.store.optouts(guild.id)  # hidden members are not named; unreadable: the job is retried
+        hidden = self.store.read_optouts(guild.id)  # hidden members are not named; unreadable: the job is retried
         found = [(m, anniversary_years(local.date(), m.joined_at, zone)) for m in guild.members if not m.bot and m.id not in hidden]
         found = [(m, years) for m, years in found if years > 0][: self.limits.birthday_max_mentions]
         if not found:
@@ -450,7 +450,7 @@ class CommunityCog(commands.Cog):
         Raises:
             discord.HTTPException: The recap could not be posted (so the scheduler retries it).
         """
-        recap = await RecapBuilder(self.bot, self.limits).build(guild, start, end, self.store.optouts(guild.id))
+        recap = await RecapBuilder(self.bot, self.limits).build(guild, start, end, self.store.read_optouts(guild.id))
         if recap is None:
             return None
         if preview_channel is None and recap.total < self.limits.weekly_min_messages:

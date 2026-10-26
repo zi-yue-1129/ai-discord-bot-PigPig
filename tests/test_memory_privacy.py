@@ -33,7 +33,7 @@ def _bot(hidden: Set[int], broken: bool = False, fragments: Optional[List[Any]] 
         async def search(self, **kwargs: Any) -> list:
             return list(fragments or [])
 
-    known = {"LeaderboardCog": SimpleNamespace(store=SimpleNamespace(optouts=optouts)), **(cogs or {})}
+    known = {"LeaderboardCog": SimpleNamespace(store=SimpleNamespace(read_optouts=optouts)), **(cogs or {})}
     return SimpleNamespace(get_cog=known.get, vector_manager=SimpleNamespace(store=Store()))
 
 

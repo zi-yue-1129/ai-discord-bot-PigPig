@@ -877,7 +877,7 @@ async def test_birthdays_are_not_announced_while_the_opt_out_list_cannot_be_read
     def locked(guild_id: int) -> set:
         raise sqlite3.OperationalError("database is locked")
 
-    monkeypatch.setattr(store, "optouts", locked)
+    monkeypatch.setattr(store, "read_optouts", locked)
     _at(cog, datetime(2026, 10, 25, 9, 0, tzinfo=TAIPEI))
     await cog.run_daily_jobs()
 

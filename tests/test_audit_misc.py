@@ -137,7 +137,7 @@ def _summarizer(hidden: Any = frozenset(), broken: bool = False) -> SimpleNamesp
             raise sqlite3.OperationalError("database is locked")
         return set(hidden)
 
-    cogs = {"LeaderboardCog": SimpleNamespace(store=SimpleNamespace(optouts=optouts))}
+    cogs = {"LeaderboardCog": SimpleNamespace(store=SimpleNamespace(read_optouts=optouts))}
     return SimpleNamespace(
         MAX_CHAR_COUNT=15000, EMBED_DESC_LIMIT=4000, lang_manager=None, bot=SimpleNamespace(get_cog=cogs.get)
     )
