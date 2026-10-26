@@ -32,6 +32,13 @@
         "cancelled": "已取消“{title}”。",
         "reminder": "⏰ “{title}”{when}开始！",
         "reminder_now": "⏰ “{title}”已经开始了！",
-        "untitled_event": "活动 #{id}（[查看]({link})）"
+        "untitled_event": "活动 #{id}（[查看]({link})）",
+        "draft_prompt": "📅 {host} 想发起活动，确认后就会贴出报名：\n**{title}**\n🕒 {when}\n人数上限：{limit}・开始前 {minutes} 分钟提醒\n只有发起人能按“确认”。",
+        "draft_confirm": "确认",
+        "draft_cancel": "取消",
+        "draft_not_yours": "只有发起人可以确认或取消这个活动。",
+        "draft_cancelled": "已取消，这个活动没有建立。",
+        "draft_expired": "太久没有确认，这个活动没有建立。",
+        "draft_done": "这个活动已经处理过了。"
     }
 }

@@ -32,6 +32,13 @@
         "cancelled": "Cancelled \"{title}\".",
         "reminder": "⏰ \"{title}\" starts {when}!",
         "reminder_now": "⏰ \"{title}\" has started!",
-        "untitled_event": "event #{id} ([open]({link}))"
+        "untitled_event": "event #{id} ([open]({link}))",
+        "draft_prompt": "📅 {host} wants to post this event; it goes up for sign-ups once confirmed:\n**{title}**\n🕒 {when}\nLimit: {limit} · reminder {minutes} minutes before\nOnly the host can press Confirm.",
+        "draft_confirm": "Confirm",
+        "draft_cancel": "Cancel",
+        "draft_not_yours": "Only the host can confirm or cancel this event.",
+        "draft_cancelled": "Cancelled; the event was not made.",
+        "draft_expired": "Not confirmed in time; the event was not made.",
+        "draft_done": "This event was already handled."
     }
 }

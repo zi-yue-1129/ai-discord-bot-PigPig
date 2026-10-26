@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 import dateparser
 import discord
@@ -39,6 +40,8 @@ MAX_SLEEP_SECONDS = 30
 # Embed field values are capped at 1024 characters; a mention is up to 22.
 FIELD_LIMIT = 1024
 MESSAGE_LIMIT = 2000
+# How long the host has to confirm an event the AI proposed.
+DRAFT_SECONDS = 180
 
 
 def mention_lines(user_ids: List[int], limit: int = FIELD_LIMIT, more: str = "+{count}") -> str:
@@ -99,6 +102,61 @@ class EventView(discord.ui.View):
     @discord.ui.button(emoji="❌", label="Leave", style=discord.ButtonStyle.danger, custom_id="pigpig:event:leave")
     async def leave(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self._answer(interaction, None)
+
+
+@dataclass
+class EventDraft:
+    """An event the AI proposed for a member; it is only made once they press Confirm."""
+
+    guild_id: int
+    channel_id: int
+    creator_id: int
+    title: str
+    starts_at: float
+    capacity: int
+    remind_minutes: int
+
+
+class EventDraftView(discord.ui.View):
+    """Confirm and Cancel buttons under an event the AI proposed; only its host may press them."""
+
+    def __init__(self, cog: "EventsCog", draft: EventDraft, timeout: float = DRAFT_SECONDS) -> None:
+        super().__init__(timeout=timeout)
+        self.cog = cog
+        self.draft = draft
+        self.message: Any = None
+        # Set before the first await of a press, so a second press can never make a second event.
+        self.done = False
+        for item, key in zip(self.children, ("draft_confirm", "draft_cancel")):
+            item.label = cog._t(draft.guild_id, key)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.draft.creator_id:
+            await interaction.response.send_message(self.cog._t(self.draft.guild_id, "draft_not_yours"), ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(emoji="✅", label="Confirm", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self.cog.confirm_draft(interaction, self)
+
+    @discord.ui.button(emoji="✖️", label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if self.done:
+            await interaction.response.send_message(self.cog._t(self.draft.guild_id, "draft_done"), ephemeral=True)
+            return
+        self.done = True
+        self.stop()
+        await interaction.response.edit_message(content=self.cog._t(self.draft.guild_id, "draft_cancelled"), view=None)
+
+    async def on_timeout(self) -> None:
+        if self.done or self.message is None:
+            return
+        self.done = True
+        try:
+            await self.message.edit(content=self.cog._t(self.draft.guild_id, "draft_expired"), view=None)
+        except discord.HTTPException:
+            pass
 
 
 class EventsCog(commands.Cog):
@@ -200,15 +258,40 @@ class EventsCog(commands.Cog):
             await interaction.followup.send(self._t(guild_id, "event_gone"), ephemeral=True)
             return
         user_id = interaction.user.id
-        async with self._lock(event.id):
-            # Checked under the lock: a cancel may have finished, or the start passed, while this press waited.
-            event = self.store.get(event.id)
+
+        async def show(event: Event, roster: Roster) -> None:
+            try:
+                await interaction.edit_original_response(embed=self.render(event, roster), view=self._localised_view(guild_id))
+            except discord.HTTPException:
+                # The answer is saved either way; the confirmation and the promotion notice still go out.
+                self.logger.warning(f"events: could not update the message of event {event.id}", exc_info=True)
+
+        problem, event, before, after = await self._apply_answer(event.id, user_id, status, show)
+        if problem is not None:
+            await interaction.followup.send(self._t(guild_id, problem), ephemeral=True)
+            return
+        await interaction.followup.send(self._answer_text(guild_id, user_id, status, after), ephemeral=True)
+        promoted = [user for user in after.going if user in before.waiting]
+        if promoted:
+            await self._announce_promotion(interaction.channel, event, promoted)
+
+    async def _apply_answer(
+        self, event_id: int, user_id: int, status: Optional[str], show: Callable[[Event, Roster], Awaitable[None]]
+    ) -> Tuple[Optional[str], Optional[Event], Optional[Roster], Optional[Roster]]:
+        """Records going, maybe or leaving (``None``) under the event's lock, and shows the new
+        roster with ``show`` when it changed.
+
+        Returns:
+            ``(problem, event, roster before, roster after)``; ``problem`` is "event_gone" or
+            "event_started" when nothing was recorded.
+        """
+        async with self._lock(event_id):
+            # Checked under the lock: a cancel may have finished, or the start passed, while this one waited.
+            event = self.store.get(event_id)
             if event is None or event.status == CANCELLED:
-                await interaction.followup.send(self._t(guild_id, "event_gone"), ephemeral=True)
-                return
+                return "event_gone", None, None, None
             if event.starts_at <= self._now():
-                await interaction.followup.send(self._t(guild_id, "event_started"), ephemeral=True)
-                return
+                return "event_started", None, None, None
             before = self.store.roster(event)
             if status is None:
                 changed = self.store.leave(event.id, user_id)
@@ -217,15 +300,39 @@ class EventsCog(commands.Cog):
                 changed = True
             after = self.store.roster(event)
             if changed:
-                try:
-                    await interaction.edit_original_response(embed=self.render(event, after), view=self._localised_view(guild_id))
-                except discord.HTTPException:
-                    # The answer is saved either way; the confirmation and the promotion notice still go out.
-                    self.logger.warning(f"events: could not update the message of event {event.id}", exc_info=True)
-        await interaction.followup.send(self._answer_text(guild_id, user_id, status, after), ephemeral=True)
+                await show(event, after)
+        return None, event, before, after
+
+    async def answer_for_member(
+        self, guild: discord.Guild, user_id: int, event_id: int, status: Optional[str]
+    ) -> Tuple[Optional[str], Optional[Event], Optional[Roster]]:
+        """Signs a member up (or out) of an event outside its buttons (the AI's ``join_event`` tool).
+
+        The member must still be able to read the event's channel; an event they cannot read is
+        "not_found", like for ``/event cancel``. Updates the event's message and tells anyone who
+        moved up from the waiting list, in the event's channel.
+
+        Returns:
+            ``(problem, event, roster after)``; ``problem`` is a response key when nothing was recorded.
+        """
+        event = self.store.get(event_id)
+        if event is None or event.guild_id != guild.id or event.status == CANCELLED:
+            return "not_found", None, None
+        member = await current_member(guild, user_id)
+        channel = guild.get_channel_or_thread(event.channel_id)
+        if member is None or not can_read(channel, member):
+            return "not_found", None, None
+
+        async def show(event: Event, roster: Roster) -> None:
+            await self._refresh_message(event)
+
+        problem, event, before, after = await self._apply_answer(event.id, user_id, status, show)
+        if problem is not None:
+            return problem, None, None
         promoted = [user for user in after.going if user in before.waiting]
         if promoted:
-            await self._announce_promotion(interaction.channel, event, promoted)
+            await self._announce_promotion(channel, event, promoted)
+        return None, event, after
 
     def _answer_text(self, guild_id: Any, user_id: int, status: Optional[str], roster: Roster) -> str:
         if user_id in roster.going:
@@ -270,6 +377,98 @@ class EventsCog(commands.Cog):
         except Exception:
             return None
 
+    def check_start(self, guild_id: int, creator_id: int, starts_at: float) -> Optional[str]:
+        """Why an event of ``creator_id`` starting at ``starts_at`` cannot be made now (a response
+        key, see ``problem_text``), or None when it can."""
+        now = self._now()
+        if starts_at <= now:
+            return "past_time"
+        if starts_at - now > MAX_HORIZON_SECONDS:
+            return "too_far"
+        if self.store.count_upcoming(guild_id, now, creator_id) >= MAX_UPCOMING_PER_USER:
+            return "user_limit"
+        if self.store.count_upcoming(guild_id, now) >= MAX_UPCOMING_PER_GUILD:
+            return "guild_limit"
+        return None
+
+    def problem_text(self, guild_id: Any, key: str) -> str:
+        limits = {"user_limit": MAX_UPCOMING_PER_USER, "guild_limit": MAX_UPCOMING_PER_GUILD}
+        return self._t(guild_id, key, limit=limits[key]) if key in limits else self._t(guild_id, key)
+
+    # ------------------------------------------------------------- drafts
+    async def post_draft(
+        self, channel: Any, creator: Any, title: str, time_text: str, capacity: int = 0, remind_minutes: int = 15
+    ) -> Tuple[Optional[str], Optional[EventDraft]]:
+        """Posts an event the AI proposed, with a Confirm button only ``creator`` may press.
+
+        Nothing is saved until they press it (see ``confirm_draft``).
+
+        Returns:
+            ``(None, draft)``, or ``(problem, None)`` with a response key: "invalid_title",
+            "invalid_limit", "invalid_remind", "invalid_time" or one of ``check_start``'s.
+        """
+        guild_id = channel.guild.id
+        title = " ".join(str(title or "").split())
+        if not 1 <= len(title) <= MAX_TITLE_LENGTH:
+            return "invalid_title", None
+        if not 0 <= int(capacity) <= MAX_CAPACITY:
+            return "invalid_limit", None
+        if not 0 <= int(remind_minutes) <= MAX_REMIND_MINUTES:
+            return "invalid_remind", None
+        starts = self.parse_time(str(time_text or ""))
+        if starts is None:
+            return "invalid_time", None
+        draft = EventDraft(guild_id, channel.id, creator.id, title, starts.timestamp(), int(capacity), int(remind_minutes))
+        problem = self.check_start(guild_id, creator.id, draft.starts_at)
+        if problem is not None:
+            return problem, None
+        view = EventDraftView(self, draft)
+        view.message = await channel.send(self.draft_text(draft), view=view, allowed_mentions=discord.AllowedMentions.none())
+        return None, draft
+
+    def draft_text(self, draft: EventDraft) -> str:
+        when = f"<t:{int(draft.starts_at)}:F> (<t:{int(draft.starts_at)}:R>)"
+        limit = str(draft.capacity) if draft.capacity else "∞"
+        return self._t(
+            draft.guild_id, "draft_prompt", host=f"<@{draft.creator_id}>", title=draft.title, when=when,
+            limit=limit, minutes=draft.remind_minutes,
+        )
+
+    async def confirm_draft(self, interaction: discord.Interaction, view: EventDraftView) -> None:
+        """Makes the drafted event and turns the draft message into the event's message."""
+        draft = view.draft
+        if view.done:
+            await interaction.response.send_message(self._t(draft.guild_id, "draft_done"), ephemeral=True)
+            return
+        view.done = True
+        view.stop()
+        # The limits and the start are checked again: time passed and other events may have been made.
+        problem = self.check_start(draft.guild_id, draft.creator_id, draft.starts_at)
+        if problem is not None:
+            await interaction.response.edit_message(content=self.problem_text(draft.guild_id, problem), view=None)
+            return
+        now = self._now()
+        event_id = self.store.add(
+            draft.guild_id, draft.channel_id, draft.creator_id, draft.title, draft.starts_at, draft.capacity,
+            draft.remind_minutes, now,
+        )
+        self.store.sign_up(event_id, draft.creator_id, GOING, now)
+        event = self.store.get(event_id)
+        try:
+            await interaction.response.edit_message(
+                content=None,
+                embed=self.render(event, self.store.roster(event)),
+                view=self._localised_view(draft.guild_id),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException:
+            # The draft still shows its (now dead) buttons and no event: take the event back.
+            self.store.delete(event_id)
+            raise
+        self.store.set_message(event_id, interaction.message.id)
+        if self._wake is not None:
+            self._wake.set()
+
     @event.command(name="create", description="Post an event people can join")
     @app_commands.describe(
         title="What the event is",
@@ -291,17 +490,9 @@ class EventsCog(commands.Cog):
             await interaction.response.send_message(self._t(guild_id, "invalid_time"), ephemeral=True)
             return
         starts_at = starts.timestamp()
-        if starts_at <= now:
-            await interaction.response.send_message(self._t(guild_id, "past_time"), ephemeral=True)
-            return
-        if starts_at - now > MAX_HORIZON_SECONDS:
-            await interaction.response.send_message(self._t(guild_id, "too_far"), ephemeral=True)
-            return
-        if self.store.count_upcoming(guild_id, now, interaction.user.id) >= MAX_UPCOMING_PER_USER:
-            await interaction.response.send_message(self._t(guild_id, "user_limit", limit=MAX_UPCOMING_PER_USER), ephemeral=True)
-            return
-        if self.store.count_upcoming(guild_id, now) >= MAX_UPCOMING_PER_GUILD:
-            await interaction.response.send_message(self._t(guild_id, "guild_limit", limit=MAX_UPCOMING_PER_GUILD), ephemeral=True)
+        problem = self.check_start(guild_id, interaction.user.id, starts_at)
+        if problem is not None:
+            await interaction.response.send_message(self.problem_text(guild_id, problem), ephemeral=True)
             return
         title = " ".join(title.split())
         event_id = self.store.add(guild_id, interaction.channel_id, interaction.user.id, title, starts_at, limit, remind, now)

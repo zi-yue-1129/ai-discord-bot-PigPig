@@ -1,6 +1,6 @@
 # Community Tools
 
-`llm/tools/community_tools.py` lets the AI answer questions about the community features: rankings, achievements, the weekly recap, birthdays and events.
+`llm/tools/community_tools.py` lets the AI answer questions about the community features (rankings, achievements, the weekly recap, birthdays and events) and act on a few of them. `llm/tools/fun_tools.py` adds dice and the decision wheel.
 
 The AI's answer is posted for everyone in the channel, so each tool returns only what a public post would show:
 
@@ -8,6 +8,7 @@ The AI's answer is posted for everyone in the channel, so each tool returns only
 - Text from a channel (channel names, quotes, words, event titles) is only used when the channel is *shareable*: every member can read it (`audience_can_read`) and it is not age-restricted (NSFW, its own or its parent's). An event in the channel the answer goes to is always listed.
 - Names and other text members wrote go through `user_text()`: angle brackets are replaced, `@everyone`/`@here` are broken up, links become `[link]`, the text is cut to 100 characters and wrapped in `<<< >>>` so the model reads it as data.
 - Nothing here calls a model or uses anyone's chat quota.
+- Tools that act only ever act for the person talking to the bot: none of them takes a member argument. A step that makes someone more visible (showing oneself on the leaderboard again, saving a birthday that is then announced) is not possible from chat, only with the slash command, so text that tricks the model cannot undo someone's choice. Making an event needs its host to press Confirm.
 
 | Tool | Group | Loaded when | Arguments | Returns |
 | --- | --- | --- | --- | --- |
@@ -16,7 +17,12 @@ The AI's answer is posted for everyone in the channel, so each tool returns only
 | `hide_my_stats` | core | LeaderboardCog is loaded | none | Hides the asker only. Showing oneself again is only possible with `/leaderboard optout hide:False`, so text that tricks the model cannot undo someone's choice |
 | `get_server_recap` | community | CommunityCog is loaded | `period`: this_week or last_week | The weekly recap's facts (messages, shareable channels, talkers, words, quote, titles; no music) |
 | `get_upcoming_birthdays` | community | CommunityCog is loaded (says so when birthdays are off for the server; building the tool list reads no database) | `days`: 1 to 30 | Saved birthdays, soonest first, without hidden members, bots or leavers |
+| `remove_my_birthday` | community | CommunityCog is loaded | none | Removes the asker's saved birthday (saving one is only possible with `/birthday set`) |
 | `list_upcoming_events` | events | EventsCog is loaded | none | Up to 10 events: number, title, Discord start timestamp, sign-up counts (without hidden members and people who left), link |
+| `create_event` | events | EventsCog is loaded | `title`, `time`, `limit`, `remind_minutes` | Posts a proposal with Confirm and Cancel buttons only the asker (the host) can press; the event is made on Confirm, within 3 minutes, with the limits checked again |
+| `join_event` | events | EventsCog is loaded | `event_id`, `status`: going, maybe or leave | Signs the asker up or out like the event's buttons; refused for events in channels they cannot read; names the event only when its channel is shareable |
+| `roll_dice` | fun | always | `notation`, `reason` | Posts the roll in the channel (as `/roll`) and returns it, so the model never invents a result |
+| `spin_wheel` | fun | WheelCog is loaded | `options` (2 to 20) | Spins the wheel in the channel (as `/wheel spin`), one spin per channel at a time |
 
 ### The recap
 

@@ -23,6 +23,10 @@ Events are stored in `data/events.db` (`events` and `event_signups`), so they an
 
 Limits: an event can be at most 180 days ahead, a member can have 5 upcoming events and a server 25.
 
+## Events the AI proposes
+
+The AI's `create_event` tool calls `post_draft`: it checks the title, limit, reminder and time like `/event create` and posts a proposal with Confirm and Cancel buttons. Only the host (the person who asked) can press them, within 3 minutes (`DRAFT_SECONDS`). Nothing is saved until Confirm, and `confirm_draft` checks the time and the per-member and per-server limits again; a second press is refused. The `join_event` tool uses `answer_for_member`, the same locked sign-up path as the buttons, and only for events in channels the member can read.
+
 ## The reminder
 
 At `starts − remind` minutes the bot posts in the event's channel, mentioning everyone going (not the waiting list or maybes). Only those members can be pinged by it: `@everyone`, roles and other mentions in the title are never pinged. Long lists are split into several messages under Discord's 2000-character limit. Where someone who can see the channel may not read its history, the reminder (and the waiting-list message) names the event only by number with a link, not by title.

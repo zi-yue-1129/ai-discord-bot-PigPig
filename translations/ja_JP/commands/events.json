@@ -32,6 +32,13 @@
         "cancelled": "「{title}」を中止しました。",
         "reminder": "⏰ 「{title}」は{when}に始まります！",
         "reminder_now": "⏰ 「{title}」が始まりました！",
-        "untitled_event": "イベント #{id}（[表示]({link})）"
+        "untitled_event": "イベント #{id}（[表示]({link})）",
+        "draft_prompt": "📅 {host} さんがイベントを作ろうとしています。確認すると参加受付が始まります：\n**{title}**\n🕒 {when}\n定員：{limit}・開始 {minutes} 分前にリマインド\n「確認」を押せるのは主催者だけです。",
+        "draft_confirm": "確認",
+        "draft_cancel": "キャンセル",
+        "draft_not_yours": "このイベントを確認・キャンセルできるのは主催者だけです。",
+        "draft_cancelled": "キャンセルしました。イベントは作成されていません。",
+        "draft_expired": "確認されなかったため、イベントは作成されませんでした。",
+        "draft_done": "このイベントはすでに処理済みです。"
     }
 }

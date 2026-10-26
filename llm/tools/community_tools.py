@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, TYPE_CHECKING
 
+import discord
 from langchain_core.tools.structured import StructuredTool
 
 from addons.logging import get_logger
@@ -414,6 +415,19 @@ class CommunityTools:
                 "/leaderboard optout hide:False."
             )
 
+        async def remove_my_birthday() -> str:
+            """Removes the birthday the person asking saved on this server (as /birthday remove).
+
+            Only call this when the person asking clearly wants their own birthday removed. Saving
+            a birthday is not possible from chat (it is then announced on the day): they use
+            /birthday set themselves.
+
+            Returns:
+                Whether a birthday was removed.
+            """
+            removed = community.store.remove_birthday(guild.id, message.author.id)
+            return "Removed their saved birthday." if removed else "They had no birthday saved here."
+
         info = {"target_agent_mode": "info"}
         community_group = {**info, "tool_group": "community"}
         tools = []
@@ -429,6 +443,7 @@ class CommunityTools:
             # not touch the database (it runs on the event loop for every message).
             tools.append(StructuredTool.from_function(coroutine=get_server_recap, metadata=community_group))
             tools.append(StructuredTool.from_function(coroutine=get_upcoming_birthdays, metadata=community_group))
+            tools.append(StructuredTool.from_function(coroutine=remove_my_birthday, metadata=community_group))
         return tools
 
 
@@ -488,8 +503,103 @@ class EventTools:
                 return "There are no upcoming events that can be shown here."
             return "Upcoming events:\n" + "\n".join(lines)
 
-        return [
-            StructuredTool.from_function(
-                coroutine=list_upcoming_events, metadata={"target_agent_mode": "info", "tool_group": "events"}
+        async def create_event(title: str, time: str, limit: int = 0, remind_minutes: int = 15) -> str:
+            """Proposes an event people can sign up for, like /event create, with the person asking as host.
+
+            The event is posted with a Confirm button that only the host can press; it is made
+            only when they press it (within 3 minutes). Call this when someone asks to organise
+            or schedule a get-together, game night, meetup, etc.
+
+            Args:
+                title: What the event is (up to 100 characters).
+                time: When it starts, as they said it, e.g. "tomorrow 20:00", "Friday 9pm", "in 2 hours".
+                limit: Most people who can join (others wait in line); 0 means no limit.
+                remind_minutes: Minutes before the start to remind everyone going (0-1440).
+
+            Returns:
+                Whether the proposal was posted, or why not.
+            """
+            try:
+                problem, draft = await events.post_draft(
+                    message.channel, message.author, title, time, int(limit), int(remind_minutes)
+                )
+            except (TypeError, ValueError):
+                return "limit and remind_minutes must be whole numbers."
+            except discord.HTTPException:
+                _logger.warning("create_event: could not post the proposal", exc_info=True)
+                return "The event could not be posted in this channel."
+            if problem is not None:
+                return _EVENT_PROBLEMS.get(problem, "The event could not be made.")
+            return (
+                f"Posted the event {user_text(draft.title)} starting <t:{int(draft.starts_at)}:F> for confirmation. "
+                "It is only created when the host presses Confirm within 3 minutes; tell them so."
             )
+
+        async def join_event(event_id: int, status: str = "going") -> str:
+            """Signs the person asking up for an event, marks them as maybe, or takes them off it.
+
+            Only call this when the person asking clearly wants it for themselves; it only ever
+            changes the person asking. Use list_upcoming_events first if you do not know the
+            event's number.
+
+            Args:
+                event_id: The event's number (shown as #N under the event).
+                status: "going", "maybe" or "leave".
+
+            Returns:
+                Where they now stand: going, waiting in line (with their place), maybe, or not on it.
+            """
+            from cogs.events_lib.store import GOING, MAYBE
+
+            wanted = {"going": GOING, "maybe": MAYBE, "leave": None}
+            status = str(status or "going").lower()
+            if status not in wanted:
+                return 'status must be "going", "maybe" or "leave".'
+            try:
+                event_id = int(str(event_id).lstrip("#"))
+            except (TypeError, ValueError):
+                return "Give the event's number, e.g. 12."
+            problem, event, roster = await events.answer_for_member(guild, message.author.id, event_id, wanted[status])
+            if problem is not None:
+                return _EVENT_PROBLEMS.get(problem, "That event could not be changed.")
+            user_id = message.author.id
+            if user_id in roster.going:
+                where = "is going"
+            elif user_id in roster.waiting:
+                where = f"is waiting in line (#{roster.waiting.index(user_id) + 1}); they move up when someone leaves"
+            elif user_id in roster.maybe:
+                where = "is marked as maybe"
+            else:
+                where = "is no longer on the list"
+            return f"Done: they {where} for event #{event.id} ({_event_name(event)})."
+
+        def _event_name(event: Any) -> str:
+            """The event's title when everyone here may read it, otherwise its link."""
+            lookup = getattr(guild, "get_channel_or_thread", None) or guild.get_channel
+            channel = lookup(event.channel_id)
+            here = getattr(getattr(message, "channel", None), "id", None)
+            if channel is not None and (channel.id == here or shareable(channel)):
+                return user_text(event.title)
+            return f"https://discord.com/channels/{event.guild_id}/{event.channel_id}/{event.message_id}"
+
+        events_group = {"target_agent_mode": "info", "tool_group": "events"}
+        return [
+            StructuredTool.from_function(coroutine=list_upcoming_events, metadata=events_group),
+            StructuredTool.from_function(coroutine=create_event, metadata=events_group),
+            StructuredTool.from_function(coroutine=join_event, metadata=events_group),
         ]
+
+
+_EVENT_PROBLEMS = {
+    "invalid_title": "The title must be 1 to 100 characters.",
+    "invalid_limit": "limit must be between 0 and 100.",
+    "invalid_remind": "remind_minutes must be between 0 and 1440.",
+    "invalid_time": 'Could not understand the time; ask for something like "tomorrow 20:00" or "in 2 hours".',
+    "past_time": "That time has already passed; events must start in the future.",
+    "too_far": "Events can be at most 180 days ahead.",
+    "user_limit": "They already host 5 upcoming events; one must end or be cancelled first.",
+    "guild_limit": "This server already has 25 upcoming events.",
+    "not_found": "There is no such event here (or they cannot see its channel).",
+    "event_gone": "That event was cancelled or no longer exists.",
+    "event_started": "That event has already started, so sign-ups are closed.",
+}
