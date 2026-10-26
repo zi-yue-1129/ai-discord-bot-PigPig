@@ -8,7 +8,7 @@ import time
 from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, List, Optional, Tuple, Union
+from typing import Iterable, Iterator, List, Optional, Tuple, Union
 
 from addons.logging import get_logger
 
@@ -178,7 +178,9 @@ class TasteStore:
             [("UPDATE play_events SET skipped = 1, listened_seconds = ? WHERE id = ?", (listened_seconds, event_id))]
         )
 
-    def top_played(self, guild_id: int, since: float, until: float, limit: int = 10) -> List[Tuple[str, str, int, int]]:
+    def top_played(
+        self, guild_id: int, since: float, until: float, limit: int = 10, exclude_requesters: Optional[Iterable[int]] = None
+    ) -> List[Tuple[str, str, int, int]]:
         """Returns a guild's most played songs in a time range.
 
         Args:
@@ -186,16 +188,20 @@ class TasteStore:
             since: Range start (UNIX time, inclusive).
             until: Range end (UNIX time, exclusive).
             limit: How many songs to return.
+            exclude_requesters: Leave out the plays these members requested.
 
         Returns:
             ``(video_id, title, plays, skips)`` tuples, most played first.
         """
+        query = "SELECT video_id, MAX(title), COUNT(*) AS plays, SUM(skipped) FROM play_events WHERE guild_id = ? AND played_at >= ? AND played_at < ?"
+        params: list = [guild_id, since, until]
+        excluded = [int(user_id) for user_id in exclude_requesters or ()]
+        if excluded:
+            query += f" AND (requester_id IS NULL OR requester_id NOT IN ({', '.join('?' * len(excluded))}))"
+            params += excluded
         with self._session() as connection:
             return connection.execute(
-                "SELECT video_id, MAX(title), COUNT(*) AS plays, SUM(skipped) FROM play_events "
-                "WHERE guild_id = ? AND played_at >= ? AND played_at < ? "
-                "GROUP BY video_id ORDER BY plays DESC, MAX(played_at) DESC LIMIT ?",
-                (guild_id, since, until, limit),
+                query + " GROUP BY video_id ORDER BY plays DESC, MAX(played_at) DESC LIMIT ?", (*params, limit)
             ).fetchall()
 
     def top_requesters(self, guild_id: int, since: float, until: float, limit: int = 10) -> List[Tuple[int, int]]:

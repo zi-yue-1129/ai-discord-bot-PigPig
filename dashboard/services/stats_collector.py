@@ -7,7 +7,7 @@ dashboard statistics endpoints.
 
 import os
 import time
-from typing import Any, Optional
+from typing import Any, Collection, Optional, Sequence
 from datetime import datetime, timedelta
 
 import aiosqlite
@@ -232,24 +232,42 @@ class StatsCollector:
             "accurate_total_messages": accurate_total,
         }
 
-    async def message_counts_by_user(self, guild_id: str, since: float, until: float) -> list[tuple[str, int]]:
-        """Counts each user's messages in a guild between ``since`` (inclusive) and ``until`` (exclusive), most first."""
+    async def message_counts_by_user(
+        self, guild_id: str, since: float, until: float, channel_ids: Optional[Sequence[str]] = None
+    ) -> list[tuple[str, int]]:
+        """Counts each user's messages in a guild between ``since`` (inclusive) and ``until`` (exclusive), most first.
+
+        Args:
+            channel_ids: Only count these channels; None counts every channel.
+        """
+        query = "SELECT user_id, COUNT(*) AS cnt FROM message_events WHERE guild_id = ? AND timestamp >= ? AND timestamp < ?"
+        params: list = [guild_id, since, until]
+        if channel_ids is not None:
+            ids = [str(channel_id) for channel_id in channel_ids]
+            if not ids:
+                return []
+            query += f" AND channel_id IN ({', '.join('?' * len(ids))})"
+            params += ids
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute(
-                "SELECT user_id, COUNT(*) AS cnt FROM message_events WHERE guild_id = ? AND timestamp >= ? AND timestamp < ? "
-                "GROUP BY user_id ORDER BY cnt DESC, user_id",
-                (guild_id, since, until),
-            )
+            cursor = await db.execute(query + " GROUP BY user_id ORDER BY cnt DESC, user_id", params)
             return [(row[0], row[1]) for row in await cursor.fetchall()]
 
-    async def message_counts_by_channel(self, guild_id: str, since: float, until: float) -> list[tuple[str, int]]:
-        """Counts a guild's messages per channel between ``since`` (inclusive) and ``until`` (exclusive), most first."""
+    async def message_counts_by_channel(
+        self, guild_id: str, since: float, until: float, exclude_users: Optional[Collection[Any]] = None
+    ) -> list[tuple[str, int]]:
+        """Counts a guild's messages per channel between ``since`` (inclusive) and ``until`` (exclusive), most first.
+
+        Args:
+            exclude_users: Leave out the messages of these user ids.
+        """
+        query = "SELECT channel_id, COUNT(*) AS cnt FROM message_events WHERE guild_id = ? AND timestamp >= ? AND timestamp < ?"
+        params: list = [guild_id, since, until]
+        if exclude_users:
+            ids = [str(user_id) for user_id in exclude_users]
+            query += f" AND user_id NOT IN ({', '.join('?' * len(ids))})"
+            params += ids
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute(
-                "SELECT channel_id, COUNT(*) AS cnt FROM message_events WHERE guild_id = ? AND timestamp >= ? AND timestamp < ? "
-                "GROUP BY channel_id ORDER BY cnt DESC, channel_id",
-                (guild_id, since, until),
-            )
+            cursor = await db.execute(query + " GROUP BY channel_id ORDER BY cnt DESC, channel_id", params)
             return [(row[0], row[1]) for row in await cursor.fetchall()]
 
     async def night_counts_by_user(
