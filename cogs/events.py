@@ -532,7 +532,7 @@ class EventsCog(commands.Cog):
             await previous.close("draft_replaced")
         try:
             view.message = await channel.send(self.draft_text(draft), view=view, allowed_mentions=discord.AllowedMentions.none())
-        except Exception:
+        except BaseException:
             view.finish()
             raise
         return None, draft
@@ -570,14 +570,14 @@ class EventsCog(commands.Cog):
                 view=self._localised_view(draft.guild_id),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
-        except Exception:
-            # No event message (or no host on it): take the event back rather than leave one that
+        except BaseException:
+            # Also when the task is cancelled mid-edit. No event message (or no host on it): take the event back rather than leave one that
             # counts against the limits without buttons or a reminder.
             self.store.delete(event_id)
             raise
         try:
             self.store.set_message(event_id, interaction.message.id)
-        except Exception:
+        except BaseException:
             # The posted buttons could not find the event: take it back and say so on the message.
             self.store.delete(event_id)
             try:
@@ -624,8 +624,8 @@ class EventsCog(commands.Cog):
                 view=self._localised_view(guild_id),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
-        except Exception:
-            # Nothing was posted: the event goes too.
+        except BaseException:
+            # Nothing was posted (or the task was cancelled): the event goes too.
             self.store.delete(event_id)
             raise
         # The message is posted from here on, so the event stays whatever happens next.
@@ -656,7 +656,7 @@ class EventsCog(commands.Cog):
                 return
         try:
             self.store.set_message(event_id, message_id)
-        except Exception:
+        except BaseException:
             # The posted buttons could not find the event: take it back and remove its message.
             self.store.delete(event_id)
             try:

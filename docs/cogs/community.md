@@ -38,6 +38,7 @@ When someone asks the AI to remember a birthday (their own or another member's),
 
 - If they decline a proposal someone else made, later proposals from other people are turned away without pinging them (`birthday_declines`). The block is lifted when they ask for one themselves and press Save, or use `/birthday set`. Declining their own request changes nothing.
 - A proposal that nobody answers expires after an hour (`PROPOSAL_SECONDS`) and is not a decline.
+- Each member may have the AI propose birthdays for other people at most `birthday.proposals_per_hour` times an hour (owner setting, default 3; each one pings someone, and replacing an open question still counts). Asking for oneself does not count.
 - One question per member at a time, one open question per asker (a new one replaces it) and at most 5 per server (`MAX_BIRTHDAY_PROPOSALS_PER_GUILD`). Bots, members who cannot read the channel (for a private thread: who are not in it) and, on someone else's behalf, members hidden with `/leaderboard optout` are not asked. A hidden asker is not named in the question, and the model's replies never name the member.
 - The community database is only read when proposing, and checked again (read-only) before Save; when it is missing or unreadable nothing is asked or saved, so it is never created as an empty file.
 
@@ -98,6 +99,7 @@ community:
   birthday:
     use_ai: true
     max_mentions: 20
+    proposals_per_hour: 3
   weekly:
     min_messages: 50
     use_ai: true

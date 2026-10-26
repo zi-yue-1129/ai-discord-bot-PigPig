@@ -105,7 +105,8 @@ async def ask(channel: Any, content: str, view: ConfirmView) -> ConfirmView:
             await previous.replace()
     try:
         view.message = await channel.send(content, view=view, allowed_mentions=discord.AllowedMentions.none())
-    except Exception:
+    except BaseException:
+        # Also when the task is cancelled, so the key is never left reserved.
         view._finish()
         raise
     return view

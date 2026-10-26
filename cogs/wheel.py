@@ -87,7 +87,9 @@ class WheelCog(commands.Cog):
         Returns:
             ``(picked option, None)``, or ``(None, problem)`` with "too_few" or "busy".
         """
-        choices = wheel.parse_options("\n".join(options))
+        # Already a list: an option such as "Paris, Texas" stays one option. Only a single string
+        # (the model sent everything as one item) is split like typed text.
+        choices = wheel.parse_options(options[0]) if len(options) == 1 else wheel.clean_options(options)
         if len(choices) < wheel.MIN_OPTIONS:
             return None, "too_few"
         if not self._claim_channel(channel.id):

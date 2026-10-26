@@ -37,6 +37,7 @@ community:
   birthday:
     use_ai: true              # false: birthday and anniversary messages use the fixed text
     max_mentions: 20          # at most this many people are named in one celebration message
+    proposals_per_hour: 3     # birthdays one member may ask the AI to propose for others per hour (each pings them; 0: off)
   weekly:
     min_messages: 50          # weeks with fewer messages get no recap
     use_ai: true              # false: no AI-written news paragraph, only the numbers

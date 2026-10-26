@@ -116,10 +116,7 @@ class BirthdayProposalView(discord.ui.View):
             await interaction.response.send_message(self.cog._t(self.guild_id, "birthday_proposal_done"), ephemeral=True)
             return
         store = self.cog.store
-        try:
-            # Saving must not create a missing database (an empty opt-out list would read as "nobody hidden").
-            store.read_optouts(self.guild_id)
-        except sqlite3.Error:
+        if not self.cog.database_ready(self.guild_id):
             await interaction.response.edit_message(content=self.cog._t(self.guild_id, "birthday_unavailable"), view=None)
             return
         store.set_birthday(self.guild_id, self.target_id, self.month, self.day)
@@ -136,6 +133,9 @@ class BirthdayProposalView(discord.ui.View):
     async def decline(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not self._finish():
             await interaction.response.send_message(self.cog._t(self.guild_id, "birthday_proposal_done"), ephemeral=True)
+            return
+        if not self.cog.database_ready(self.guild_id):
+            await interaction.response.edit_message(content=self.cog._t(self.guild_id, "birthday_unavailable"), view=None)
             return
         if self.asker_id == self.target_id:
             # Turning down one's own request changes nothing for other people's proposals.
@@ -190,6 +190,8 @@ class CommunityCog(commands.Cog):
         # (guild_id, member_id) -> the birthday proposal waiting for that member's answer.
         self._birthday_proposals: Dict[Tuple[int, int], BirthdayProposalView] = {}
         self._removal_asks: Dict[Tuple[int, int], ConfirmView] = {}
+        # (guild_id, asker_id) -> when they last had the AI propose a birthday for someone else.
+        self._proposal_times: Dict[Tuple[int, int], List[float]] = {}
 
     async def cog_load(self) -> None:
         self.lang_manager = LanguageManager.get_instance(self.bot)
@@ -914,6 +916,9 @@ class CommunityCog(commands.Cog):
             target.id in hidden or self.store.birthday_proposals_blocked(guild_id, target.id)
         ):
             return "blocked"
+        if asker.id != target.id and not self._may_propose(guild_id, asker.id):
+            # Each proposal pings someone: replacing an open one must not allow pinging more often.
+            return "rate_limited"
         # One open proposal per asker (a new one replaces it) and a few per server.
         previous = next(
             (view for (guild, _), view in self._birthday_proposals.items() if guild == guild_id and view.asker_id == asker.id),
@@ -935,10 +940,34 @@ class CommunityCog(commands.Cog):
         try:
             # Only the member being asked is pinged.
             view.message = await channel.send(text, view=view, allowed_mentions=discord.AllowedMentions(users=[target]))
-        except Exception:
+        except BaseException:
+            # Also when the task is cancelled, so the member's place is never left reserved.
             view._finish()
             raise
         return "proposed"
+
+    def _may_propose(self, guild_id: int, asker_id: int) -> bool:
+        """Counts a proposal for someone else; False once ``asker_id`` used up the hour's allowance."""
+        now = self._now()
+        key = (guild_id, asker_id)
+        recent = [sent for sent in self._proposal_times.get(key, []) if now - sent < 3600]
+        if len(recent) >= self.limits.birthday_proposals_per_hour:
+            self._proposal_times[key] = recent
+            return False
+        self._proposal_times[key] = recent + [now]
+        return True
+
+    def database_ready(self, guild_id: int) -> bool:
+        """Whether the community database exists and its opt-out list can be read, checked read-only.
+
+        Called before any write the AI's buttons make, so a missing database is never created as an
+        empty file (an empty opt-out list would read as "nobody is hidden").
+        """
+        try:
+            self.store.read_optouts(guild_id)
+        except sqlite3.Error:
+            return False
+        return True
 
     async def propose_birthday_removal(self, channel: Any, member: Any) -> str:
         """Asks ``member`` to confirm deleting their saved birthday (the AI's ``remove_my_birthday``).
@@ -950,12 +979,16 @@ class CommunityCog(commands.Cog):
         """
         guild_id = channel.guild.id
         try:
+            # The opt-out list too: the question names the member, which fails closed like everything else.
+            self.store.read_optouts(guild_id)
             if self.store.read_birthday(guild_id, member.id) is None:
                 return "none"
         except sqlite3.Error:
             return "unavailable"
 
         async def on_confirm() -> str:
+            if not self.database_ready(guild_id):
+                return self._t(guild_id, "birthday_unavailable")
             removed = self.store.remove_birthday(guild_id, member.id)
             return f"<@{member.id}> " + self._t(guild_id, "birthday_removed" if removed else "birthday_none")
 

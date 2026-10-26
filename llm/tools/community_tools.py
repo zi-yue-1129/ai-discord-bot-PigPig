@@ -266,6 +266,10 @@ _BIRTHDAY_PROPOSALS = {
     ),
     "pending": "That member already has a birthday question waiting for their answer.",
     "busy": "Too many birthday questions on this server are waiting for answers; try again later.",
+    "rate_limited": (
+        "The person asking already had several birthdays proposed for others this hour; do not retry. "
+        "Others can set their own with /birthday set."
+    ),
     "unavailable": UNAVAILABLE,
 }
 

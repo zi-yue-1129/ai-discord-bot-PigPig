@@ -45,6 +45,8 @@ class CommunityLimits:
         welcome_batch_seconds: Joins this close together share one welcome.
         birthday_use_ai: Whether birthday and anniversary messages are AI-written.
         birthday_max_mentions: Most people named in one celebration message.
+        birthday_proposals_per_hour: Birthdays one member may ask the AI to propose for other members per
+            server per hour (each pings the member asked; 0 turns this off).
         weekly_min_messages: Weeks with fewer messages get no recap.
         weekly_use_ai: Whether the recap gets an AI-written news paragraph.
         weekly_max_report_chars: Length asked of the AI paragraph.
@@ -67,6 +69,7 @@ class CommunityLimits:
     welcome_batch_seconds: float = 5
     birthday_use_ai: bool = True
     birthday_max_mentions: int = 20
+    birthday_proposals_per_hour: int = 3
     weekly_min_messages: int = 50
     weekly_use_ai: bool = True
     weekly_max_report_chars: int = 300
@@ -97,6 +100,9 @@ class CommunityLimits:
             welcome_batch_seconds=_number(welcome, "batch_seconds", defaults.welcome_batch_seconds),
             birthday_use_ai=bool(birthday.get("use_ai", defaults.birthday_use_ai)),
             birthday_max_mentions=int(_number(birthday, "max_mentions", defaults.birthday_max_mentions, 1)),
+            birthday_proposals_per_hour=int(
+                _number(birthday, "proposals_per_hour", defaults.birthday_proposals_per_hour, maximum=100)
+            ),
             weekly_min_messages=int(_number(weekly, "min_messages", defaults.weekly_min_messages)),
             weekly_use_ai=bool(weekly.get("use_ai", defaults.weekly_use_ai)),
             weekly_max_report_chars=int(_number(weekly, "max_report_chars", defaults.weekly_max_report_chars, 50)),

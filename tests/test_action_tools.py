@@ -922,6 +922,114 @@ async def test_answered_or_failed_questions_free_their_place(world: SimpleNamesp
         await world.events.post_draft(world.here, world.guild.get_member(HOST_ID), "raid", "3600")
     assert world.events._drafts == {}
 
+# ------------------------------------------------------------------ review round 3
+@pytest.mark.asyncio
+async def test_replacing_proposals_cannot_ping_more_often_than_the_hourly_allowance(birthdays: SimpleNamespace) -> None:
+    world = birthdays
+    allowance = world.cog.limits.birthday_proposals_per_hour
+    clock = {"now": NOW}
+    world.cog._now = lambda: clock["now"]
+    for attempt in range(30):
+        await world.propose(month=1, day=1, user_id="2" if attempt % 2 else "3")
+    pings = [m for m in world.here.messages if m.kwargs["allowed_mentions"].users]
+    assert len(pings) == allowance
+    assert "do not retry" in await world.propose(month=1, day=1, user_id="2")
+    # Asking for oneself never counts, and the allowance comes back after an hour.
+    _ask(world, 2)
+    world.cog._birthday_proposals.clear()
+    assert (await world.propose(month=1, day=1)).startswith("Posted a question")
+    _ask(world, HOST_ID)
+    clock["now"] = NOW + 3601
+    world.cog._birthday_proposals.clear()
+    assert (await world.propose(month=1, day=1, user_id="3")).startswith("Posted a question")
+
+
+@pytest.mark.asyncio
+async def test_decline_and_removal_never_create_a_missing_database(birthdays: SimpleNamespace) -> None:
+    world = birthdays
+    world.cog.store.set_birthday(GUILD_ID, HOST_ID, 3, 5)
+    await world.propose(month=1, day=1, user_id="2")
+    proposal = world.here.messages[-1]
+    await _tools(world, CommunityTools)["remove_my_birthday"].coroutine()
+    removal = world.here.messages[-1]
+    world.cog.store.path.unlink()
+
+    declined = await _press(proposal.kwargs["view"], proposal, 2, "decline")
+    assert declined.edits[0] == {"content": "birthday_unavailable|", "view": None}
+    confirmed = await _press(removal.kwargs["view"], removal, HOST_ID)
+    assert confirmed.edits[0] == {"content": "birthday_unavailable|", "view": None}
+    assert not world.cog.store.path.exists()
+
+
+@pytest.mark.asyncio
+async def test_no_removal_question_while_the_opt_out_list_cannot_be_read(
+    birthdays: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sqlite3
+
+    def broken(guild_id: int) -> set:
+        raise sqlite3.OperationalError("locked")
+
+    birthdays.cog.store.set_birthday(GUILD_ID, HOST_ID, 3, 5)
+    monkeypatch.setattr(birthdays.cog.store, "read_optouts", broken)
+    reply = await _tools(birthdays, CommunityTools)["remove_my_birthday"].coroutine()
+    assert reply == "This is not available right now." and birthdays.here.messages == []
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_task_leaves_no_event_or_reserved_place(birthdays: SimpleNamespace) -> None:
+    import asyncio
+
+    world = birthdays
+    await world.events.post_draft(world.here, world.guild.get_member(HOST_ID), "raid", "3600")
+    posted = world.here.messages[-1]
+    press = FakeInteraction(HOST_ID, posted)
+
+    async def cancelled(**kwargs: Any) -> None:
+        raise asyncio.CancelledError()
+
+    press.response.edit_message = cancelled
+    with pytest.raises(asyncio.CancelledError):
+        await world.events.confirm_draft(press, posted.kwargs["view"])
+    assert world.store.count_upcoming(GUILD_ID, NOW) == 0 and world.events._drafts == {}
+
+    async def cancelled_send(*args: Any, **kwargs: Any) -> None:
+        raise asyncio.CancelledError()
+
+    world.here.send = cancelled_send
+    with pytest.raises(asyncio.CancelledError):
+        await world.cog.propose_birthday(world.here, world.guild.get_member(HOST_ID), world.guild.get_member(2), 1, 1)
+    with pytest.raises(asyncio.CancelledError):
+        await world.events.propose_answer(world.here, world.guild.get_member(HOST_ID), _event(world).id, GOING)
+    with pytest.raises(asyncio.CancelledError):
+        await world.events.post_draft(world.here, world.guild.get_member(HOST_ID), "raid", "3600")
+    assert world.cog._birthday_proposals == {} and world.events._answer_asks == {} and world.events._drafts == {}
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_draft_cannot_be_confirmed_afterwards(world: SimpleNamespace) -> None:
+    await world.events.post_draft(world.here, world.guild.get_member(HOST_ID), "raid", "3600")
+    posted = world.here.messages[-1]
+    view = posted.kwargs["view"]
+    await _press(view, posted, HOST_ID, "cancel")
+
+    late = FakeInteraction(HOST_ID, posted)
+    await world.events.confirm_draft(late, view)
+    assert late.sent[0][0] == "draft_done|" and world.store.count_upcoming(GUILD_ID, NOW) == 0
+
+
+@pytest.mark.asyncio
+async def test_wheel_options_with_commas_stay_whole(world: SimpleNamespace) -> None:
+    spin = _tools(world, FunTools)["spin_wheel"].coroutine
+
+    reply = await spin(options=["Paris, Texas", "Paris, France"])
+    assert reply in ("The wheel landed on <<<Paris, Texas>>> (already shown in the channel).",
+                     "The wheel landed on <<<Paris, France>>> (already shown in the channel).")
+    # One string holding every option is still split like typed text.
+    landed = await spin(options=["hot pot, ramen"])
+    assert landed in ("The wheel landed on <<<hot pot>>> (already shown in the channel).",
+                      "The wheel landed on <<<ramen>>> (already shown in the channel).")
+
 # ------------------------------------------------------------------ direct messages
 def test_event_and_fun_tools_are_not_offered_in_direct_messages(world: SimpleNamespace) -> None:
     world.runtime.message = SimpleNamespace(guild=None, author=world.guild.get_member(HOST_ID), channel=world.here)
