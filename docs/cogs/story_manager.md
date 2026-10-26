@@ -1606,7 +1606,7 @@ Potential improvements:
 
 ### `/roll dice_notation [reason]`
 
-Rolls dice in any channel: `d20`, `2d6+3`, `4d6-1`, `d8+d6+2` (up to 100 dice, 1000 sides, 10 terms). The result shows each die, e.g. `2d6+3 → [4, 2] + 3 = 9`. In a channel with a running story, the result (and the reason, if given) is handed to the story's next GM turn, which has to follow it: a low roll fails or goes badly, a high roll succeeds. The latest 5 rolls are kept until the next story message; they are lost on a restart, and dropped when the story ends or a new one starts in the channel. A roll is handed over before its reply is posted, so a story message sent right after it sees it; if the reply fails, the roll is taken back unless a turn already used it. A turn that fails before the GM plans it keeps its rolls for the next one.
+Rolls dice in any channel: `d20`, `2d6+3`, `4d6-1`, `d8+d6+2` (up to 100 dice, 1000 sides, 10 terms). The result shows each die, e.g. `2d6+3 → [4, 2] + 3 = 9`. In a channel with a running story, the result (and the reason, if given) is handed to the story's next GM turn, which has to follow it: a low roll fails or goes badly, a high roll succeeds. The latest 5 rolls are kept until the next story message; they are lost on a restart, and dropped when the story ends or a new one starts in the channel. A roll is handed over before its reply is posted, so a story message sent right after it sees it; a turn that starts while the reply is being sent waits briefly for it and uses the roll only if the reply went out; a roll whose reply failed is never used. A turn that fails before the GM plans it keeps its rolls for the next one.
 
 ### `/story recap` and the daily recap
 

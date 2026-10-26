@@ -180,14 +180,17 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
             if reason:
                 note += f" for: {reason}"
             # Queued before the reply goes out: a story message right after the roll shows up must see it.
-            roll = self.story_manager.add_dice_result(interaction.channel_id, note)
+            # A turn starting meanwhile waits for the reply, and uses the roll only if it went out.
+            roll = self.story_manager.add_dice_result(interaction.channel_id, note, delivered=False)
         try:
             await interaction.response.send_message(text, allowed_mentions=discord.AllowedMentions.none())
-        except discord.HTTPException:
-            # Nobody saw the roll: it is taken back unless a turn already used it.
+        except BaseException:
+            # Nobody saw the roll: no turn may use it.
             if roll is not None:
                 self.story_manager.discard_dice_result(interaction.channel_id, roll)
             raise
+        if roll is not None:
+            self.story_manager.confirm_dice_result(roll)
 
     # ----------------------------------------------------------------- recap
     async def _recap_text(self, channel: Any, instance: Any, user_id: Optional[int], before: Any = None) -> Optional[str]:
@@ -354,13 +357,17 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
         # A history of its own, dropped afterwards: the card's details never reach the channel's
         # shared image history (other members' requests), nor does that history reach the card.
         history_key = f"story_card:{interaction.id}"
+        attachment = None
         try:
             result = await images._generate_image_logic(card_prompt(found), str(guild_id), history_key)
+            attachment = next((item for item in result.get("attachments", []) if item.get("data_base64")), None)
         finally:
             history = getattr(images, "conversation_history", None)
             if isinstance(history, dict):
                 history.pop(history_key, None)
-        attachment = next((item for item in result.get("attachments", []) if item.get("data_base64")), None)
+            # No card, no charge.
+            if attachment is None and limiter is not None and hasattr(limiter, "refund"):
+                limiter.refund("image", interaction.user.id)
         if attachment is None:
             await interaction.followup.send(self._t(guild_id, "story", "addons", "card_failed"), ephemeral=True)
             return

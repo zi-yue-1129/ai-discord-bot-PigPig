@@ -324,7 +324,17 @@ class EventsCog(commands.Cog):
             try:
                 message_id = (await interaction.original_response()).id
             except discord.HTTPException:
+                # Without its message the event's buttons and reminder cannot work: take it back.
                 self.logger.warning(f"events: posted event {event_id} but could not look up its message", exc_info=True)
+                self.store.delete(event_id)
+                try:
+                    await interaction.delete_original_response()
+                except discord.HTTPException:
+                    pass
+                try:
+                    await interaction.followup.send(self._t(guild_id, "post_failed"), ephemeral=True)
+                except discord.HTTPException:
+                    pass
                 return
         self.store.set_message(event_id, message_id)
         if self._wake is not None:

@@ -25,6 +25,7 @@
         "guild_limit": "這個伺服器已經有 {limit} 個還沒開始的活動了。",
         "none_upcoming": "這個伺服器目前沒有即將開始的活動。",
         "list_line": "#{id}「{title}」{when}・{going} 人參加・[前往]({link})",
+        "post_failed": "活動沒能建立，請再執行一次指令。",
         "not_found": "找不到這個活動。",
         "not_yours": "只有發起人或有「管理活動」權限的人可以取消。",
         "already_cancelled": "這個活動已經取消了。",

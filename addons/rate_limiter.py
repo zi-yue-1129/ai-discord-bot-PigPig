@@ -75,6 +75,12 @@ class RateLimiter:
         window.append(now)
         return 0.0
 
+    def refund(self, bucket: str, user_id: int) -> None:
+        """Takes back the latest use recorded by :meth:`hit` (for a request that produced nothing)."""
+        window = self._hits.get((bucket, int(user_id)))
+        if window:
+            window.pop()
+
     def should_notify(self, bucket: str, user_id: int, retry_after: float) -> bool:
         """True the first time a user is blocked in a window, so the bot says so only once."""
         key = (bucket, int(user_id))
