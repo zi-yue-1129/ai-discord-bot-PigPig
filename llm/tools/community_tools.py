@@ -375,12 +375,14 @@ class CommunityTools:
             """
             from cogs.community_lib.dates import upcoming_birthdays
 
-            days = max(1, min(int(days or 30), 30))
+            days = max(1, min(int(30 if days is None else days), 30))
             # Read before get_settings, which creates the community database when it is missing.
             hidden = hidden_member_ids(runtime, guild.id)
             if hidden is None:
                 return UNAVAILABLE
             settings = community.store.get_settings(guild.id)
+            if not settings.birthday_enabled:
+                return "Birthdays are turned off on this server (an admin can turn them on with /community birthdays)."
             today = community._local_now(settings).date()
             lines = []
             for user_id, when in upcoming_birthdays(today, community.store.birthdays(guild.id), days):
@@ -423,17 +425,10 @@ class CommunityTools:
                 StructuredTool.from_function(coroutine=hide_my_stats, metadata=info),
             ]
         if community is not None:
+            # Whether birthdays are on is read when the tool is called: building the tool list must
+            # not touch the database (it runs on the event loop for every message).
             tools.append(StructuredTool.from_function(coroutine=get_server_recap, metadata=community_group))
-            try:
-                # get_settings creates the community database when it is missing, which would turn
-                # an unreadable opt-out list into an empty one: only read it once the list is there.
-                readable = hidden_member_ids(runtime, guild.id) is not None
-                birthdays_on = readable and community.store.get_settings(guild.id).birthday_enabled
-            except Exception:
-                _logger.error("community tools: could not read the server's settings", exc_info=True)
-                birthdays_on = False
-            if birthdays_on:
-                tools.append(StructuredTool.from_function(coroutine=get_upcoming_birthdays, metadata=community_group))
+            tools.append(StructuredTool.from_function(coroutine=get_upcoming_birthdays, metadata=community_group))
         return tools
 
 

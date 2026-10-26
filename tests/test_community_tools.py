@@ -164,7 +164,9 @@ async def _call(world: SimpleNamespace, name: str, cls: Any = CommunityTools, **
 
 # ------------------------------------------------------------------ loading
 def test_tools_are_only_offered_when_their_cogs_are_loaded(world: SimpleNamespace) -> None:
-    assert set(_tools(world)) == {"get_leaderboard", "get_achievements", "hide_my_stats", "get_server_recap"}
+    assert set(_tools(world)) == {
+        "get_leaderboard", "get_achievements", "hide_my_stats", "get_server_recap", "get_upcoming_birthdays"
+    }
 
     del world.cogs["CommunityCog"]
     assert set(_tools(world)) == {"get_leaderboard", "get_achievements", "hide_my_stats"}
@@ -173,10 +175,22 @@ def test_tools_are_only_offered_when_their_cogs_are_loaded(world: SimpleNamespac
     assert _tools(world, EventTools) == {}
 
 
-def test_the_birthday_tool_comes_only_when_birthdays_are_on(world: SimpleNamespace) -> None:
-    world.store.update_settings(GUILD_ID, birthday_enabled=True)
+def test_building_the_tools_reads_no_database(world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The tool list is built on the event loop for every message; a locked database must not stall it."""
+    def no_database(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("the database was read while building the tools")
 
-    assert "get_upcoming_birthdays" in _tools(world)
+    for name in ("get_settings", "read_optouts", "optouts", "birthdays"):
+        monkeypatch.setattr(world.store, name, no_database)
+
+    assert len(_tools(world)) == 5
+
+
+@pytest.mark.asyncio
+async def test_the_birthday_tool_says_when_birthdays_are_off(world: SimpleNamespace) -> None:
+    assert "turned off" in await _call(world, "get_upcoming_birthdays")
+    world.store.update_settings(GUILD_ID, birthday_enabled=True)
+    assert "No saved birthdays" in await _call(world, "get_upcoming_birthdays")
 
 
 def test_hiding_oneself_is_a_core_tool_and_the_rest_are_community_tools(world: SimpleNamespace) -> None:
@@ -252,8 +266,7 @@ async def test_without_a_readable_opt_out_list_nobody_is_named(world: SimpleName
     for name, kwargs in (("get_leaderboard", {"period": "all"}), ("get_server_recap", {})):
         reply = await _call(world, name, **kwargs)
         assert reply == community_tools.UNAVAILABLE, name
-    # Birthdays are not even offered: their setting is only read once the list is readable.
-    assert "get_upcoming_birthdays" not in _tools(world)
+    assert await _call(world, "get_upcoming_birthdays", days=7) == community_tools.UNAVAILABLE
     # Events are still listed, without how many signed up.
     world.guild.channel(600)
     store = EventStore(world.tmp / "events.db")
@@ -603,10 +616,14 @@ async def test_a_missing_community_database_is_not_created_by_the_tools(tmp_path
     runtime = SimpleNamespace(bot=bot, message=SimpleNamespace(guild=guild, author=guild.get_member(AUTHOR_ID), channel=here))
 
     tools = {tool.name: tool for tool in CommunityTools(runtime).get_tools()}
-    assert "get_upcoming_birthdays" not in tools
     assert not path.exists()
 
-    for name, kwargs in (("get_leaderboard", {"period": "week"}), ("get_leaderboard", {"period": "all"}), ("get_server_recap", {})):
+    for name, kwargs in (
+        ("get_leaderboard", {"period": "week"}),
+        ("get_leaderboard", {"period": "all"}),
+        ("get_server_recap", {}),
+        ("get_upcoming_birthdays", {}),
+    ):
         assert await tools[name].coroutine(**kwargs) == community_tools.UNAVAILABLE, (name, kwargs)
     assert "user11" not in await tools["get_achievements"].coroutine(user_id="11")
     assert not path.exists()
@@ -750,6 +767,31 @@ async def test_a_member_who_hides_while_their_stats_are_read_is_refused(
     assert "hide" in reply and "5" not in reply
 
 
+@pytest.mark.asyncio
+async def test_no_stats_image_is_sent_for_a_member_who_hides_while_it_is_drawn(
+    world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from llm.tools import user_stats
+
+    tool = _stats_tool(world, monkeypatch)
+    sent: list = []
+
+    async def send(**kwargs: Any) -> None:
+        sent.append(kwargs)
+
+    world.here.send = send
+
+    def draw_and_hide(*args: Any) -> bytes:
+        world.store.set_optout(GUILD_ID, 12, True)
+        return b"png"
+
+    monkeypatch.setattr(user_stats, "_generate_stats_image_sync", draw_and_hide)
+
+    reply = await tool(user_id="12")
+
+    assert sent == [] and "hide" in reply
+
+
 # ------------------------------------------------------------------ limits and edge cases
 @pytest.mark.asyncio
 async def test_an_opt_out_list_that_breaks_after_the_tools_were_built_fails_closed(
@@ -759,7 +801,6 @@ async def test_an_opt_out_list_that_breaks_after_the_tools_were_built_fails_clos
     world.store.update_settings(GUILD_ID, birthday_enabled=True)
     world.store.set_birthday(GUILD_ID, 12, 10, 27)
     tools = _tools(world)
-    assert "get_upcoming_birthdays" in tools
 
     def broken(guild_id: int) -> set:
         raise sqlite3.OperationalError("database disk image is malformed")
@@ -817,6 +858,7 @@ async def test_birthdays_are_capped_and_days_clamped(world: SimpleNamespace) -> 
     assert text.startswith("Birthdays in the next 30 days")
     assert len(text.splitlines()) == 1 + community_tools.MAX_BIRTHDAYS and "user12" not in text
     assert await _call(world, "get_upcoming_birthdays", days=-5) == "No saved birthdays in the next 1 days."
+    assert await _call(world, "get_upcoming_birthdays", days=0) == "No saved birthdays in the next 1 days."
 
 
 @pytest.mark.asyncio

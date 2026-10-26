@@ -186,9 +186,11 @@ class UserStatsTools:
                     avatar_url,
                     image_labels,
                 )
-                # Drawing the image awaited: if a channel in it stopped being public meanwhile,
-                # send no image (the text below is rebuilt from what is public now).
+                # Drawing the image awaited: if a channel in it stopped being public, or the member
+                # hid themselves meanwhile, send no image (the text below is checked again too).
                 if public_view(message.guild, all_time, terms, also_visible) != stats:
+                    raise _ChannelsChanged()
+                if _is_hidden(runtime, message.guild.id, effective_id):
                     raise _ChannelsChanged()
                 await message.channel.send(
                     file=discord.File(
@@ -238,7 +240,7 @@ async def _profile_extras(runtime: Any, guild: Any, user_id: str) -> List[str]:
 
 
 class _ChannelsChanged(Exception):
-    """A channel stopped being public while the stats image was drawn."""
+    """A channel stopped being public, or the member hid themselves, while the stats image was drawn."""
 
 
 def _is_hidden(runtime: Any, guild_id: int, user_id: str, db_path: Optional[str] = None) -> bool:

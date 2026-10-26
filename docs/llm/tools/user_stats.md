@@ -40,7 +40,7 @@ Provides a comprehensive overview of a user's engagement, including message freq
 
 **Features:**
 - **Text Card**: A localized summary showing total messages, peak activity periods, current message streak, and top channels.
-- **Profile lines**: When the leaderboard cog is loaded, the card ends with the member's all-time rank and achievement badges, as on `/profile`. The rotating titles are left out: the weekly recap awards them from activity in every channel, private ones included, and from songs requested anywhere. A member who hides themselves while the answer is prepared gets the "hidden" refusal instead.
+- **Profile lines**: When the leaderboard cog is loaded, the card ends with the member's all-time rank and achievement badges, as on `/profile`. The rotating titles are left out: the weekly recap awards them from activity in every channel, private ones included, and from songs requested anywhere. A member who hides themselves while the answer is prepared gets the "hidden" refusal instead, and no stats image is sent for them.
 - **Graphical Dashboard (PNG)**:
   - **Word Cloud**: Visualizes the most frequently used words (with CJK font support).
   - **Activity Chart**: A 24-hour bar chart showing the user's most active times.
