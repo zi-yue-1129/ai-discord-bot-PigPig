@@ -504,6 +504,9 @@ class CommunityCog(commands.Cog):
             weekly_day=self._t(guild.id, f"weekday_{settings.weekly_day}"),
             weekly_hour=settings.weekly_hour,
             weekly_channel=channel(settings.weekly_channel_id),
+            playing=on_off(settings.playing_enabled),
+            playing_channel=channel(settings.playing_channel_id),
+            playing_min=settings.playing_min_players,
         )
 
     @community.command(name="status", description="Show which community features are on")
@@ -703,6 +706,36 @@ class CommunityCog(commands.Cog):
         )
         if self._channel_for(interaction.guild, settings, settings.weekly_channel_id) is None:
             text += "\n" + self._t(interaction.guild_id, "no_channel")
+        await interaction.response.send_message(text, ephemeral=True)
+
+    @community.command(name="playing", description="Point out when several members play the same game")
+    @app_commands.describe(
+        enabled="Turn it on or off",
+        channel="Where to post (defaults to the announcement channel)",
+        min_players="How many members must play the same game (default 3)",
+    )
+    async def playing_command(
+        self,
+        interaction: discord.Interaction,
+        enabled: bool,
+        channel: Optional[discord.TextChannel] = None,
+        min_players: Optional[app_commands.Range[int, 2, 25]] = None,
+    ) -> None:
+        if not await self._can_manage(interaction):
+            return
+        changes: Dict[str, Any] = {"playing_enabled": enabled}
+        if channel is not None:
+            changes["playing_channel_id"] = channel.id
+        if min_players is not None:
+            changes["playing_min_players"] = min_players
+        settings = self.store.update_settings(interaction.guild_id, **changes)
+        if enabled:
+            text = self._t(interaction.guild_id, "playing_on", count=settings.playing_min_players)
+            target = self._channel_for(interaction.guild, settings, settings.playing_channel_id)
+            if target is None:
+                text += "\n" + self._t(interaction.guild_id, "no_channel")
+        else:
+            text = self._t(interaction.guild_id, "playing_off")
         await interaction.response.send_message(text, ephemeral=True)
 
     @community.command(name="weekly_preview", description="Preview this week's recap so far (only you see it)")

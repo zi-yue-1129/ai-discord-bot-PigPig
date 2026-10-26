@@ -250,5 +250,9 @@
     "What the roll is for (optional)": "这次掷骰是为了什么（选填）",
     "📜 Show a \"previously on…\" of this channel's story": "📜 显示这个频道故事的前情提要",
     "🃏 Draw a character card picture (uses your image quota)": "🃏 画一张角色卡（会用掉你的生图额度）",
-    "The character to draw": "要画的角色"
+    "The character to draw": "要画的角色",
+    "Point out when several members play the same game": "有好几位成员在玩同一款游戏时提醒大家",
+    "Turn it on or off": "开启或关闭",
+    "Where to post (defaults to the announcement channel)": "要发在哪个频道（默认为公告频道）",
+    "How many members must play the same game (default 3)": "至少要几位成员玩同一款游戏（默认 3）"
 }

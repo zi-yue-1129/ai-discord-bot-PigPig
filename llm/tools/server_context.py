@@ -12,6 +12,7 @@ import discord
 from langchain_core.tools.structured import StructuredTool
 
 from addons.logging import get_logger
+from addons.presence import is_game
 
 if TYPE_CHECKING:
     from llm.schema import OrchestratorRequest
@@ -220,7 +221,7 @@ class ServerContextTools:
                     dur = _duration(getattr(activity, "start", None))
                     if isinstance(activity, discord.Spotify):
                         lines.append(f"- Spotify: {activity.title} by {activity.artist}{dur}")
-                    elif isinstance(activity, discord.Game):
+                    elif is_game(activity):
                         lines.append(f"- Playing: {activity.name}{dur}")
                     elif isinstance(activity, discord.Streaming):
                         lines.append(f"- Streaming: {activity.name}{dur}")
