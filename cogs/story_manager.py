@@ -345,7 +345,13 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
             await interaction.response.send_message(self._t(guild_id, "story", "addons", "card_unavailable"), ephemeral=True)
             return
         limiter = getattr(self.bot, "rate_limiter", None)
-        retry_after = limiter.hit("image", interaction.user.id) if limiter else 0
+        use = None
+        if limiter is None:
+            retry_after = 0
+        elif hasattr(limiter, "take"):
+            retry_after, use = limiter.take("image", interaction.user.id)
+        else:
+            retry_after = limiter.hit("image", interaction.user.id)
         if retry_after:
             await interaction.response.send_message(
                 self._t(guild_id, "story", "addons", "card_rate_limited", seconds=format_wait(retry_after)), ephemeral=True
@@ -353,11 +359,16 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
             return
         # A private character's card is shown only to its creator.
         private = not found.is_public
-        await interaction.response.defer(ephemeral=private)
+        attachment = None
+        try:
+            await interaction.response.defer(ephemeral=private)
+        except BaseException:
+            if use is not None:
+                limiter.refund(use)
+            raise
         # A history of its own, dropped afterwards: the card's details never reach the channel's
         # shared image history (other members' requests), nor does that history reach the card.
         history_key = f"story_card:{interaction.id}"
-        attachment = None
         try:
             result = await images._generate_image_logic(card_prompt(found), str(guild_id), history_key)
             attachment = next((item for item in result.get("attachments", []) if item.get("data_base64")), None)
@@ -366,8 +377,8 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
             if isinstance(history, dict):
                 history.pop(history_key, None)
             # No card, no charge.
-            if attachment is None and limiter is not None and hasattr(limiter, "refund"):
-                limiter.refund("image", interaction.user.id)
+            if attachment is None and use is not None:
+                limiter.refund(use)
         if attachment is None:
             await interaction.followup.send(self._t(guild_id, "story", "addons", "card_failed"), ephemeral=True)
             return

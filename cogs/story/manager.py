@@ -68,20 +68,25 @@ class PendingRoll:
             self._settled.set()
 
     @property
+    def settled(self) -> bool:
+        return self._settled.is_set()
+
+    @property
     def failed(self) -> bool:
-        return self._settled.is_set() and not self.delivered
+        return self.settled and not self.delivered
 
     def settle(self, delivered: bool) -> None:
-        self.delivered = delivered
-        self._settled.set()
+        """Records once whether the reply went out; later calls change nothing."""
+        if not self._settled.is_set():
+            self.delivered = delivered
+            self._settled.set()
 
-    async def wait(self, timeout: float) -> bool:
-        """Whether the reply was settled (sent or failed) within ``timeout`` seconds."""
+    async def wait(self, timeout: float) -> None:
+        """Waits up to ``timeout`` seconds for the reply to be settled (see :attr:`settled`)."""
         try:
             await asyncio.wait_for(self._settled.wait(), timeout)
         except asyncio.TimeoutError:
-            return False
-        return True
+            pass
 
 
 class StoryManager:
@@ -234,12 +239,16 @@ class StoryManager:
 
     async def _take_dice_results(self, channel_id: int) -> List[PendingRoll]:
         """The rolls for a turn starting now: the delivered ones, after waiting briefly for replies
-        still being sent. A roll whose reply is still not settled waits for a later turn."""
+        still being sent. A roll whose reply is still not settled waits for a later turn, and
+        nothing is used if the story ended or restarted while waiting."""
+        generation = self.dice_generation.get(channel_id, 0)
         rolls = self.dice_results.pop(channel_id, None) or []
-        settled = await asyncio.gather(*(roll.wait(ROLL_REPLY_WAIT_SECONDS) for roll in rolls))
-        unsettled = [roll for roll, done in zip(rolls, settled) if not done]
-        self._return_dice_results(channel_id, unsettled)
-        return [roll for roll in rolls if roll.delivered]
+        await asyncio.gather(*(roll.wait(ROLL_REPLY_WAIT_SECONDS) for roll in rolls))
+        # Decided once, from each roll's own state after the wait (not from how the wait ended).
+        if self.dice_generation.get(channel_id, 0) != generation:
+            return []
+        self._return_dice_results(channel_id, [roll for roll in rolls if not roll.settled])
+        return [roll for roll in rolls if roll.settled and roll.delivered]
 
     def _return_dice_results(self, channel_id: int, rolls: List[PendingRoll]) -> None:
         """Puts back rolls a turn did not use, in the order they were rolled (the latest few only).

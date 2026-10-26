@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from typing import Callable, Deque, Dict, Iterable, Mapping, Tuple
+from typing import Callable, Deque, Dict, Iterable, Mapping, Optional, Tuple
 
 # Used when base.yaml has no ``rate_limits`` block, or leaves a bucket out.
 DEFAULT_LIMITS: Dict[str, Dict[str, float]] = {
@@ -60,9 +60,14 @@ class RateLimiter:
 
     def hit(self, bucket: str, user_id: int) -> float:
         """Record one use and return 0, or return the seconds to wait when over the limit."""
+        return self.take(bucket, user_id)[0]
+
+    def take(self, bucket: str, user_id: int) -> Tuple[float, Optional["Use"]]:
+        """Like :meth:`hit`, and also returns the recorded use (None when nothing was recorded),
+        which :meth:`refund` can give back."""
         rule = self.rules.get(bucket)
         if rule is None or rule.unlimited or int(user_id) in self.exempt_user_ids:
-            return 0.0
+            return 0.0, None
 
         now = self._clock()
         window = self._hits[(bucket, int(user_id))]
@@ -70,16 +75,19 @@ class RateLimiter:
             window.popleft()
 
         if len(window) >= rule.max_requests:
-            return max(rule.per_seconds - (now - window[0]), 0.1)
+            return max(rule.per_seconds - (now - window[0]), 0.1), None
 
         window.append(now)
-        return 0.0
+        return 0.0, Use(bucket, int(user_id), now)
 
-    def refund(self, bucket: str, user_id: int) -> None:
-        """Takes back the latest use recorded by :meth:`hit` (for a request that produced nothing)."""
-        window = self._hits.get((bucket, int(user_id)))
-        if window:
-            window.pop()
+    def refund(self, use: Optional["Use"]) -> None:
+        """Gives back a use from :meth:`take` (for a request that produced nothing); only once."""
+        if use is None or use.refunded:
+            return
+        use.refunded = True
+        window = self._hits.get((use.bucket, use.user_id))
+        if window is not None and use.at in window:
+            window.remove(use.at)
 
     def should_notify(self, bucket: str, user_id: int, retry_after: float) -> bool:
         """True the first time a user is blocked in a window, so the bot says so only once."""
@@ -89,6 +97,16 @@ class RateLimiter:
             return False
         self._notified_until[key] = now + retry_after
         return True
+
+
+@dataclass
+class Use:
+    """One recorded use of a bucket."""
+
+    bucket: str
+    user_id: int
+    at: float
+    refunded: bool = False
 
 
 def format_wait(seconds: float) -> int:

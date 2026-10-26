@@ -1433,6 +1433,12 @@ class _NoTyping:
         return None
 
 
+def _scratch_dir() -> str:
+    import tempfile
+
+    return tempfile.mkdtemp(prefix="story-test-")
+
+
 def _real_story_manager(monkeypatch: pytest.MonkeyPatch, plan: Any) -> tuple:
     """A real StoryManager and prompt builder whose GM turn stops at the plan.
 
@@ -1440,7 +1446,6 @@ def _real_story_manager(monkeypatch: pytest.MonkeyPatch, plan: Any) -> tuple:
     Returns the manager and the dice part of every GM prompt built (None when it had no rolls).
     """
     import cogs.story.manager as story_module
-    from cogs.story.prompt_engine import StoryPromptEngine
 
     prompts: list = []
 
@@ -1470,17 +1475,16 @@ def _real_story_manager(monkeypatch: pytest.MonkeyPatch, plan: Any) -> tuple:
     db = SimpleNamespace(
         get_story_instance=lambda channel_id: instance, get_world=lambda name: SimpleNamespace(world_name=name, locations=[])
     )
-    manager = StoryManager.__new__(StoryManager)
+    # Built the way the bot builds it (its databases under a temporary folder), then pointed at the fakes.
+    monkeypatch.chdir(_scratch_dir())
+    manager = StoryManager(
+        SimpleNamespace(user=SimpleNamespace(id=1), get_cog=lambda name: None),
+        object(),
+        SimpleNamespace(get_effective_full_prompt=lambda *a: "base prompt"),
+    )
     manager._initialized = True
-    manager.bot = SimpleNamespace(user=SimpleNamespace(id=1))
     manager._get_db = lambda guild_id: db
     manager.character_db = SimpleNamespace(get_character=lambda character_id: None)
-    manager.interventions = {}
-    manager.dice_results = {}
-    manager.dice_generation = {}
-    manager.prompt_engine = StoryPromptEngine(
-        SimpleNamespace(get_cog=lambda name: None), SimpleNamespace(get_effective_full_prompt=lambda *a: "base prompt")
-    )
     manager.language_manager = FakeLang()
     manager.logger = SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None, error=lambda *a, **k: None)
     manager._extract_structured_response = lambda response, model, name: response
@@ -1701,4 +1705,95 @@ async def test_a_card_that_could_not_be_drawn_is_not_charged() -> None:
         interaction = FakeInteraction(user_id=7)
         await StoryManagerCog.card.callback(cog, interaction, "c1")
         assert interaction.followups[0]["content"] == "card_failed|"
+    assert limiter.hit("image", 7) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_reply_settled_right_as_the_wait_ends_is_used_exactly_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    from cogs.story.manager import PendingRoll
+
+    manager, prompts = _real_story_manager(monkeypatch, None)
+    roll = manager.add_dice_result(500, "a rolled 3", delivered=False)
+
+    async def times_out_as_the_reply_lands(self: Any, timeout: float) -> None:
+        await asyncio.sleep(0)
+        manager.confirm_dice_result(roll)  # the wait gave up, but the reply went out before the turn looked
+
+    monkeypatch.setattr(PendingRoll, "wait", times_out_as_the_reply_lands)
+    assert await manager._take_dice_results(500) == [roll]
+    assert _pending(manager) == []
+
+
+@pytest.mark.asyncio
+async def test_a_story_ending_while_a_turn_waits_for_a_roll_leaves_the_turn_without_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    from cogs.story.manager import PendingRoll
+
+    manager, prompts = _real_story_manager(monkeypatch, None)
+    roll = manager.add_dice_result(500, "a rolled 3", delivered=False)
+
+    async def story_ends_then_reply_lands(self: Any, timeout: float) -> None:
+        manager.clear_dice_results(500)
+        manager.confirm_dice_result(roll)
+
+    monkeypatch.setattr(PendingRoll, "wait", story_ends_then_reply_lands)
+    await manager.process_story_message(_story_message([]))
+
+    assert prompts == [None] and _pending(manager) == []
+
+
+@pytest.mark.asyncio
+async def test_an_announcement_that_cannot_be_removed_loses_its_buttons(store: EventStore) -> None:
+    from datetime import datetime
+
+    cog = _events_cog(store, FakeChannel())
+    cog.parse_time = lambda text: datetime.fromtimestamp(NOW + float(text))
+    interaction = FakeInteraction(user_id=2)
+
+    async def posted_without_id(**kwargs: Any) -> Any:
+        return None
+
+    async def fails(*args: Any, **kwargs: Any) -> Any:
+        raise discord.HTTPException(SimpleNamespace(status=500, reason="boom"), "boom")
+
+    interaction.response.send_message = posted_without_id
+    interaction.original_response = fails
+    interaction.delete_original_response = fails
+    await EventsCog.create.callback(cog, interaction, "Apex", "10800", 0, 15)
+
+    assert store.upcoming(GUILD_ID, NOW) == []
+    assert interaction.edits == [{"content": "post_failed|", "embed": None, "view": None}]
+
+
+def test_a_refund_gives_back_exactly_the_failed_use_and_only_once() -> None:
+    from addons.rate_limiter import LimitRule, RateLimiter
+
+    now = [0.0]
+    limiter = RateLimiter({"image": LimitRule(max_requests=2, per_seconds=10)}, clock=lambda: now[0])
+    _, failed = limiter.take("image", 7)  # t=0, fails later
+    now[0] = 9
+    assert limiter.hit("image", 7) == 0  # t=9, succeeds (the existing hit() callers)
+    now[0] = 9.5
+    limiter.refund(failed)
+    limiter.refund(failed)  # a second refund changes nothing
+
+    assert limiter.hit("image", 7) == 0  # the failed use's place
+    assert limiter.hit("image", 7) > 0  # but the t=9 use still counts
+    now[0] = 30
+    assert limiter.hit("image", 7) == 0 and limiter.hit("image", 7) == 0 and limiter.hit("image", 7) > 0
+
+
+@pytest.mark.asyncio
+async def test_a_card_whose_reply_cannot_be_acknowledged_is_not_charged() -> None:
+    from addons.rate_limiter import LimitRule, RateLimiter
+
+    limiter = RateLimiter({"image": LimitRule(max_requests=1, per_seconds=3600)})
+    cog = _story_cog(characters={"c1": _character()}, cogs={"ImageGenerationCog": FakeImages()}, rate_limiter=limiter)
+    interaction = FakeInteraction(user_id=7)
+
+    async def fail(**kwargs: Any) -> None:
+        raise discord.HTTPException(SimpleNamespace(status=500, reason="boom"), "boom")
+
+    interaction.response.defer = fail
+    with pytest.raises(discord.HTTPException):
+        await StoryManagerCog.card.callback(cog, interaction, "c1")
     assert limiter.hit("image", 7) == 0

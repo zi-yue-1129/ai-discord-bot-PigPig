@@ -330,7 +330,15 @@ class EventsCog(commands.Cog):
                 try:
                     await interaction.delete_original_response()
                 except discord.HTTPException:
-                    pass
+                    # It could not be removed either: at least its buttons go, and it says so.
+                    try:
+                        await interaction.edit_original_response(content=self._t(guild_id, "post_failed"), embed=None, view=None)
+                    except discord.HTTPException:
+                        self.logger.warning(
+                            f"events: the announcement of event {event_id} in channel {interaction.channel_id} could not be"
+                            " removed; a moderator may delete it",
+                            exc_info=True,
+                        )
                 try:
                     await interaction.followup.send(self._t(guild_id, "post_failed"), ephemeral=True)
                 except discord.HTTPException:
