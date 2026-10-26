@@ -32,6 +32,27 @@
         "cancelled": "Cancelled \"{title}\".",
         "reminder": "⏰ \"{title}\" starts {when}!",
         "reminder_now": "⏰ \"{title}\" has started!",
-        "untitled_event": "event #{id} ([open]({link}))"
+        "untitled_event": "event #{id} ([open]({link}))",
+        "draft_prompt": "📅 {host} wants to post this event; it goes up for sign-ups once confirmed:\n**{title}**\n🕒 {when}\nLimit: {limit} · reminder {minutes} minutes before\nOnly the host can press Confirm.",
+        "draft_confirm": "Confirm",
+        "draft_cancel": "Cancel",
+        "draft_not_yours": "Only the host can confirm or cancel this event.",
+        "draft_cancelled": "Cancelled; the event was not made.",
+        "draft_expired": "Not confirmed in time; the event was not made.",
+        "draft_done": "This event was already handled.",
+        "hidden_host": "a member",
+        "draft_replaced": "Replaced by a newer proposal from the same host; this event was not made.",
+        "draft_limit": "This server already has {limit} event proposals waiting for confirmation; try again later.",
+        "ask_going": "{member}, sign you up for {title}?",
+        "ask_maybe": "{member}, mark you as maybe for {title}?",
+        "ask_leave": "{member}, take you off {title}?",
+        "you_are_waiting_public": "It is full, so you are on the waiting list; you move up when someone leaves.",
+        "ask_confirm": "Confirm",
+        "ask_cancel": "Cancel",
+        "ask_not_yours": "Only the member being asked can answer.",
+        "ask_done": "This was already answered.",
+        "ask_cancelled": "Cancelled; nothing changed.",
+        "ask_expired": "No answer in time; nothing changed.",
+        "ask_replaced": "Replaced by a newer question; nothing changed."
     }
 }

@@ -1,6 +1,6 @@
 # Community Tools
 
-`llm/tools/community_tools.py` lets the AI answer questions about the community features: rankings, achievements, the weekly recap, birthdays and events. `llm/tools/activity_tools.py` adds starting a game, who is playing what, and the most played songs.
+`llm/tools/community_tools.py` lets the AI answer questions about the community features (rankings, achievements, the weekly recap, birthdays and events) and act on a few of them. `llm/tools/fun_tools.py` adds dice and the decision wheel, and `llm/tools/activity_tools.py` adds starting a game, who is playing what, and the most played songs.
 
 The AI's answer is posted for everyone in the channel, so each tool returns only what a public post would show:
 
@@ -8,6 +8,7 @@ The AI's answer is posted for everyone in the channel, so each tool returns only
 - Text from a channel (channel names, quotes, words, event titles) is only used when the channel is *shareable*: every member can read it (`audience_can_read`) and it is not age-restricted (NSFW, its own or its parent's). An event in the channel the answer goes to is always listed.
 - Names and other text members wrote go through `user_text()`: angle brackets are replaced, `@everyone`/`@here` are broken up, links become `[link]`, the text is cut to 100 characters and wrapped in `<<< >>>` so the model reads it as data.
 - Nothing here calls a model or uses anyone's chat quota.
+- Tools that act only ever act for the person talking to the bot. A step that makes someone more visible needs that person's own action, so text that tricks the model cannot undo someone's choice: showing oneself on the leaderboard again is only possible with the slash command, and a birthday is saved only when the member it is for presses Save under the question `propose_birthday` posts. Making an event needs its host to press Confirm, and joining or leaving one and deleting one's birthday need the asker to press Confirm under the question the tool posts, so text that tricks the model cannot change anything on its own.
 
 | Tool | Group | Loaded when | Arguments | Returns |
 | --- | --- | --- | --- | --- |
@@ -16,7 +17,13 @@ The AI's answer is posted for everyone in the channel, so each tool returns only
 | `hide_my_stats` | core | LeaderboardCog is loaded | none | Hides the asker only. Showing oneself again is only possible with `/leaderboard optout hide:False`, so text that tricks the model cannot undo someone's choice |
 | `get_server_recap` | community | CommunityCog is loaded | `period`: this_week or last_week | The weekly recap's facts (messages, shareable channels, talkers, words, quote, titles; no music) |
 | `get_upcoming_birthdays` | community | CommunityCog is loaded (says so when birthdays are off for the server; building the tool list reads no database) | `days`: 1 to 30 | Saved birthdays, soonest first, without hidden members, bots or leavers |
+| `remove_my_birthday` | community | CommunityCog is loaded | none | Asks the asker to confirm deleting their saved birthday; the database is only read (never created) before they press Confirm, and an unreadable one answers "not available" |
+| `propose_birthday` | community | CommunityCog is loaded | `month`, `day`, `user_id` (defaults to the asker) | Posts a question with Save and Decline buttons only that member can press (see [Birthdays the AI proposes](../../cogs/community.md#birthdays-the-ai-proposes)); refused for members who declined someone else's proposal, hidden members (unless they ask for themselves), bots and members who cannot see the channel |
 | `list_upcoming_events` | events | EventsCog is loaded | none | Up to 10 events: number, title, Discord start timestamp, sign-up counts (without hidden members and people who left), link |
+| `create_event` | events | EventsCog is loaded | `title`, `time`, `limit`, `remind_minutes` | Posts a proposal with Confirm and Cancel buttons only the asker (the host) can press; the event is made on Confirm, within 3 minutes, with the limits checked again |
+| `join_event` | events | EventsCog is loaded | `event_id`, `status`: going, maybe or leave | Asks the asker to confirm signing up or out (see [the events cog](../../cogs/events.md#events-the-ai-proposes)); refused for other servers' events, started ones and events in channels they cannot read; the model's reply never repeats the title |
+| `roll_dice` | fun | always | `notation`, `reason` | Posts the roll in the channel (as `/roll`) and returns it, so the model never invents a result |
+| `spin_wheel` | fun | WheelCog is loaded | `options` (2 to 20) | Spins the wheel in the channel (as `/wheel spin`), one spin per channel at a time |
 | `start_server_game` | games | GamesCog is loaded | `game`: quiz, chain or guess_song; `rounds`; `homophones`; `days`; `this_channel` | Posts an offer with Start and Cancel buttons only the asker can press; the game starts on Start, with the asker as host (same checks, again on the press, and quota as `/game`) |
 | `who_is_playing` | playing | PlayingCog is loaded (says so when `/community playing` is off) | none | Games being played now, most players first, naming and counting only players who can read the channel (in a private thread: its members) and are not hidden |
 | `get_popular_songs` | music | the music player's play log exists | `period`: week or month; `limit` | The most played songs and their play and skip counts, counted only where everyone could hear them |

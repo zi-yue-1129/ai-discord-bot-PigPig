@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, TYPE_CHECKING
 
+import discord
 from langchain_core.tools.structured import StructuredTool
 
 from addons.logging import get_logger
@@ -250,6 +251,29 @@ def recap_text(view: RecapView, title_name: Any) -> str:
     return "\n".join(lines)
 
 
+# Never the member's name: a refusal for a hidden member must not hand it to the model.
+_BIRTHDAY_PROPOSALS = {
+    "proposed": (
+        "Posted a question with Save and Decline buttons for that member. Nothing is saved until they press "
+        "Save; do not say it is saved."
+    ),
+    "invalid_date": "That is not a real date. Ask for the right month and day.",
+    "bot": "Bots do not have birthdays here.",
+    "cannot_see": "That member cannot read this channel, so they cannot be asked here.",
+    "blocked": (
+        "That member cannot be asked about a birthday by other people. Do not retry; they can set it "
+        "themselves with /birthday set or by asking you."
+    ),
+    "pending": "That member already has a birthday question waiting for their answer.",
+    "busy": "Too many birthday questions on this server are waiting for answers; try again later.",
+    "rate_limited": (
+        "The person asking already had several birthdays proposed for others this hour; do not retry. "
+        "Others can set their own with /birthday set."
+    ),
+    "unavailable": UNAVAILABLE,
+}
+
+
 class CommunityTools:
     """Tools over the leaderboard and community cogs."""
 
@@ -414,6 +438,49 @@ class CommunityTools:
                 "/leaderboard optout hide:False."
             )
 
+        async def remove_my_birthday() -> str:
+            """Asks the person asking, with buttons, whether to delete the birthday they saved here.
+
+            Only call this when the person asking clearly wants their own birthday removed. Nothing
+            is deleted until they press Confirm themselves.
+
+            Returns:
+                Whether the question was posted.
+            """
+            result = await community.propose_birthday_removal(message.channel, message.author)
+            return {
+                "asked": "Posted a question with Confirm and Cancel buttons; it is only deleted when they press Confirm.",
+                "none": "They had no birthday saved here.",
+                "unavailable": UNAVAILABLE,
+            }[result]
+
+        async def propose_birthday(month: int, day: int, user_id: Optional[str] = None) -> str:
+            """Asks a member, with buttons in this channel, whether to save a birthday for them here.
+
+            Call this when someone asks you to remember or set a birthday on this server: their own
+            or another member's. Nothing is saved unless that member presses Save themselves. If
+            they decline a proposal made by someone else, later ones from other people are turned
+            away until they ask for one themselves.
+
+            Args:
+                month: The birthday's month, 1-12.
+                day: The birthday's day of the month.
+                user_id: Optional Discord user ID or mention of the member whose birthday it is.
+                    Defaults to the person asking.
+
+            Returns:
+                Whether the question was posted. The birthday is not saved yet: never say it is.
+            """
+            member, problem = _resolve_member(guild, user_id, message.author)
+            if problem:
+                return problem
+            try:
+                month, day = int(month), int(day)
+            except (TypeError, ValueError):
+                return "That is not a valid date."
+            result = await community.propose_birthday(message.channel, message.author, member, month, day)
+            return _BIRTHDAY_PROPOSALS.get(result, "Could not ask them.")
+
         info = {"target_agent_mode": "info"}
         community_group = {**info, "tool_group": "community"}
         tools = []
@@ -429,6 +496,9 @@ class CommunityTools:
             # not touch the database (it runs on the event loop for every message).
             tools.append(StructuredTool.from_function(coroutine=get_server_recap, metadata=community_group))
             tools.append(StructuredTool.from_function(coroutine=get_upcoming_birthdays, metadata=community_group))
+            tools.append(StructuredTool.from_function(coroutine=remove_my_birthday, metadata=community_group))
+            # Saving needs the member's own button press (see CommunityCog.propose_birthday).
+            tools.append(StructuredTool.from_function(coroutine=propose_birthday, metadata=community_group))
         return tools
 
 
@@ -488,8 +558,90 @@ class EventTools:
                 return "There are no upcoming events that can be shown here."
             return "Upcoming events:\n" + "\n".join(lines)
 
-        return [
-            StructuredTool.from_function(
-                coroutine=list_upcoming_events, metadata={"target_agent_mode": "info", "tool_group": "events"}
+        async def create_event(title: str, time: str, limit: int = 0, remind_minutes: int = 15) -> str:
+            """Proposes an event people can sign up for, like /event create, with the person asking as host.
+
+            The event is posted with a Confirm button that only the host can press; it is made
+            only when they press it (within 3 minutes). Call this when someone asks to organise
+            or schedule a get-together, game night, meetup, etc.
+
+            Args:
+                title: What the event is (up to 100 characters).
+                time: When it starts, as they said it, e.g. "tomorrow 20:00", "Friday 9pm", "in 2 hours".
+                limit: Most people who can join (others wait in line); 0 means no limit.
+                remind_minutes: Minutes before the start to remind everyone going (0-1440).
+
+            Returns:
+                Whether the proposal was posted, or why not.
+            """
+            try:
+                problem, draft = await events.post_draft(
+                    message.channel, message.author, title, time, int(limit), int(remind_minutes)
+                )
+            except (TypeError, ValueError):
+                return "limit and remind_minutes must be whole numbers."
+            except discord.HTTPException:
+                _logger.warning("create_event: could not post the proposal", exc_info=True)
+                return "The event could not be posted in this channel."
+            if problem is not None:
+                return _EVENT_PROBLEMS.get(problem, "The event could not be made.")
+            return (
+                f"Posted the event {user_text(draft.title)} starting <t:{int(draft.starts_at)}:F> for confirmation. "
+                "It is only created when the host presses Confirm within 3 minutes; tell them so."
             )
+
+        async def join_event(event_id: int, status: str = "going") -> str:
+            """Asks the person asking, with buttons, to confirm signing up for an event, marking
+            themselves as maybe, or leaving it.
+
+            Only call this when the person asking clearly wants it for themselves; it only ever
+            changes the person asking, and only once they press Confirm. Use list_upcoming_events
+            first if you do not know the event's number.
+
+            Args:
+                event_id: The event's number (shown as #N under the event).
+                status: "going", "maybe" or "leave".
+
+            Returns:
+                Whether the question was posted.
+            """
+            from cogs.events_lib.store import GOING, MAYBE
+
+            wanted = {"going": GOING, "maybe": MAYBE, "leave": None}
+            status = str(status or "going").lower()
+            if status not in wanted:
+                return 'status must be "going", "maybe" or "leave".'
+            try:
+                event_id = int(str(event_id).lstrip("#"))
+            except (TypeError, ValueError):
+                return "Give the event's number, e.g. 12."
+            problem = await events.propose_answer(message.channel, message.author, event_id, wanted[status])
+            if problem is not None:
+                return _EVENT_PROBLEMS.get(problem, "That event could not be changed.")
+            return (
+                f"Posted a question with Confirm and Cancel buttons for event #{event_id}. Nothing changes until "
+                "they press Confirm within 3 minutes; tell them so."
+            )
+
+        events_group = {"target_agent_mode": "info", "tool_group": "events"}
+        return [
+            StructuredTool.from_function(coroutine=list_upcoming_events, metadata=events_group),
+            StructuredTool.from_function(coroutine=create_event, metadata=events_group),
+            StructuredTool.from_function(coroutine=join_event, metadata=events_group),
         ]
+
+
+_EVENT_PROBLEMS = {
+    "invalid_title": "The title must be 1 to 100 characters.",
+    "invalid_limit": "limit must be between 0 and 100.",
+    "invalid_remind": "remind_minutes must be between 0 and 1440.",
+    "invalid_time": 'Could not understand the time; ask for something like "tomorrow 20:00" or "in 2 hours".',
+    "past_time": "That time has already passed; events must start in the future.",
+    "too_far": "Events can be at most 180 days ahead.",
+    "user_limit": "They already host 5 upcoming events; one must end or be cancelled first.",
+    "guild_limit": "This server already has 25 upcoming events.",
+    "draft_limit": "Too many event proposals on this server are waiting for confirmation; try again later.",
+    "not_found": "There is no such event here (or they cannot see its channel).",
+    "event_gone": "That event was cancelled or no longer exists.",
+    "event_started": "That event has already started, so sign-ups are closed.",
+}

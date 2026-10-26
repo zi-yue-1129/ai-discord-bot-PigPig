@@ -32,6 +32,27 @@
         "cancelled": "已取消“{title}”。",
         "reminder": "⏰ “{title}”{when}开始！",
         "reminder_now": "⏰ “{title}”已经开始了！",
-        "untitled_event": "活动 #{id}（[查看]({link})）"
+        "untitled_event": "活动 #{id}（[查看]({link})）",
+        "draft_prompt": "📅 {host} 想发起活动，确认后就会贴出报名：\n**{title}**\n🕒 {when}\n人数上限：{limit}・开始前 {minutes} 分钟提醒\n只有发起人能按“确认”。",
+        "draft_confirm": "确认",
+        "draft_cancel": "取消",
+        "draft_not_yours": "只有发起人可以确认或取消这个活动。",
+        "draft_cancelled": "已取消，这个活动没有建立。",
+        "draft_expired": "太久没有确认，这个活动没有建立。",
+        "draft_done": "这个活动已经处理过了。",
+        "hidden_host": "一位成员",
+        "draft_replaced": "已被同一位发起人的新提议取代，这个活动没有创建。",
+        "draft_limit": "这个服务器已经有 {limit} 个等待确认的活动提议了，请稍后再试。",
+        "ask_going": "{member}，要帮你报名参加{title}吗？",
+        "ask_maybe": "{member}，要把你在{title}标记为“也许”吗？",
+        "ask_leave": "{member}，要把你从{title}的名单移除吗？",
+        "you_are_waiting_public": "人数已满，已排入候补，有人退出就会自动补上。",
+        "ask_confirm": "确认",
+        "ask_cancel": "取消",
+        "ask_not_yours": "只有被询问的人可以回答。",
+        "ask_done": "这个问题已经回答过了。",
+        "ask_cancelled": "已取消，什么都没有变。",
+        "ask_expired": "太久没有回答，什么都没有变。",
+        "ask_replaced": "已被新的询问取代，什么都没有变。"
     }
 }

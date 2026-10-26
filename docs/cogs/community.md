@@ -32,6 +32,17 @@ Messages are written by the model in the bot's own voice (the server's persona).
 
 Feb 29 birthdays and join dates are celebrated on Feb 28 in common years.
 
+### Birthdays the AI proposes
+
+When someone asks the AI to remember a birthday (their own or another member's), `propose_birthday()` posts a question in the channel that pings only that member, with **Save** and **Decline** buttons only they can press. Nothing is saved until they press Save.
+
+- If they decline a proposal someone else made, later proposals from other people are turned away without pinging them (`birthday_declines`). The block is lifted when they ask for one themselves and press Save, or use `/birthday set`. Declining their own request changes nothing.
+- A proposal that nobody answers expires after an hour (`PROPOSAL_SECONDS`) and is not a decline.
+- Each member may have the AI propose birthdays for other people at most `birthday.proposals_per_hour` times an hour (owner setting, default 3; each one pings someone, and replacing an open question still counts). Asking for oneself does not count.
+- One question per member at a time, one open question per asker (a new one replaces it) and at most 5 per server (`MAX_BIRTHDAY_PROPOSALS_PER_GUILD`). Bots, members who cannot read the channel (for a private thread: who are not in it) and, on someone else's behalf, members hidden with `/leaderboard optout` are not asked. A hidden asker is not named in the question, and the model's replies never name the member.
+- The community database is only read when proposing. The Save, Decline and removal Confirm buttons answer Discord first, then check it and write on a worker thread with a connection that cannot create the file (`create=False`), so a missing database is never created as an empty file. Who is hidden is read again after a replaced proposal is closed, right before the new one is posted.
+- The buttons are not persistent: after a restart an open question's buttons no longer answer, and nothing was saved.
+
 ## Welcomes
 
 - Joins within `batch_seconds` of each other share one message.
@@ -89,6 +100,7 @@ community:
   birthday:
     use_ai: true
     max_mentions: 20
+    proposals_per_hour: 3
   weekly:
     min_messages: 50
     use_ai: true
@@ -108,7 +120,7 @@ community:
 
 ## Storage
 
-`data/community.db` (SQLite): `guild_settings`, `birthdays` (per server), `job_runs`, `birthday_roles`, and for the leaderboard cog `optouts`, `user_achievements`, `achievement_checked`, `titles`, plus `playing_posts` (posts of the last two days, for the cooldown, the daily cap and the button) and `temp_voice_rooms` (rooms the bot opened and still has to delete). Columns added later (such as `achievement_mode`) are added to older files on first use.
+`data/community.db` (SQLite): `guild_settings`, `birthdays` (per server), `job_runs`, `birthday_roles`, `birthday_declines` (members who turned away proposed birthdays), and for the leaderboard cog `optouts`, `user_achievements`, `achievement_checked`, `titles`, plus `playing_posts` (posts of the last two days, for the cooldown, the daily cap and the button) and `temp_voice_rooms` (rooms the bot opened and still has to delete). Columns added later (such as `achievement_mode`) are added to older files on first use.
 
 ## Code
 
