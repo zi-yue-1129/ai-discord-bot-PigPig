@@ -27,7 +27,7 @@ Only one game runs per channel at a time, and a player can host one game at a ti
 
 ## Asking the AI for a game
 
-The AI's `start_server_game` tool (see [community tools](../llm/tools/community_tools.md)) does not start a game itself. It posts an offer with **Start** and **Cancel** buttons that only the member who asked can press; the offer pings nobody and expires after 2 minutes. A member has one open offer at a time (a new one replaces it) and a server at most 3. Pressing Start runs the same checks as the slash command again and starts the game in the background with that member as host, charged to their quota like `/game`.
+The AI's `start_server_game` tool (see [community tools](../llm/tools/community_tools.md)) does not start a game itself. It posts an offer with **Start** and **Cancel** buttons that only the member who asked can press; the offer pings nobody and expires after 2 minutes. A member has one open offer at a time (a new one replaces it) and a server at most 3. Pressing Start checks that the member may still post and use commands in the channel and runs the same checks as the slash command again and starts the game in the background with that member as host, charged to their quota like `/game`.
 
 ## `/game chain [homophones]`
 

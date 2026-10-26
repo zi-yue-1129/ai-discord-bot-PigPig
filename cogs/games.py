@@ -19,6 +19,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from addons.logging import get_logger
+from addons.visibility import current_member
 from function import func
 from llm.game_writer import Charge, QuotaExhausted, write_chain_word, write_question
 
@@ -128,12 +129,22 @@ class GameOfferView(discord.ui.View):
 
     async def _start(self, interaction: discord.Interaction) -> None:
         self.close()
-        # The checks run again now: the channel, the host or the music may be busy since the offer.
-        problem = self.cog.start_game(self.game, self.guild, self.channel, self.host, **self.options)
-        text = problem if problem is not None else self.cog._t(
-            self.guild.id, "offer_started", user=self.host.mention, game=self.cog._t(self.guild.id, f"game_{self.game}")
-        )
-        await interaction.response.edit_message(content=text, view=None, allowed_mentions=discord.AllowedMentions.none())
+        # Acknowledged first: looking the host up again may need a request to Discord.
+        await interaction.response.defer()
+        # The checks run again now, on the host as they are now: their permissions, the channel,
+        # their voice channel or the music may have changed since the offer.
+        host = await current_member(self.guild, self.host.id)
+        if host is None or not self.cog.host_may_play(self.channel, host):
+            text = self.cog._t(self.guild.id, "offer_denied")
+        else:
+            problem = self.cog.start_game(self.game, self.guild, self.channel, host, **self.options)
+            text = problem if problem is not None else self.cog._t(
+                self.guild.id, "offer_started", user=host.mention, game=self.cog._t(self.guild.id, f"game_{self.game}")
+            )
+        try:
+            await interaction.edit_original_response(content=text, view=None, allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException:
+            pass
 
     async def _cancel(self, interaction: discord.Interaction) -> None:
         self.close()
@@ -259,6 +270,19 @@ class GamesCog(commands.Cog):
             problem = self._t(guild.id, "unavailable")
         return problem, []
 
+    @staticmethod
+    def host_may_play(channel: Any, host: Any) -> bool:
+        """Whether ``host`` may start a game in ``channel`` themselves: see it, post in it and use commands there."""
+        try:
+            permissions = channel.permissions_for(host)
+        except Exception:
+            return False
+        in_thread = getattr(channel, "type", None) in (
+            discord.ChannelType.public_thread, discord.ChannelType.private_thread, discord.ChannelType.news_thread
+        )
+        send = "send_messages_in_threads" if in_thread else "send_messages"
+        return all(getattr(permissions, name, False) for name in ("view_channel", send, "use_application_commands"))
+
     def _forget_offer(self, offer: GameOfferView) -> None:
         if self._offers.get(offer.host.id) is offer:
             del self._offers[offer.host.id]
@@ -283,6 +307,8 @@ class GamesCog(commands.Cog):
             options = {"homophones": bool(homophones)}
         elif game == "quiz":
             options.update(days=max(1, min(int(days), 3650)) if days else None, this_channel=bool(this_channel))
+        if not self.host_may_play(channel, host):
+            return self._t(guild.id, "offer_denied")
         problem, _ = self._start_problem(game, guild, channel, host)
         if problem is not None:
             return problem
@@ -328,19 +354,42 @@ class GamesCog(commands.Cog):
         async def announce(text: str) -> Any:
             return await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
 
+        days = max(1, min(int(days), 3650)) if days else None
+        started = False
+
+        def release() -> None:
+            self.limits.running.discard(channel.id)
+            self.limits.hosts.discard(host.id)
+            if game == "guess_song":
+                self.limits.song_guilds.discard(guild.id)
+
+        async def session() -> None:
+            nonlocal started
+            started = True
+            try:
+                if game == "quiz":
+                    await self._play_quiz(guild, channel, host, rounds, days, this_channel, announce)
+                elif game == "chain":
+                    await self._play_chain(guild, channel, host, homophones, announce)
+                else:
+                    await self._play_song_game(guild, channel, host, pool, rounds, announce)
+            finally:
+                # The games free these themselves, except when cancelled before their own ``try``.
+                release()
+
+        def finished(task: asyncio.Task) -> None:
+            self._tasks.discard(task)
+            if not started:
+                # Cancelled (the cog unloaded) before the game ran: nothing else frees what it took.
+                release()
+
         # Claimed before the task starts, so a second request right after this one is refused.
         self._claim_at(channel.id, host.id)
-        if game == "quiz":
-            days = max(1, min(int(days), 3650)) if days else None
-            session = self._play_quiz(guild, channel, host, rounds, days, this_channel, announce)
-        elif game == "chain":
-            session = self._play_chain(guild, channel, host, homophones, announce)
-        else:
+        if game == "guess_song":
             self.limits.song_guilds.add(guild.id)
-            session = self._play_song_game(guild, channel, host, pool, rounds, announce)
-        task = asyncio.create_task(session)
+        task = asyncio.create_task(session())
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        task.add_done_callback(finished)
         return None
 
     # ------------------------------------------------------------ questions

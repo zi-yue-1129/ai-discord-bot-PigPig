@@ -10,15 +10,16 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
+import discord
 import pytest
 
 from cogs.community_lib.limits import CommunityLimits
 from cogs.community_lib.store import CommunityStore
-from cogs.games import MAX_GAME_OFFERS, GameOfferView, GamesCog
+from cogs.games import GAME_OFFER_SECONDS, MAX_GAME_OFFERS, GameOfferView, GamesCog
 from cogs.music_lib.taste_store import TasteStore
 from cogs.playing import PlayingCog
 from llm import tools_factory
-from llm.tools.activity_tools import GameTools, PlayingTools, PopularSongTools
+from llm.tools.activity_tools import MAX_NAMES, GameTools, PlayingTools, PopularSongTools, heard_by_everyone
 from llm.tools.community_tools import UNAVAILABLE
 
 GUILD_ID = 42
@@ -45,11 +46,17 @@ class FakeChannel:
         self.viewers = viewers  # None: everyone sees it
         self.sent: List[tuple] = []
         self.messages: List[FakeMessage] = []
+        self.muted: set = set()  # members who may see the channel but not post or use commands
+        self.broken = False  # sending fails
 
     def permissions_for(self, member: Any) -> Any:
-        return SimpleNamespace(view_channel=self.viewers is None or member.id in self.viewers)
+        view = self.viewers is None or member.id in self.viewers
+        post = view and member.id not in self.muted
+        return SimpleNamespace(view_channel=view, send_messages=post, use_application_commands=post)
 
     async def send(self, content: Any = None, **kwargs: Any) -> Any:
+        if self.broken:
+            raise discord.HTTPException(SimpleNamespace(status=500, reason="down"), "down")
         self.sent.append((content, kwargs))
         message = FakeMessage(len(self.sent))
         self.messages.append(message)
@@ -66,6 +73,9 @@ class FakeResponse:
 
     async def edit_message(self, **kwargs: Any) -> None:
         self.edited.append(kwargs)
+
+    async def defer(self) -> None:
+        self.deferred = True
 
 
 def _member(member_id: int, bot: bool = False, voice: Any = None, name: Optional[str] = None) -> Any:
@@ -99,7 +109,10 @@ def _tool(cls: Any, runtime: Any) -> Any:
 async def _press(view: GameOfferView, key: str, user: Any) -> FakeResponse:
     """Presses the offer's button whose label is ``key`` as ``user``."""
     response = FakeResponse()
-    interaction = SimpleNamespace(user=user, response=response)
+    async def edit_original_response(**kwargs: Any) -> None:
+        response.edited.append(kwargs)
+
+    interaction = SimpleNamespace(user=user, response=response, edit_original_response=edit_original_response)
     button = next(item for item in view.children if str(item.label).startswith(key + "|"))
     if await view.interaction_check(interaction):
         await button.callback(interaction)
@@ -238,6 +251,76 @@ def test_no_game_tool_without_the_games_cog_or_in_dms(games: GamesCog) -> None:
     assert _tool(GameTools, runtime) is None
 
 
+@pytest.mark.asyncio
+async def test_start_checks_the_hosts_permissions_as_they_are_now(games: GamesCog) -> None:
+    channel = FakeChannel()
+    host = _member(HOST_ID)
+    tool = _tool(GameTools, _runtime({"GamesCog": games}, channel, {HOST_ID: host}))
+    await tool.coroutine(game="chain")
+    view = channel.sent[0][1]["view"]
+
+    channel.muted.add(HOST_ID)  # may still see the channel, no longer post or use commands
+    pressed = await _press(view, "offer_start", host)
+
+    assert pressed.edited[0]["content"] == "offer_denied|" and pressed.deferred is True
+    assert games._tasks == set() and games.limits.running == set()
+    # Nor is a new offer posted for them.
+    assert await tool.coroutine(game="chain") == "The game could not start: offer_denied|"
+    assert len(channel.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_offer_options_are_kept_in_range(games: GamesCog) -> None:
+    channel = FakeChannel()
+    tool = _tool(GameTools, _runtime({"GamesCog": games}, channel, {HOST_ID: _member(HOST_ID)}))
+    games.bot.orchestrator = object()
+    games.bot.vector_manager = SimpleNamespace(store=SimpleNamespace(sample_memories=None))
+
+    await tool.coroutine(game="quiz", rounds=50, days=99999, this_channel=True)
+    assert channel.sent[-1][1]["view"].options == {"rounds": 10, "days": 3650, "this_channel": True}
+    await tool.coroutine(game="quiz", rounds=1, days=0)
+    assert channel.sent[-1][1]["view"].options == {"rounds": 3, "days": None, "this_channel": False}
+    await tool.coroutine(game="chain", rounds=7, homophones=True)
+    assert channel.sent[-1][1]["view"].options == {"homophones": True}
+
+
+@pytest.mark.asyncio
+async def test_an_offer_that_cannot_be_posted_is_dropped_and_unloading_closes_offers(games: GamesCog) -> None:
+    channel = FakeChannel()
+    tool = _tool(GameTools, _runtime({"GamesCog": games}, channel, {HOST_ID: _member(HOST_ID)}))
+
+    channel.broken = True
+    assert await tool.coroutine(game="chain") == "The game could not start: failed|"
+    assert games._offers == {}
+
+    channel.broken = False
+    await tool.coroutine(game="chain")
+    view = channel.sent[0][1]["view"]
+    await games.cog_unload()
+    assert games._offers == {} and view.done and view.is_finished()
+    assert (await _press(view, "offer_start", _member(HOST_ID))).sent[0][0] == "offer_expired|"
+
+
+@pytest.mark.asyncio
+async def test_a_game_cancelled_before_it_ran_frees_the_channel_and_host(games: GamesCog, monkeypatch: pytest.MonkeyPatch) -> None:
+    channel, host = FakeChannel(), _member(HOST_ID)
+    guild = SimpleNamespace(id=GUILD_ID)
+    _hold_chain(games, monkeypatch)
+
+    assert games.start_game("chain", guild, channel, host) is None
+    assert games.limits.running == {channel.id} and games.limits.hosts == {HOST_ID}
+    await games.cog_unload()  # before the task's first step
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert games.limits.running == set() and games.limits.hosts == set() and games._tasks == set()
+    # A new game can start right away.
+    assert games.start_game("chain", guild, channel, host) is None
+    await games.cog_unload()
+    await asyncio.sleep(0.01)
+    assert games.limits.running == set() and games.limits.hosts == set()
+
+
 # ------------------------------------------------------------------ who is playing
 @pytest.fixture
 def playing(tmp_path: Path) -> PlayingCog:
@@ -277,24 +360,58 @@ async def test_who_is_playing_names_and_counts_only_visible_members_who_did_not_
 
 
 @pytest.mark.asyncio
-async def test_who_is_playing_fails_closed_and_reads_no_database_when_built(playing: PlayingCog, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_who_is_playing_says_nothing_when_the_opt_out_list_cannot_be_read(playing: PlayingCog) -> None:
     members = {HOST_ID: _member(HOST_ID)}
     playing.tracker.update(GUILD_ID, HOST_ID, ("Minecraft", None), time.time())
+    playing.store.update_settings(GUILD_ID, playing_enabled=True)  # on, and its settings readable
 
+    unreadable = _tool(PlayingTools, _runtime({"PlayingCog": playing, "LeaderboardCog": _optouts(sqlite3.OperationalError)}, FakeChannel(), members))
+    assert await unreadable.coroutine() == UNAVAILABLE
+
+    readable = _tool(PlayingTools, _runtime({"PlayingCog": playing, "LeaderboardCog": _optouts(set())}, FakeChannel(), members))
+    assert "<<<user10>>>" in await readable.coroutine()
+    playing.store.update_settings(GUILD_ID, playing_enabled=False)
+    assert "turned off" in await readable.coroutine()
+
+
+@pytest.mark.asyncio
+async def test_who_is_playing_caps_names_and_games(playing: PlayingCog) -> None:
+    members = {i: _member(i) for i in range(HOST_ID, HOST_ID + MAX_NAMES + 3)}
+    now = time.time()
+    for user_id in members:
+        playing.tracker.update(GUILD_ID, user_id, ("G" * 300, None), now)
+    for index in range(15):
+        playing.tracker.update(GUILD_ID, 1000 + index, (f"Game {index}", None), now)
+        members[1000 + index] = _member(1000 + index)
+    playing.store.update_settings(GUILD_ID, playing_enabled=True)
+    tool = _tool(PlayingTools, _runtime({"PlayingCog": playing, "LeaderboardCog": _optouts(set())}, FakeChannel(), members))
+
+    lines = (await tool.coroutine()).splitlines()[1:]
+
+    assert len(lines) == 10
+    assert lines[0].count("<<<user") == MAX_NAMES and lines[0].endswith(" and 3 more)")
+    assert "G" * 100 not in lines[0] and "G" * 98 + "…" in lines[0]
+
+
+def test_tools_are_built_without_reading_a_database(playing: PlayingCog, monkeypatch: pytest.MonkeyPatch) -> None:
     def no_database(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("the tool list must be built without reading a database")
 
-    with monkeypatch.context() as patch:
-        patch.setattr(playing.store, "get_settings", no_database)
-        tool = _tool(PlayingTools, _runtime({"PlayingCog": playing, "LeaderboardCog": _optouts(sqlite3.OperationalError)}, FakeChannel(), members))
-        assert tool is not None
-        # The opt-out list cannot be read: nothing is said (and the settings are not even read).
-        assert await tool.coroutine() == UNAVAILABLE
+    for name in ("get_settings", "read_optouts", "optouts"):
+        monkeypatch.setattr(playing.store, name, no_database)
+    taste = SimpleNamespace(plays_with_places=no_database, top_played=no_database)
+    leaderboard = SimpleNamespace(store=SimpleNamespace(read_optouts=no_database, optouts=no_database))
+    cogs = {"PlayingCog": playing, "YTMusic": SimpleNamespace(_taste_store=taste), "LeaderboardCog": leaderboard}
+    runtime = _runtime(cogs, FakeChannel(), {HOST_ID: _member(HOST_ID)})
 
-    tool = _tool(PlayingTools, _runtime({"PlayingCog": playing, "LeaderboardCog": _optouts(set())}, FakeChannel(), members))
-    assert "turned off" in await tool.coroutine()
-    playing.store.update_settings(GUILD_ID, playing_enabled=True)
-    assert "<<<user10>>>" in await tool.coroutine()
+    assert _tool(PlayingTools, runtime) is not None and _tool(PopularSongTools, runtime) is not None
+
+
+def test_no_playing_or_song_tools_in_dms(playing: PlayingCog) -> None:
+    cogs = {"PlayingCog": playing, "YTMusic": SimpleNamespace(_taste_store=SimpleNamespace(plays_with_places=None))}
+    runtime = _runtime(cogs, FakeChannel(), {HOST_ID: _member(HOST_ID)})
+    runtime.message.guild = None
+    assert _tool(PlayingTools, runtime) is None and _tool(PopularSongTools, runtime) is None
 
 
 # ------------------------------------------------------------------ popular songs
@@ -392,3 +509,78 @@ def test_the_music_player_logs_where_a_song_played(tmp_path: Path) -> None:
     YTMusic._record_play_event(cog, GUILD_ID, {"video_id": "v", "title": "T", "added_by": 11}, ctx, voice_client)
 
     assert taste.plays_with_places(GUILD_ID, 0, time.time() + 1) == [("v", "T", 11, 0, PUBLIC_TEXT, PUBLIC_VOICE)]
+
+
+@pytest.mark.asyncio
+async def test_popular_songs_list_at_most_ten(song_world: SimpleNamespace) -> None:
+    for index in range(15):
+        song_world.taste.add_play_event(
+            GUILD_ID, f"v{index}", f"Song {index}", requester_id=11, autoplay=False,
+            text_channel_id=PUBLIC_TEXT, voice_channel_id=PUBLIC_VOICE,
+        )
+    tool = _songs_tool(song_world, set())
+    assert len((await tool.coroutine(limit=50)).splitlines()) == 1 + 10
+    assert len((await tool.coroutine(limit=0)).splitlines()) == 1 + 5
+    assert len((await tool.coroutine(limit=-3)).splitlines()) == 1 + 1
+
+
+class FakeOverwrite:
+    def __init__(self, connect: bool) -> None:
+        self.connect = connect
+
+    def pair(self) -> tuple:
+        return SimpleNamespace(), SimpleNamespace(connect=not self.connect)
+
+
+class FakeVoiceChannel:
+    """A voice channel everyone can see and read; ``connect`` is what ``@everyone`` may do."""
+
+    def __init__(self, connect: bool = True, overwrites: Optional[dict] = None, nsfw: bool = False) -> None:
+        self.id = 700
+        self.type = discord.ChannelType.voice
+        self.guild = SimpleNamespace(default_role="everyone")
+        self.connect = connect
+        self.overwrites = overwrites or {}
+        self.nsfw = nsfw
+
+    def permissions_for(self, role: Any) -> Any:
+        return SimpleNamespace(view_channel=True, read_message_history=True, connect=self.connect)
+
+    def is_nsfw(self) -> bool:
+        return self.nsfw
+
+
+def test_a_voice_channel_counts_only_when_everyone_can_join_it() -> None:
+    assert heard_by_everyone(FakeVoiceChannel())
+    assert not heard_by_everyone(FakeVoiceChannel(connect=False))
+    assert not heard_by_everyone(FakeVoiceChannel(overwrites={"members": FakeOverwrite(connect=False)}))
+    assert heard_by_everyone(FakeVoiceChannel(overwrites={"members": FakeOverwrite(connect=True)}))
+    assert not heard_by_everyone(FakeVoiceChannel(nsfw=True))
+    assert not heard_by_everyone(None)
+
+
+@pytest.mark.asyncio
+async def test_databases_are_read_off_the_event_loop(song_world: SimpleNamespace, playing: PlayingCog, monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    loop_thread = threading.current_thread()
+    seen: list = []
+
+    def watched(function: Any) -> Any:
+        def call(*args: Any, **kwargs: Any) -> Any:
+            seen.append(threading.current_thread() is not loop_thread)
+            return function(*args, **kwargs)
+
+        return call
+
+    monkeypatch.setattr(song_world.taste, "plays_with_places", watched(song_world.taste.plays_with_places))
+    monkeypatch.setattr(playing, "_feature_on", watched(playing._feature_on))
+    leaderboard = _optouts(set())
+    leaderboard.store.read_optouts = watched(leaderboard.store.read_optouts)
+    cogs = {"YTMusic": SimpleNamespace(_taste_store=song_world.taste), "PlayingCog": playing, "LeaderboardCog": leaderboard}
+    runtime = _runtime(cogs, FakeChannel(HERE), {HOST_ID: _member(HOST_ID)}, song_world.guild)
+
+    await _tool(PopularSongTools, runtime).coroutine()
+    await _tool(PlayingTools, runtime).coroutine()
+
+    assert seen == [True] * 4

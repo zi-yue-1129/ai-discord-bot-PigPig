@@ -53,6 +53,7 @@
         "offer_limit": "这个服务器已经有好几个游戏邀请在等人按了，先处理那些吧。",
         "game_quiz": "服务器知识问答",
         "game_chain": "文字接龙",
-        "game_guess_song": "猜歌"
+        "game_guess_song": "猜歌",
+        "offer_denied": "你现在不能在这个频道开游戏（需要能发言和使用指令）。"
     }
 }

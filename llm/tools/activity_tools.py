@@ -9,9 +9,11 @@ list reads no database. Starting a game only posts a Start button that the asker
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
+import discord
 from langchain_core.tools.structured import StructuredTool
 
 from addons.logging import get_logger
@@ -27,6 +29,33 @@ MAX_GAMES = 10
 MAX_NAMES = 5
 MAX_SONGS = 10
 _PERIOD_DAYS = {"week": 7, "month": 30}
+
+
+_VOICE_TYPES = (discord.ChannelType.voice, discord.ChannelType.stage_voice)
+
+
+def heard_by_everyone(channel: Any) -> bool:
+    """Whether every member could have heard what played in ``channel``.
+
+    The channel must be shareable (everyone can see and read it, not NSFW) and, for a voice or
+    stage channel, ``@everyone`` must be allowed to connect with no role or member overwrite
+    denying it.
+    """
+    if not shareable(channel):
+        return False
+    if getattr(channel, "type", None) not in _VOICE_TYPES:
+        return True
+    try:
+        everyone = channel.permissions_for(channel.guild.default_role)
+        if not getattr(everyone, "connect", False):
+            return False
+        for overwrite in channel.overwrites.values():
+            _, deny = overwrite.pair()
+            if getattr(deny, "connect", False):
+                return False
+    except Exception:
+        return False
+    return True
 
 
 def _cog(runtime: Any, name: str) -> Any:
@@ -117,11 +146,12 @@ class PlayingTools:
             """
             here = message.channel
             # Read before the settings, which may create the community database, and fail closed.
-            hidden = hidden_member_ids(runtime, guild.id)
+            # On worker threads: a locked database must not stall the event loop.
+            hidden = await asyncio.to_thread(hidden_member_ids, runtime, guild.id)
             if hidden is None:
                 return UNAVAILABLE
             try:
-                if not playing._feature_on(guild.id):
+                if not await asyncio.to_thread(playing._feature_on, guild.id):
                     return 'Showing what members are playing is turned off on this server (/community playing).'
             except Exception:
                 _logger.error("who_is_playing: could not read the server's settings", exc_info=True)
@@ -183,33 +213,35 @@ class PopularSongTools:
                 limit = max(1, min(int(limit or 5), MAX_SONGS))
             except (TypeError, ValueError):
                 limit = 5
-            hidden = hidden_member_ids(runtime, guild.id)
+            # On worker threads: a locked database must not stall the event loop.
+            hidden = await asyncio.to_thread(hidden_member_ids, runtime, guild.id)
             if hidden is None:
                 return UNAVAILABLE
             now = time.time()
             try:
-                rows = taste.plays_with_places(guild.id, now - days * 86400, now + 1)
+                rows = await asyncio.to_thread(taste.plays_with_places, guild.id, now - days * 86400, now + 1)
             except Exception:
                 _logger.error("get_popular_songs: could not read the play log", exc_info=True)
                 return UNAVAILABLE
             lookup = getattr(guild, "get_channel_or_thread", None) or guild.get_channel
             places: Dict[int, bool] = {}
 
-            def heard_by_everyone(channel_id: Any) -> bool:
+            def public(channel_id: Any) -> bool:
                 # Songs logged before the channels were recorded have none and are left out.
                 if channel_id is None:
                     return False
                 if channel_id not in places:
-                    places[channel_id] = shareable(lookup(int(channel_id)))
+                    places[channel_id] = heard_by_everyone(lookup(int(channel_id)))
                 return places[channel_id]
 
             counts: Dict[str, List[Any]] = {}
             for video_id, title, requester_id, skipped, text_id, voice_id in rows:
                 # Hidden members' requests are not counted; neither are songs played in a voice
-                # channel, or shown in a text channel, that not everyone can see (or that is NSFW).
+                # channel not everyone can join, or shown in a text channel not everyone can read
+                # (or either one NSFW).
                 if requester_id is not None and int(requester_id) in hidden:
                     continue
-                if not (heard_by_everyone(voice_id) and (text_id == here_id or heard_by_everyone(text_id))):
+                if not (public(voice_id) and (text_id == here_id or public(text_id))):
                     continue
                 entry = counts.setdefault(video_id, [title, 0, 0])
                 entry[1] += 1

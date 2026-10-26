@@ -53,6 +53,7 @@
         "offer_limit": "This server already has several game offers waiting to be answered; deal with those first.",
         "game_quiz": "a server quiz",
         "game_chain": "a word chain",
-        "game_guess_song": "guess the song"
+        "game_guess_song": "guess the song",
+        "offer_denied": "You can't start a game in this channel right now (you need to be able to send messages and use commands here)."
     }
 }
