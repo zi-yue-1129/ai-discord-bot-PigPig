@@ -49,9 +49,17 @@ class UserActivityTools:
             # To avoid spam, we limit to a reasonable number.
             elif hasattr(channel, "members"):
                 # Filter for non-bot humans who are not offline
+                # Hidden members (/leaderboard optout) keep their status to themselves; when the
+                # opt-out list cannot be read, nobody's status is listed.
+                from llm.tools.user_stats import hidden_member_ids
+
+                guild = getattr(channel, "guild", None)
+                hidden = hidden_member_ids(runtime, guild.id) if guild is not None else set()
+                if hidden is None:
+                    return "Who is online here cannot be shown right now."
                 active_members = [
                     m for m in channel.members 
-                    if not m.bot and m.status != discord.Status.offline
+                    if not m.bot and m.status != discord.Status.offline and m.id not in hidden
                 ]
                 # Sort by status (Online > Idle > DND)
                 active_members.sort(key=lambda m: (

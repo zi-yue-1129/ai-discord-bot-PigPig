@@ -28,7 +28,7 @@ Messages are written by the model in the bot's own voice (the server's persona).
 |---|---|
 | `/birthday set month day` | Saves your birthday **on this server only** (no year asked) |
 | `/birthday remove` | Removes it |
-| `/birthday upcoming` | Lists birthdays in the next 30 days |
+| `/birthday upcoming` | Lists birthdays in the next 30 days (privately), leaving out members hidden with `/leaderboard optout` other than yourself |
 
 Feb 29 birthdays and join dates are celebrated on Feb 28 in common years.
 

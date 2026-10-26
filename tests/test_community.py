@@ -787,3 +787,29 @@ async def test_a_member_who_really_left_is_forgotten(cog: CommunityCog, guild: F
     _at(cog, datetime(2026, 10, 26, 0, 1, tzinfo=TAIPEI))
     await cog._remove_expired_birthday_roles()
     assert store.due_birthday_roles(cog._now()) == []
+
+
+@pytest.mark.asyncio
+async def test_upcoming_birthdays_leave_out_hidden_members_but_not_the_one_asking(
+    cog: CommunityCog, guild: FakeGuild, store: CommunityStore
+) -> None:
+    for member_id in (10, 11, 12):
+        guild.add(member_id)
+        store.set_birthday(GUILD_ID, member_id, 10, 27)
+    store.set_optout(GUILD_ID, 11, True)
+    store.set_optout(GUILD_ID, 12, True)
+    cog._local_now = lambda settings: datetime(2026, 10, 26, 12, tzinfo=TAIPEI)
+    sent: list = []
+
+    async def send_message(text: str, ephemeral: bool = False) -> None:
+        sent.append((text, ephemeral))
+
+    interaction = SimpleNamespace(
+        guild=guild, user=SimpleNamespace(id=12), response=SimpleNamespace(send_message=send_message)
+    )
+
+    await CommunityCog.birthday_upcoming.callback(cog, interaction)
+
+    text, ephemeral = sent[0]
+    assert ephemeral is True
+    assert "user10" in text and "user12" in text and "user11" not in text
