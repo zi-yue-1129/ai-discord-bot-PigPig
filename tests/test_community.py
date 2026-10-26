@@ -26,8 +26,7 @@ from cogs.community_lib.joins import JoinTracker
 from cogs.community_lib.limits import CommunityLimits
 from cogs.community_lib.store import CommunityStore, GuildSettings
 
-# The module the cog really runs in. ``from cogs import community`` could return a copy another test
-# file imported while it was collected, and patching that copy would not reach the cog.
+# The module the cog really runs in: another test may have re-imported ``cogs.community`` since.
 community_module = sys.modules[CommunityCog.__module__]
 
 ROOT = Path(__file__).resolve().parents[1]

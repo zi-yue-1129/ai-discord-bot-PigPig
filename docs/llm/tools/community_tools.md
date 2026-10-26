@@ -1,6 +1,6 @@
 # Community Tools
 
-`llm/tools/community_tools.py` lets the AI answer questions about the community features (rankings, achievements, the weekly recap, birthdays and events) and act on a few of them. `llm/tools/fun_tools.py` adds dice and the decision wheel.
+`llm/tools/community_tools.py` lets the AI answer questions about the community features (rankings, achievements, the weekly recap, birthdays and events) and act on a few of them. `llm/tools/fun_tools.py` adds dice and the decision wheel, and `llm/tools/activity_tools.py` adds starting a game, who is playing what, and the most played songs.
 
 The AI's answer is posted for everyone in the channel, so each tool returns only what a public post would show:
 
@@ -24,6 +24,17 @@ The AI's answer is posted for everyone in the channel, so each tool returns only
 | `join_event` | events | EventsCog is loaded | `event_id`, `status`: going, maybe or leave | Asks the asker to confirm signing up or out (see [the events cog](../../cogs/events.md#events-the-ai-proposes)); refused for other servers' events, started ones and events in channels they cannot read; the model's reply never repeats the title |
 | `roll_dice` | fun | always | `notation`, `reason` | Posts the roll in the channel (as `/roll`) and returns it, so the model never invents a result |
 | `spin_wheel` | fun | WheelCog is loaded | `options` (2 to 20) | Spins the wheel in the channel (as `/wheel spin`), one spin per channel at a time |
+| `start_server_game` | games | GamesCog is loaded | `game`: quiz, chain or guess_song; `rounds`; `homophones`; `days`; `this_channel` | Posts an offer with Start and Cancel buttons only the asker can press; the game starts on Start, with the asker as host (same checks, again on the press, and quota as `/game`) |
+| `who_is_playing` | playing | PlayingCog is loaded (says so when `/community playing` is off) | none | Games being played now, most players first, naming and counting only players who can read the channel (in a private thread: its members) and are not hidden |
+| `get_popular_songs` | music | the music player's play log exists | `period`: week or month; `limit` | The most played songs and their play and skip counts, counted only where everyone could hear them |
+
+### Starting a game
+
+The model never starts a game by itself: `start_server_game` posts an offer that pings nobody, and only the asker can press Start (others are told it is not theirs). Text that tricks the model can at most post an offer. An offer expires after 2 minutes; a host has one open offer (a new one replaces it) and a server at most 3. Pressing Start looks the asker up again and runs the `/game` checks again: they must still be allowed to read the channel (in a private thread: be in it), post in it and use commands there (in a locked or archived thread only someone who can manage threads), and the channel, the host or the music may be busy by then. A game cancelled before it ran (the cog unloaded) frees the channel and the host, and a press still being handled when the cog unloads starts nothing. Guess the song reads its song pool on a worker thread.
+
+### Popular songs
+
+The play log records the player's text channel and the voice channel of each play. A play is counted only when the voice channel is shareable and `@everyone` may connect to it (no overwrite denying Connect), and the text channel is shareable or is the channel the answer goes to, and not when a hidden member asked for it. Plays logged before the channels were recorded are not counted. The opt-out list, the play log and the server settings are read on worker threads without the stores' locks (`CommunityStore.read_settings`, `TasteStore._reader`), so a locked or slow database cannot stall the bot; the opt-out list is read last, so someone who hides while the tool reads is left out. The play log is in WAL mode and chart reads do not take its lock, so a slow read never holds up the player's writes. `/game guess_song` still picks its songs from the whole log.
 
 ### The recap
 
@@ -38,3 +49,8 @@ Everything in the AI's recap is counted only in shareable channels (everyone can
 The opt-out list is read before anything that could create the community database (`get_settings` does), and again after the last await: if someone hid themselves meanwhile, or a counted channel stopped being shareable, the tool answers "not available". The weekly post's "missing regulars" are left out: a member's last message may be in a private channel, so the list would tell.
 
 Groups are explained in [the tools factory](../tools_factory.md#tool-groups).
+
+### Known limits (accepted)
+
+- The community database uses SQLite's default rollback journal, so while a worker thread runs the settings or opt-out `SELECT`, a write on the event loop waits for that read to finish. These reads are single small-table lookups (milliseconds), so this is accepted; moving `CommunityStore` to WAL is a store-wide change (backups, `mode=ro` reads) left for its own PR.
+- The opt-out list is read last, but on a worker thread: someone who hides in the moment between that read and the answer going out can still be named once. Closing that gap would mean reading the list on the event loop (blocking), the same trade-off as the last check before posting in #379.

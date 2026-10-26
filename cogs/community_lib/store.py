@@ -234,6 +234,25 @@ class CommunityStore:
         values = {name: (bool(value) if name in _BOOL_COLUMNS else value) for name, value in zip(_COLUMNS, row)}
         return GuildSettings(**values)
 
+    def read_settings(self, guild_id: int) -> GuildSettings:
+        """Like ``get_settings`` but read-only and without the store's lock, for worker threads.
+
+        A slow read there must not make the event loop wait for the lock. Never creates or
+        migrates the file: a missing file or table raises ``sqlite3.Error``.
+        """
+        uri = f"{self.path.resolve().as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=OPTOUT_READ_TIMEOUT)
+        try:
+            row = connection.execute(
+                f"SELECT {', '.join(_COLUMNS)} FROM guild_settings WHERE guild_id = ?", (guild_id,)
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            return GuildSettings(guild_id=guild_id)
+        values = {name: (bool(value) if name in _BOOL_COLUMNS else value) for name, value in zip(_COLUMNS, row)}
+        return GuildSettings(**values)
+
     def update_settings(self, guild_id: int, **changes: Any) -> GuildSettings:
         """Changes some of a guild's settings and returns the result.
 

@@ -247,6 +247,10 @@ class PlayingCog(commands.Cog):
         """How long a post's button opens a room."""
         return max(self.limits.playing_cooldown_hours * 3600, MIN_BUTTON_SECONDS)
 
+    def feature_on_read_only(self, guild_id: int) -> bool:
+        """``_feature_on`` read without the store's lock (and without creating anything), for worker threads."""
+        return self.store.read_settings(guild_id).playing_enabled and self.limits.playing_max_per_day > 0
+
     def _feature_on(self, guild_id: int) -> bool:
         return self.store.get_settings(guild_id).playing_enabled and self.limits.playing_max_per_day > 0
 
