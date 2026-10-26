@@ -100,7 +100,7 @@ _ROOM_TOKEN = re.compile(re.escape(_ROOM_SEPARATOR) + r"([0-9a-f]{%d})$" % ROOM_
 # Discord allows 100 characters in a channel name: the game's name leaves room for the separator and the token.
 ROOM_LABEL_GAME_LIMIT = 100 - len(_ROOM_SEPARATOR) - ROOM_TOKEN_CHARS
 # A room only belongs to a claim if it was made after the claim (this much clock difference to Discord is allowed).
-CLAIM_CLOCK_SLACK_SECONDS = 60
+CLAIM_CLOCK_SLACK_SECONDS = 10
 
 
 def room_label(game: str, token: str) -> str:
@@ -180,6 +180,9 @@ class PlayingCog(commands.Cog):
         # Posts whose room exists but could not be marked used yet: post message id -> guild id. Their
         # claims are not freed, or the room would stay untracked for good.
         self._unrecovered: Dict[int, int] = {}
+        # Rooms taken in for a claim whose creation request had not answered: post message id -> channel id.
+        # Kept in memory, so that the answer can tell even when the database cannot be read.
+        self._adopted: Dict[int, int] = {}
 
     async def cog_load(self) -> None:
         self.lang_manager = LanguageManager.get_instance(self.bot)
@@ -290,7 +293,9 @@ class PlayingCog(commands.Cog):
                 await self.check_guild(guild, settings)
         await self.cleanup_rooms()
         # Kept at least as long as they count for the cooldown and the button.
-        self.store.forget_playing_posts(now - max(POST_RETENTION_SECONDS, self._button_seconds()))
+        self.store.forget_playing_posts(
+            now - max(POST_RETENTION_SECONDS, self._button_seconds()), keep=set(self._orphan_posts) | set(self._unrecovered)
+        )
 
 
     # ------------------------------------------------------------ posting
@@ -538,14 +543,14 @@ class PlayingCog(commands.Cog):
             for adopted_post, adopted_room in await self._adopt_late_rooms(guild):
                 if adopted_post == message_id:
                     return "playing_room_ready", {"channel": adopted_room.mention}
-            recovered = self._recorded_room(guild, message_id)  # its event may have been faster than this scan
-            if recovered is not None:
+            recovered = guild.get_channel(self._adopted.get(message_id, 0)) or self._recorded_room(guild, message_id)
+            if recovered is not None:  # its event may have been faster than this scan
                 return "playing_room_ready", {"channel": recovered.mention}
             return "playing_room_failed", {}
         if room.id in self._orphans:  # its event got there first and could neither keep nor delete it
             return "playing_room_failed", {}
         recovered = self._recorded_room(guild, message_id)
-        if recovered is not None and recovered.id == room.id:
+        if self._adopted.get(message_id) == room.id or (recovered is not None and recovered.id == room.id):
             # Its event got there first and took it in, with at least the post's pointer on record:
             # the cleanup writes the missing row again. It is not taken back.
             if not self.store.is_temp_voice(room.id):
@@ -606,8 +611,8 @@ class PlayingCog(commands.Cog):
             self.logger.warning(f"playing: could not read the open claims of guild {guild.id}", exc_info=True)
             return adopted
         claims: Dict[str, list] = {}
-        for message_id, token, claimed_at in open_claims:
-            claims.setdefault(token[:ROOM_TOKEN_CHARS], []).append((message_id, token, claimed_at or 0.0))
+        for message_id, token, claimed_at, used_at in open_claims:
+            claims.setdefault(token[:ROOM_TOKEN_CHARS], []).append((message_id, token, claimed_at, used_at))
         # What failed before is found out again below.
         self._unrecovered = {post: guild_id for post, guild_id in self._unrecovered.items() if guild_id != guild.id}
         if not claims:
@@ -615,17 +620,20 @@ class PlayingCog(commands.Cog):
         for room in list(guild.voice_channels):
             found = _ROOM_TOKEN.search(getattr(room, "name", "") or "")
             candidates = claims.get(found.group(1)) if found else None
-            if not candidates or room.id in self._orphans or self.store.is_temp_voice(room.id):
+            if not candidates or room.id in self._orphans:
                 continue
             if len(candidates) > 1:
                 self.logger.warning(f"playing: {len(candidates)} open claims share the token of room {room.id}, adopting none")
                 continue
-            message_id, token, claimed_at = candidates[0]
+            message_id, token, claimed_at, used_at = candidates[0]
             created_at = getattr(room, "created_at", None)
-            if created_at is None or created_at.timestamp() < claimed_at - CLAIM_CLOCK_SLACK_SECONDS:
-                continue  # it was there before the claim: not made for it
+            if not claimed_at or created_at is None or created_at.timestamp() < claimed_at - CLAIM_CLOCK_SLACK_SECONDS:
+                continue  # it was there before the claim (or the claim's time is unknown): not made for it
             try:
-                ours = self.store.confirm_playing_room(message_id, token, self._now())
+                if self.store.is_temp_voice(room.id) or self.store.temp_voice_for_post(message_id) is not None:
+                    continue  # recorded already
+                # A claim marked used before (its room could not be recorded then) is the room's own: the token proves it.
+                ours = True if used_at is not None else self.store.confirm_playing_room(message_id, token, self._now())
             except sqlite3.Error:
                 self.logger.warning(f"playing: could not mark post {message_id} used", exc_info=True)
                 self._unrecovered[message_id] = guild.id  # its claim is kept, the room is looked for again
@@ -633,6 +641,7 @@ class PlayingCog(commands.Cog):
             if not ours:
                 continue
             self.logger.info(f"playing: voice room {room.id} appeared late for post {message_id}, recording it")
+            self._adopted[message_id] = room.id
             if len(self._record_room(guild.id, room.id, message_id)) == 2:
                 # An untracked room would never be deleted: take it back. The post stays used.
                 self.logger.error(f"playing: could not record voice room {room.id}")
@@ -698,6 +707,7 @@ class PlayingCog(commands.Cog):
             return False
         self._orphans.pop(room.id, None)
         self._orphan_posts = {post: channel for post, channel in self._orphan_posts.items() if channel != room.id}
+        self._adopted = {post: channel for post, channel in self._adopted.items() if channel != room.id}
         self.store.forget_temp_voice(room.id)
         return True
 

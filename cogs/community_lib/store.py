@@ -353,12 +353,16 @@ class CommunityStore:
             )
             return cursor.rowcount == 1
 
-    def open_claims(self, guild_id: int) -> List[Tuple[int, str, Optional[float]]]:
-        """``(message_id, token, claimed_at)`` of the guild's claims whose room is not known yet."""
+    def open_claims(self, guild_id: int) -> List[Tuple[int, str, Optional[float], Optional[float]]]:
+        """``(message_id, token, claimed_at, used_at)`` of the guild's claims whose room is not on record.
+
+        A claim that was marked used (its room exists) but whose room could not be recorded is
+        included: its token is all that is left to find the room by.
+        """
         with self._session() as connection:
             return connection.execute(
-                "SELECT message_id, room_token, room_claimed_at FROM playing_posts"
-                " WHERE guild_id = ? AND voice_channel_id = -1 AND room_used_at IS NULL AND room_token IS NOT NULL",
+                "SELECT message_id, room_token, room_claimed_at, room_used_at FROM playing_posts"
+                " WHERE guild_id = ? AND voice_channel_id = -1 AND room_token IS NOT NULL",
                 (guild_id,),
             ).fetchall()
 
@@ -403,10 +407,16 @@ class CommunityStore:
                 "UPDATE playing_posts SET voice_channel_id = ? WHERE message_id = ?", (voice_channel_id, message_id)
             )
 
-    def forget_playing_posts(self, before: float) -> None:
-        """Drops posts older than ``before`` (they no longer count for anything)."""
+    def forget_playing_posts(self, before: float, keep: Iterable[int] = ()) -> None:
+        """Drops posts older than ``before`` (they no longer count for anything), except the posts in
+        ``keep``: their room still has to be found or deleted."""
+        keep = list(keep)
+        marks = ",".join("?" * len(keep))
         with self._session() as connection:
-            connection.execute("DELETE FROM playing_posts WHERE posted_at < ?", (before,))
+            connection.execute(
+                "DELETE FROM playing_posts WHERE posted_at < ?" + (f" AND message_id NOT IN ({marks})" if keep else ""),
+                (before, *keep),
+            )
 
     def add_temp_voice(self, guild_id: int, channel_id: int, now: float, post_message_id: Optional[int] = None) -> None:
         """Remembers a voice room the bot made (and the post it was opened from), so it is deleted once empty."""

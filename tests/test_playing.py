@@ -1713,13 +1713,14 @@ async def _claimed_and_given_up(cog: PlayingCog, guild: FakeGuild, store: Commun
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("age_seconds", [3600, 30])
 async def test_a_channel_made_before_the_claim_is_never_adopted_even_when_it_carries_the_token(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, age_seconds: int
 ) -> None:
     cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
     message_id = await _claimed_and_given_up(cog, guild, store, monkeypatch)
-    # A member's old channel, renamed to carry the claim's token.
-    renamed = FakeVoice(next(_IDS), guild, name=f"Chill · #{_short_token(store, message_id)}", created_at=NOW - 3600)
+    # A member's older channel, renamed to carry the claim's token.
+    renamed = FakeVoice(next(_IDS), guild, name=f"Chill · #{_short_token(store, message_id)}", created_at=NOW - age_seconds)
     guild.channels[renamed.id] = renamed
 
     await cog.on_guild_channel_create(renamed)
@@ -1865,3 +1866,158 @@ async def test_the_name_of_a_room_that_was_opened_and_closed_adopts_nothing_late
 
     assert not lookalike.deleted and not store.is_temp_voice(lookalike.id)
     assert store.playing_post(message_id)["voice_channel_id"] == room.id  # still the room it opened
+
+
+# ------------------------------------------- review of #375, round 2: faults while the database is failing
+
+
+def _reject(store: CommunityStore, *names: str) -> None:
+    """Makes the database refuse the writes about a room, one trigger per name in ``_REJECTIONS``."""
+    with sqlite3.connect(store.path) as connection:
+        for name in names:
+            connection.execute(_REJECTIONS[name])
+
+
+def _allow(store: CommunityStore, *names: str) -> None:
+    with sqlite3.connect(store.path) as connection:
+        for name in names:
+            connection.execute(f"DROP TRIGGER {name}")
+
+
+_REJECTIONS = {
+    "no_rooms": "CREATE TRIGGER no_rooms BEFORE INSERT ON temp_voice_rooms BEGIN SELECT RAISE(ABORT, 'locked'); END",
+    "no_pointer": (
+        "CREATE TRIGGER no_pointer BEFORE UPDATE OF voice_channel_id ON playing_posts WHEN NEW.voice_channel_id > 0"
+        " BEGIN SELECT RAISE(ABORT, 'locked'); END"
+    ),
+    "no_confirm": "CREATE TRIGGER no_confirm BEFORE UPDATE OF room_used_at ON playing_posts BEGIN SELECT RAISE(ABORT, 'locked'); END",
+}
+
+
+def _late_room(guild: FakeGuild, store: CommunityStore, message_id: int) -> FakeVoice:
+    """A room Discord made for the post's claim that the cog has not seen yet."""
+    late = FakeVoice(next(_IDS), guild, name=f"Valorant · #{_short_token(store, message_id)}")
+    guild.channels[late.id] = late
+    return late
+
+
+@pytest.mark.asyncio
+async def test_an_adopted_room_is_kept_when_the_post_cannot_be_read_as_the_answer_comes(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
+    message_id = await _posted(cog, guild, store)
+    gate = asyncio.Event()
+    _hanging_after_creating(guild, gate)
+    press = FakePress(guild, message_id)
+    opening = asyncio.create_task(cog.open_room(press))
+    await asyncio.sleep(0.01)
+    room = guild.voice_channels[0]
+    _reject(store, "no_rooms")
+    await cog.on_guild_channel_create(room)  # the post points to the room, its own row was refused
+
+    def locked(message_id: int) -> Any:
+        raise sqlite3.OperationalError("database is locked")
+
+    store.playing_post = locked  # and now the post cannot be read at all
+    gate.set()
+    await opening
+
+    assert press.followups == [f"playing_room_ready|channel={room.mention}"] and not room.deleted
+
+
+@pytest.mark.asyncio
+async def test_a_room_no_write_could_record_is_found_again_by_a_reloaded_cog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
+    message_id = await _claimed_and_given_up(cog, guild, store, monkeypatch)
+    late = _late_room(guild, store, message_id)
+
+    async def refuse(reason: str = "") -> None:
+        raise discord.Forbidden(SimpleNamespace(status=403, reason="no"), "no")
+
+    late.delete = refuse
+    _reject(store, "no_rooms", "no_pointer")
+    await cog.on_guild_channel_create(late)  # marked used, then neither recorded nor deleted
+    await cog.cog_unload()  # the database still refuses
+    _allow(store, "no_rooms", "no_pointer")
+
+    reloaded = await _reloaded(cog, store, now=NOW + 60)
+
+    assert store.is_temp_voice(late.id) and store.playing_post(message_id)["voice_channel_id"] == late.id
+    other = FakePress(guild, message_id)
+    await reloaded.open_room(other)
+    assert other.followups == [f"playing_room_exists|channel={late.mention}"] and len(guild.created) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_claim_whose_room_could_not_be_confirmed_survives_the_retention_of_posts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
+    message_id = await _claimed_and_given_up(cog, guild, store, monkeypatch)
+    late = _late_room(guild, store, message_id)
+    _reject(store, "no_confirm")
+
+    cog._now = lambda: NOW + 3 * 86400  # the post is older than the retention by now
+    await cog.check_all()
+    assert store.playing_post(message_id) is not None
+
+    _allow(store, "no_confirm")
+    await cog.check_all()
+    assert store.is_temp_voice(late.id)  # the room is tracked now; its old post may go with the retention
+
+
+@pytest.mark.asyncio
+async def test_a_claim_with_an_unknown_time_adopts_no_room(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
+    message_id = await _claimed_and_given_up(cog, guild, store, monkeypatch)
+    with sqlite3.connect(store.path) as connection:  # a claim from before the time was kept
+        connection.execute("UPDATE playing_posts SET room_claimed_at = NULL WHERE message_id = ?", (message_id,))
+    late = _late_room(guild, store, message_id)
+
+    await cog.on_guild_channel_create(late)
+
+    assert not store.is_temp_voice(late.id) and not late.deleted
+
+
+@pytest.mark.asyncio
+async def test_a_second_channel_with_the_token_of_a_post_that_has_its_room_adopts_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=2)
+    message_id = await _claimed_and_given_up(cog, guild, store, monkeypatch)
+    real = _late_room(guild, store, message_id)
+    _reject(store, "no_pointer")
+    await cog.on_guild_channel_create(real)  # its row is recorded, the post's pointer was refused
+    assert store.is_temp_voice(real.id) and store.playing_post(message_id)["voice_channel_id"] == -1
+    lookalike = FakeVoice(next(_IDS), guild, name=real.name)
+    guild.channels[lookalike.id] = lookalike
+
+    await cog.on_guild_channel_create(lookalike)
+
+    assert not store.is_temp_voice(lookalike.id) and not lookalike.deleted
+
+
+@pytest.mark.asyncio
+async def test_an_adoption_goes_on_when_the_event_listener_is_cancelled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
+    message_id = await _claimed_and_given_up(cog, guild, store, monkeypatch)
+    late = _late_room(guild, store, message_id)
+    gate = asyncio.Event()
+
+    async def refuse_after_the_gate(reason: str = "") -> None:
+        await gate.wait()
+        raise discord.Forbidden(SimpleNamespace(status=403, reason="no"), "no")
+
+    late.delete = refuse_after_the_gate
+    _reject(store, "no_rooms", "no_pointer")
+    listener = asyncio.create_task(cog.on_guild_channel_create(late))
+    await asyncio.sleep(0.01)
+    listener.cancel()  # discord.py gives up on a handler that takes too long
+    unloading = asyncio.create_task(cog.cog_unload())
+    await asyncio.sleep(0.01)
+    assert not unloading.done()
+    _allow(store, "no_rooms", "no_pointer")
+    gate.set()
+    await unloading
+    await asyncio.gather(listener, return_exceptions=True)
+
+    assert store.is_temp_voice(late.id)
