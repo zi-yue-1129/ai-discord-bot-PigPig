@@ -570,7 +570,13 @@ async def test_only_members_who_can_take_part_in_the_channel_open_a_room(tmp_pat
     del guild.members[10]
     await cog.open_room(gone)
 
-    assert [press.followups for press in (timed_out, outsider, gone)] == [["playing_expired|"]] * 3
+    bot = FakePress(guild, message_id, user_id=1)
+    guild.channel.viewers = None
+    guild.members[11] = FakeMember(11, bot=True)
+    bot.user = SimpleNamespace(id=11)
+    await cog.open_room(bot)
+
+    assert [press.followups for press in (timed_out, outsider, gone, bot)] == [["playing_room_denied|"]] * 4
     assert guild.created == []
 
 
@@ -621,3 +627,159 @@ async def test_post_buttons_expire_with_the_post_and_stop_on_unload(tmp_path: Pa
     assert view.timeout == 3 * 3600 and cog.view.timeout is None
     await cog.cog_unload()
     assert view.is_finished() and cog.view.is_finished() and cog._sent_views == []
+
+
+def _real_writer(monkeypatch: pytest.MonkeyPatch, cog: PlayingCog, reply: str) -> None:
+    """The real announcement writer, with a model that answers ``reply``."""
+    import llm.announcement_writer as writer
+
+    class Model:
+        async def ainvoke(self, prompt: Any) -> Any:
+            return SimpleNamespace(content=reply)
+
+    monkeypatch.setattr(writer, "create_model_instance", lambda *a, **k: Model())
+    cog.bot.user = SimpleNamespace(id=1)
+    cog.bot.orchestrator = SimpleNamespace(
+        build_persona_prompt=lambda *a: "persona",
+        model_manager=SimpleNamespace(get_model_priority_list=lambda kind: [f"playing-test-{id(cog)}"]),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_threshold_above_the_mention_cap_still_posts_naming_the_first_players(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_mentions=10)
+    store.update_settings(GUILD_ID, playing_min_players=11)
+    _playing(cog, guild, "Valorant", *range(1, 12))
+
+    text = await _check(cog, store)
+
+    content, allowed, _ = guild.channel.sent[0]
+    assert text == content and content.count("<@") == 10 and "<@11>" not in content
+    assert sorted(user.id for user in allowed.users) == list(range(1, 11))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "x" * 1490 + " <@1> <@2> <@3>",  # the mentions fall after the cut
+        "一起玩！ <@1> <@2> <@3> [加入](https://evil.invalid)",
+        "一起玩！ <@1> <@2> <@3> discord.gg/attack",
+        "一起玩！ <@1> <@2> <@3> 還有 <@99> <@&5>",
+        "一起玩！ <@1> <@2> <@3> @everyone",
+    ],
+)
+async def test_an_unusable_written_post_falls_back_to_the_fixed_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reply: str) -> None:
+    cog, guild, store = _cog(tmp_path)
+    _real_writer(monkeypatch, cog, reply)
+    _playing(cog, guild, "Valorant", 1, 2, 3)
+
+    assert await _check(cog, store) == "playing_fixed|game=Valorant|mentions=<@1> <@2> <@3>"
+
+
+@pytest.mark.asyncio
+async def test_a_usable_written_post_from_the_real_writer_is_sent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cog, guild, store = _cog(tmp_path)
+    _real_writer(monkeypatch, cog, "<@1> <@2> <@3> 都在玩 agar.io，一起開語音吧！")
+    _playing(cog, guild, "Valorant", 1, 2, 3)
+
+    assert await _check(cog, store) == "<@1> <@2> <@3> 都在玩 agar.io，一起開語音吧！"
+
+
+def test_invites_and_masked_links_are_removed_from_game_names() -> None:
+    from cogs.playing import shown_game_name
+
+    for name in ("Valorant discord.gg/attack", "Valorant discord.com/invite/attack", "Valorant [x](discord.gg/a)", "Valorant evil.example/x"):
+        shown = shown_game_name(name)
+        assert shown.startswith("Valorant") and "discord" not in shown and "evil" not in shown and "](" not in shown
+    assert shown_game_name("agar.io") == "agar.io"
+
+
+@pytest.mark.asyncio
+async def test_an_invite_in_a_game_name_is_not_in_the_post(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False)
+    _playing(cog, guild, "Valorant discord.gg/attack", 1, 2, 3)
+
+    text = await _check(cog, store)
+
+    assert text.startswith("playing_fixed|game=Valorant|") and "discord.gg" not in text
+
+
+@pytest.mark.asyncio
+async def test_no_room_once_the_daily_cap_is_off_or_the_feature_is_turned_off_during_the_member_lookup(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False)
+    message_id = await _posted(cog, guild, store)
+
+    cog.limits = CommunityLimits(playing_use_ai=False, playing_max_per_day=0)
+    capped = FakePress(guild, message_id)
+    await cog.open_room(capped)
+    assert capped.followups == ["playing_expired|"] and guild.created == []
+
+    cog.limits = CommunityLimits(playing_use_ai=False)
+    uncached = FakePress(guild, message_id, user_id=20)
+    member = guild.members.pop(20)
+
+    async def fetch_member(user_id: int) -> FakeMember:
+        store.update_settings(GUILD_ID, playing_enabled=False)  # turned off while the member is fetched
+        return member
+
+    guild.fetch_member = fetch_member
+    await cog.open_room(uncached)
+    assert uncached.followups == ["playing_expired|"] and guild.created == []
+
+
+@pytest.mark.asyncio
+async def test_a_room_that_can_be_neither_recorded_nor_deleted_is_retried_by_the_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
+    message_id = await _posted(cog, guild, store)
+    real_add = store.add_temp_voice
+
+    def broken(*args: Any) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    async def refuse(reason: str = "") -> None:
+        raise discord.Forbidden(SimpleNamespace(status=403, reason="no"), "no")
+
+    real_create = guild.create_voice_channel
+
+    async def create(name: str, **kwargs: Any) -> FakeVoice:
+        room = await real_create(name, **kwargs)
+        room.delete = refuse
+        return room
+
+    guild.create_voice_channel = create
+    monkeypatch.setattr(store, "add_temp_voice", broken)
+    press = FakePress(guild, message_id)
+    await cog.open_room(press)
+
+    room = next(channel for channel in guild.channels.values() if isinstance(channel, FakeVoice))
+    assert press.followups == ["playing_room_failed|"] and cog._orphans == {room.id: GUILD_ID}
+
+    # It still counts towards the room limit.
+    _playing(cog, guild, "Apex", 4, 5, 6)
+    await _check(cog, store)
+    with sqlite3.connect(store.path) as connection:
+        apex_post = connection.execute("SELECT message_id FROM playing_posts WHERE game_key = 'apex'").fetchone()[0]
+    limited = FakePress(guild, apex_post)
+    await cog.open_room(limited)
+    assert limited.followups == ["playing_room_limit|"]
+
+    # Once Discord lets it, the cleanup deletes it.
+    monkeypatch.setattr(store, "add_temp_voice", real_add)
+    del room.delete
+    await cog.cleanup_rooms()
+    assert room.deleted and cog._orphans == {}
+
+
+@pytest.mark.asyncio
+async def test_a_cooldown_of_zero_still_gives_buttons_that_expire(tmp_path: Path) -> None:
+    from cogs.playing import MIN_BUTTON_SECONDS
+
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_cooldown_hours=0)
+    message_id = await _posted(cog, guild, store)
+
+    assert guild.channel.sent[0][2].timeout == MIN_BUTTON_SECONDS
+    await cog.open_room(FakePress(guild, message_id))
+    assert len(guild.created) == 1
