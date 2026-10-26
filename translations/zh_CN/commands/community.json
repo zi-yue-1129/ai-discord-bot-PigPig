@@ -79,6 +79,7 @@
         "playing_room_failed": "没办法在这里开语音房（可能缺少「管理频道」权限）。",
         "playing_room_limit": "这个服务器已经开了够多的语音房，请加入其中一个，或等有房间空出来。",
         "playing_room_closed": "这则提议的语音房已经开过，也已经关闭了。",
-        "playing_room_denied": "你现在无法在这里使用这个按钮。"
+        "playing_room_denied": "你现在无法在这里使用这个按钮。",
+        "playing_room_opening": "这则提议的语音房还在开启中，请过一分钟再试。"
     }
 }

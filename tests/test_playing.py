@@ -1071,7 +1071,7 @@ async def test_a_post_stays_used_across_a_reload_when_every_write_about_its_room
 
 
 @pytest.mark.asyncio
-async def test_a_press_on_a_reloaded_cog_while_the_first_room_is_created_opens_no_second_room(tmp_path: Path) -> None:
+async def test_unloading_waits_for_a_room_being_opened_so_a_reloaded_cog_knows_it(tmp_path: Path) -> None:
     cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
     message_id = await _posted(cog, guild, store)
     gate = asyncio.Event()
@@ -1085,16 +1085,18 @@ async def test_a_press_on_a_reloaded_cog_while_the_first_room_is_created_opens_n
     pressed = FakePress(guild, message_id)
     first = asyncio.create_task(cog.open_room(pressed))
     await asyncio.sleep(0.01)
-    await cog.cog_unload()  # stops the creation that is still running, so nothing can race it
+    unloading = asyncio.create_task(cog.cog_unload())
     await asyncio.sleep(0.01)
-    guild.create_voice_channel = real_create
-    second = FakePress(guild, message_id)
-    await (await _reloaded(cog, store, now=NOW + 61)).open_room(second)
+    assert not unloading.done()  # still waiting for the room
     gate.set()
+    await unloading
     await first
 
-    assert pressed.followups == ["playing_room_failed|"] and second.followups[0].startswith("playing_room_ready|")
-    assert len(guild.created) == 1
+    second = FakePress(guild, message_id)
+    await (await _reloaded(cog, store, now=NOW + 181)).open_room(second)  # long after the claim
+    room = next(channel for channel in guild.channels.values() if isinstance(channel, FakeVoice))
+    assert pressed.followups == [f"playing_room_ready|channel={room.mention}"]
+    assert second.followups == [f"playing_room_exists|channel={room.mention}"] and len(guild.created) == 1
 
 
 @pytest.mark.asyncio
@@ -1220,42 +1222,49 @@ async def test_two_posts_across_a_reload_open_no_more_rooms_than_allowed(tmp_pat
         return await real_create(name, **kwargs)
 
     guild.create_voice_channel = slow_create
-    pressed = FakePress(guild, first_post)
-    first = asyncio.create_task(cog.open_room(pressed))
+    first = asyncio.create_task(cog.open_room(FakePress(guild, first_post)))
     await asyncio.sleep(0.01)
-    await cog.cog_unload()  # stops the creation that is still running, so nothing can race it
-    await asyncio.sleep(0.01)
-    guild.create_voice_channel = real_create
+    # A second copy of the cog while the first room is still being created.
     second = FakePress(guild, second_post)
-    await (await _reloaded(cog, store, now=NOW + 61)).open_room(second)
+    await (await _reloaded(cog, store)).open_room(second)
     gate.set()
     await first
 
-    assert pressed.followups == ["playing_room_failed|"] and second.followups[0].startswith("playing_room_ready|")
-    assert len(guild.created) == 1
+    assert len(guild.created) == 1 and second.followups == ["playing_room_limit|"]
 
 
 @pytest.mark.asyncio
-async def test_a_cancelled_room_creation_frees_the_post(tmp_path: Path) -> None:
-    cog, guild, store = _cog(tmp_path, playing_use_ai=False)
+async def test_a_room_discord_creates_after_the_request_was_cut_off_is_recorded(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
     message_id = await _posted(cog, guild, store)
-    real_create = guild.create_voice_channel
 
     async def hang(name: str, **kwargs: Any) -> FakeVoice:
         await asyncio.Event().wait()
 
     guild.create_voice_channel = hang
-    task = asyncio.create_task(cog.open_room(FakePress(guild, message_id)))
+    press = asyncio.create_task(cog.open_room(FakePress(guild, message_id)))
     await asyncio.sleep(0.01)
-    task.cancel()
+    for opening in list(cog._opening):
+        opening.cancel()  # the request is cut off; Discord accepted it anyway
     with pytest.raises(asyncio.CancelledError):
-        await task
-    assert store.playing_post(message_id)["voice_channel_id"] is None
+        await press
 
-    guild.create_voice_channel = real_create
-    press = FakePress(guild, message_id)
-    await cog.open_room(press)
-    assert press.followups[0].startswith("playing_room_ready|")
+    waiting = FakePress(guild, message_id)
+    await cog.open_room(waiting)
+    assert waiting.followups == ["playing_room_opening|"]
+
+    late = FakeVoice(next(_IDS), guild)  # the gateway's CHANNEL_CREATE, after a reload
+    late.name, late.type, late.category_id = "Valorant", discord.ChannelType.voice, None
+    guild.channels[late.id] = late
+    reloaded = await _reloaded(cog, store, now=NOW + 30)
+    await reloaded.on_guild_channel_create(late)
+
+    again = FakePress(guild, message_id)
+    await reloaded.open_room(again)
+    assert again.followups == [f"playing_room_exists|channel={late.mention}"] and store.is_temp_voice(late.id)
+    reloaded._now = lambda: NOW + 3600
+    await reloaded.cleanup_rooms()
+    assert late.deleted  # nobody joined: deleted like any other room
 
 
 @pytest.mark.asyncio
@@ -1392,3 +1401,68 @@ async def test_a_failed_send_left_on_record_is_removed_after_a_reload(tmp_path: 
 def test_an_oversized_room_limit_is_capped() -> None:
     limits = CommunityLimits.from_config({"playing": {"max_rooms": 10**20, "max_per_day": 10**20, "max_mentions": 10**20}})
     assert (limits.playing_max_rooms, limits.playing_max_per_day, limits.playing_max_mentions) == (50, 1000, 50)
+
+
+
+@pytest.mark.asyncio
+async def test_a_late_handler_whose_claim_was_taken_over_deletes_its_own_room(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
+    message_id = await _posted(cog, guild, store)
+    real_create = guild.create_voice_channel
+
+    async def create_then_lose_the_claim(name: str, **kwargs: Any) -> FakeVoice:
+        room = await real_create(name, **kwargs)
+        # Before this handler records it, the claim is freed as stale and claimed by another press.
+        store.release_stale_claims(NOW + 1000)
+        assert store.claim_playing_post(message_id, 0, 1, NOW + 1000, "someone-else")
+        return room
+
+    guild.create_voice_channel = create_then_lose_the_claim
+    press = FakePress(guild, message_id)
+    await cog.open_room(press)
+
+    assert press.followups == ["playing_room_closed|"]
+    assert [room for room in guild.channels.values() if isinstance(room, FakeVoice)] == []  # taken back
+
+
+@pytest.mark.asyncio
+async def test_a_delivered_post_whose_final_record_failed_still_counts_after_a_reload(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_per_day=1)
+    _playing(cog, guild, "Valorant", 1, 2, 3)
+    with sqlite3.connect(store.path) as connection:  # the move to the real id is rejected
+        connection.execute(
+            "CREATE TRIGGER no_move BEFORE UPDATE OF message_id ON playing_posts BEGIN SELECT RAISE(ABORT, 'locked'); END"
+        )
+    assert await _check(cog, store) is not None
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("DROP TRIGGER no_move")
+
+    reloaded = await _reloaded(cog, store, now=NOW + 601)
+    reloaded.tracker = cog.tracker
+    await reloaded.check_all()
+
+    assert store.count_playing_posts(GUILD_ID, 0) == 1 and len(guild.channel.sent) == 1
+    await reloaded.cog_unload()
+
+
+@pytest.mark.asyncio
+async def test_a_post_stays_used_after_its_room_with_a_rejected_pointer_is_deleted(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False)
+    message_id = await _posted(cog, guild, store)
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            "CREATE TRIGGER no_pointer BEFORE UPDATE OF voice_channel_id ON playing_posts WHEN NEW.voice_channel_id > 0"
+            " BEGIN SELECT RAISE(ABORT, 'locked'); END"
+        )
+    await cog.open_room(FakePress(guild, message_id))
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("DROP TRIGGER no_pointer")
+
+    reloaded = await _reloaded(cog, store, now=NOW + 3600)
+    await reloaded.cleanup_rooms()  # nobody joined: deleted with its row
+    reloaded._forget_abandoned()  # the claim is stale by now
+    again = FakePress(guild, message_id)
+    await reloaded.open_room(again)
+
+    assert again.followups == ["playing_room_closed|"] and len(guild.created) == 1
+    await reloaded.cog_unload()
