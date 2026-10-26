@@ -90,6 +90,15 @@
         "playing_room_limit": "There are already enough voice rooms open on this server. Join one of them, or wait until one empties.",
         "playing_room_closed": "This post's voice room was already opened and has closed again.",
         "playing_room_denied": "You can't use this button here right now.",
-        "playing_room_opening": "This post's voice room is still being opened. Try again in a minute."
+        "playing_room_opening": "This post's voice room is still being opened. Try again in a minute.",
+        "removal_prompt": "{member}, delete the birthday you saved on this server?",
+        "birthday_unavailable": "Birthdays cannot be read right now; try again later or use /birthday remove.",
+        "ask_confirm": "Confirm",
+        "ask_cancel": "Cancel",
+        "ask_not_yours": "Only the member being asked can answer.",
+        "ask_done": "This was already answered.",
+        "ask_cancelled": "Cancelled; nothing changed.",
+        "ask_expired": "No answer in time; nothing changed.",
+        "ask_replaced": "Replaced by a newer question; nothing changed."
     }
 }

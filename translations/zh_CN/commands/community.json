@@ -90,6 +90,15 @@
         "playing_room_limit": "这个服务器已经开了够多的语音房，请加入其中一个，或等有房间空出来。",
         "playing_room_closed": "这则提议的语音房已经开过，也已经关闭了。",
         "playing_room_denied": "你现在无法在这里使用这个按钮。",
-        "playing_room_opening": "这则提议的语音房还在开启中，请过一分钟再试。"
+        "playing_room_opening": "这则提议的语音房还在开启中，请过一分钟再试。",
+        "removal_prompt": "{member}，要删除你在这个服务器保存的生日吗？",
+        "birthday_unavailable": "现在读不到生日数据，请稍后再试，或用 /birthday remove。",
+        "ask_confirm": "确认",
+        "ask_cancel": "取消",
+        "ask_not_yours": "只有被询问的人可以回答。",
+        "ask_done": "这个问题已经回答过了。",
+        "ask_cancelled": "已取消，什么都没有变。",
+        "ask_expired": "太久没有回答，什么都没有变。",
+        "ask_replaced": "已被新的询问取代，什么都没有变。"
     }
 }

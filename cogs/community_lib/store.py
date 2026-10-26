@@ -520,6 +520,19 @@ class CommunityStore:
             ).fetchone()
         return (row[0], row[1]) if row else None
 
+    def read_birthday(self, guild_id: int, user_id: int) -> Optional[Tuple[int, int]]:
+        """Like ``get_birthday`` but read-only: a missing file or table raises ``sqlite3.Error``
+        instead of being created (a new empty file would read as "nobody opted out")."""
+        uri = f"{self.path.resolve().as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=OPTOUT_READ_TIMEOUT)
+        try:
+            row = connection.execute(
+                "SELECT month, day FROM birthdays WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
+            ).fetchone()
+        finally:
+            connection.close()
+        return (row[0], row[1]) if row else None
+
     def birthdays(self, guild_id: int) -> List[Tuple[int, int, int]]:
         """Returns every ``(user_id, month, day)`` saved in a guild."""
         with self._session() as connection:

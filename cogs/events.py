@@ -12,7 +12,8 @@ import asyncio
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from types import SimpleNamespace
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
 import dateparser
 import discord
@@ -22,6 +23,7 @@ from discord.ext import commands
 from addons.logging import get_logger
 from function import func
 
+from addons.confirm import ConfirmView, ask
 from addons.visibility import audience_can_read, can_read, current_member
 
 from .events_lib.store import CANCELLED, GOING, MAYBE, OPEN, Event, EventStore, Roster
@@ -42,6 +44,8 @@ FIELD_LIMIT = 1024
 MESSAGE_LIMIT = 2000
 # How long the host has to confirm an event the AI proposed.
 DRAFT_SECONDS = 180
+# Events the AI proposed that may wait for confirmation at once in one server (one per member).
+MAX_PENDING_DRAFTS_PER_GUILD = 5
 
 
 def mention_lines(user_ids: List[int], limit: int = FIELD_LIMIT, more: str = "+{count}") -> str:
@@ -130,6 +134,17 @@ class EventDraftView(discord.ui.View):
         for item, key in zip(self.children, ("draft_confirm", "draft_cancel")):
             item.label = cog._t(draft.guild_id, key)
 
+    def finish(self) -> bool:
+        """Marks the draft answered and frees its host's place; False when it already was."""
+        if self.done:
+            return False
+        self.done = True
+        self.stop()
+        key = (self.draft.guild_id, self.draft.creator_id)
+        if self.cog._drafts.get(key) is self:
+            del self.cog._drafts[key]
+        return True
+
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.draft.creator_id:
             await interaction.response.send_message(self.cog._t(self.draft.guild_id, "draft_not_yours"), ephemeral=True)
@@ -142,21 +157,22 @@ class EventDraftView(discord.ui.View):
 
     @discord.ui.button(emoji="✖️", label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        if self.done:
+        if not self.finish():
             await interaction.response.send_message(self.cog._t(self.draft.guild_id, "draft_done"), ephemeral=True)
             return
-        self.done = True
-        self.stop()
         await interaction.response.edit_message(content=self.cog._t(self.draft.guild_id, "draft_cancelled"), view=None)
 
-    async def on_timeout(self) -> None:
-        if self.done or self.message is None:
+    async def close(self, key: str) -> None:
+        """Ends the draft without making the event: "draft_expired" or "draft_replaced"."""
+        if not self.finish() or self.message is None:
             return
-        self.done = True
         try:
-            await self.message.edit(content=self.cog._t(self.draft.guild_id, "draft_expired"), view=None)
+            await self.message.edit(content=self.cog._t(self.draft.guild_id, key), view=None)
         except discord.HTTPException:
             pass
+
+    async def on_timeout(self) -> None:
+        await self.close("draft_expired")
 
 
 class EventsCog(commands.Cog):
@@ -175,6 +191,10 @@ class EventsCog(commands.Cog):
         self.view = EventView(bot)
         # One update at a time per event, so the message always shows the latest roster.
         self._locks: Dict[int, asyncio.Lock] = {}
+        # Questions the AI posted that wait for a member's button: (guild_id, member_id) -> view.
+        self._drafts: Dict[Tuple[int, int], EventDraftView] = {}
+        self._answer_asks: Dict[Tuple[int, int], ConfirmView] = {}
+        self.hidden_ids: Callable[[int], Optional[Set[int]]] = self._read_hidden
 
     async def cog_load(self) -> None:
         self.lang_manager = LanguageManager.get_instance(self.bot)
@@ -196,15 +216,29 @@ class EventsCog(commands.Cog):
     def _lock(self, event_id: int) -> asyncio.Lock:
         return self._locks.setdefault(event_id, asyncio.Lock())
 
+    def _read_hidden(self, guild_id: int) -> Optional[Set[int]]:
+        """Members hidden with /leaderboard optout, or None when the list cannot be read."""
+        from llm.tools.user_stats import hidden_member_ids
+
+        return hidden_member_ids(SimpleNamespace(bot=self.bot), guild_id)
+
     # ------------------------------------------------------------- rendering
-    def render(self, event: Event, roster: Roster) -> discord.Embed:
+    def render(self, event: Event, roster: Roster, hidden: Optional[Set[int]]) -> discord.Embed:
+        """The event's public message. Members in ``hidden`` (everyone, when it is None) are neither
+        named nor counted, the host included."""
         guild_id = event.guild_id
+
+        def shown(user_ids: List[int]) -> List[int]:
+            return [] if hidden is None else [user for user in user_ids if user not in hidden]
+
+        roster = Roster(going=shown(roster.going), waiting=shown(roster.waiting), maybe=shown(roster.maybe))
+        host = f"<@{event.creator_id}>" if shown([event.creator_id]) else self._t(guild_id, "hidden_host")
         cancelled = event.status == CANCELLED
         title = f"📅 {event.title}" if not cancelled else f"~~{event.title}~~ ({self._t(guild_id, 'cancelled_tag')})"
         when = f"<t:{int(event.starts_at)}:F> (<t:{int(event.starts_at)}:R>)"
         embed = discord.Embed(
             title=title[:256],
-            description=self._t(guild_id, "embed_description", when=when, host=f"<@{event.creator_id}>"),
+            description=self._t(guild_id, "embed_description", when=when, host=host),
             colour=discord.Colour.dark_grey() if cancelled else discord.Colour.blurple(),
         )
         more = self._t(guild_id, "and_more", count="{count}")
@@ -235,14 +269,20 @@ class EventsCog(commands.Cog):
         return view
 
     async def _refresh_message(self, event: Event) -> None:
-        """Shows the current roster on the event's message (when it still exists)."""
+        """Shows the current roster on the event's message (when it still exists).
+
+        While the opt-out list cannot be read an open event's message is left as it is.
+        """
         channel = self.bot.get_channel(event.channel_id)
         if channel is None or event.message_id is None:
+            return
+        hidden = self.hidden_ids(event.guild_id)
+        if hidden is None and event.status != CANCELLED:
             return
         view = None if event.status == CANCELLED else self._localised_view(event.guild_id)
         try:
             message = channel.get_partial_message(event.message_id)
-            await message.edit(embed=self.render(event, self.store.roster(event)), view=view)
+            await message.edit(embed=self.render(event, self.store.roster(event), hidden), view=view)
         except discord.HTTPException:
             self.logger.warning(f"events: could not update the message of event {event.id}", exc_info=True)
 
@@ -260,8 +300,14 @@ class EventsCog(commands.Cog):
         user_id = interaction.user.id
 
         async def show(event: Event, roster: Roster) -> None:
+            hidden = self.hidden_ids(event.guild_id)
+            if hidden is None:
+                # The answer is saved; the message waits until the opt-out list can be read.
+                return
             try:
-                await interaction.edit_original_response(embed=self.render(event, roster), view=self._localised_view(guild_id))
+                await interaction.edit_original_response(
+                    embed=self.render(event, roster, hidden), view=self._localised_view(guild_id)
+                )
             except discord.HTTPException:
                 # The answer is saved either way; the confirmation and the promotion notice still go out.
                 self.logger.warning(f"events: could not update the message of event {event.id}", exc_info=True)
@@ -334,6 +380,40 @@ class EventsCog(commands.Cog):
             await self._announce_promotion(channel, event, promoted)
         return None, event, after
 
+    async def propose_answer(self, channel: Any, member: Any, event_id: int, status: Optional[str]) -> Optional[str]:
+        """Asks ``member`` in ``channel`` to confirm going, maybe or leaving (``None``) an event the AI
+        found for them; ``answer_for_member`` runs only when they press Confirm.
+
+        Returns:
+            None once the question is posted, otherwise a response key ("not_found", "event_started").
+        """
+        guild = channel.guild
+        event = self.store.get(event_id)
+        if event is None or event.guild_id != guild.id or event.status == CANCELLED:
+            return "not_found"
+        if not can_read(guild.get_channel_or_thread(event.channel_id), member):
+            return "not_found"
+        if event.starts_at <= self._now():
+            return "event_started"
+        # The title is only shown where the event itself is; elsewhere it is named by number and link.
+        title = f"**{event.title}**" if event.channel_id == channel.id else self._untitled(event)
+        prompt_key = {GOING: "ask_going", MAYBE: "ask_maybe", None: "ask_leave"}[status]
+
+        async def on_confirm() -> str:
+            problem, event_now, roster = await self.answer_for_member(guild, member.id, event.id, status)
+            if problem is not None:
+                return self._t(guild.id, problem)
+            if member.id in roster.waiting:
+                # Not the place in line: it would tell how many (possibly hidden) members are ahead.
+                return f"<@{member.id}> " + self._t(guild.id, "you_are_waiting_public")
+            return f"<@{member.id}> " + self._answer_text(guild.id, member.id, status, roster)
+
+        view = ConfirmView(
+            member.id, lambda key: self._t(guild.id, key), on_confirm, self._answer_asks, (guild.id, member.id)
+        )
+        await ask(channel, self._t(guild.id, prompt_key, member=f"<@{member.id}>", title=title), view)
+        return None
+
     def _answer_text(self, guild_id: Any, user_id: int, status: Optional[str], roster: Roster) -> str:
         if user_id in roster.going:
             return self._t(guild_id, "you_are_going")
@@ -392,7 +472,10 @@ class EventsCog(commands.Cog):
         return None
 
     def problem_text(self, guild_id: Any, key: str) -> str:
-        limits = {"user_limit": MAX_UPCOMING_PER_USER, "guild_limit": MAX_UPCOMING_PER_GUILD}
+        limits = {
+            "user_limit": MAX_UPCOMING_PER_USER, "guild_limit": MAX_UPCOMING_PER_GUILD,
+            "draft_limit": MAX_PENDING_DRAFTS_PER_GUILD,
+        }
         return self._t(guild_id, key, limit=limits[key]) if key in limits else self._t(guild_id, key)
 
     # ------------------------------------------------------------- drafts
@@ -422,8 +505,21 @@ class EventsCog(commands.Cog):
         problem = self.check_start(guild_id, creator.id, draft.starts_at)
         if problem is not None:
             return problem, None
+        others = sum(1 for (guild, host) in self._drafts if guild == guild_id and host != creator.id)
+        if others >= MAX_PENDING_DRAFTS_PER_GUILD:
+            return "draft_limit", None
+        # One draft per host: a new one (even the same event asked again) replaces the open one.
+        key = (guild_id, creator.id)
+        previous = self._drafts.get(key)
         view = EventDraftView(self, draft)
-        view.message = await channel.send(self.draft_text(draft), view=view, allowed_mentions=discord.AllowedMentions.none())
+        self._drafts[key] = view
+        if previous is not None:
+            await previous.close("draft_replaced")
+        try:
+            view.message = await channel.send(self.draft_text(draft), view=view, allowed_mentions=discord.AllowedMentions.none())
+        except Exception:
+            view.finish()
+            raise
         return None, draft
 
     def draft_text(self, draft: EventDraft) -> str:
@@ -437,11 +533,9 @@ class EventsCog(commands.Cog):
     async def confirm_draft(self, interaction: discord.Interaction, view: EventDraftView) -> None:
         """Makes the drafted event and turns the draft message into the event's message."""
         draft = view.draft
-        if view.done:
+        if not view.finish():
             await interaction.response.send_message(self._t(draft.guild_id, "draft_done"), ephemeral=True)
             return
-        view.done = True
-        view.stop()
         # The limits and the start are checked again: time passed and other events may have been made.
         problem = self.check_start(draft.guild_id, draft.creator_id, draft.starts_at)
         if problem is not None:
@@ -452,17 +546,18 @@ class EventsCog(commands.Cog):
             draft.guild_id, draft.channel_id, draft.creator_id, draft.title, draft.starts_at, draft.capacity,
             draft.remind_minutes, now,
         )
-        self.store.sign_up(event_id, draft.creator_id, GOING, now)
-        event = self.store.get(event_id)
         try:
+            self.store.sign_up(event_id, draft.creator_id, GOING, now)
+            event = self.store.get(event_id)
             await interaction.response.edit_message(
                 content=None,
-                embed=self.render(event, self.store.roster(event)),
+                embed=self.render(event, self.store.roster(event), self.hidden_ids(draft.guild_id)),
                 view=self._localised_view(draft.guild_id),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
-        except discord.HTTPException:
-            # The draft still shows its (now dead) buttons and no event: take the event back.
+        except Exception:
+            # No event message (or no host on it): take the event back rather than leave one that
+            # counts against the limits without buttons or a reminder.
             self.store.delete(event_id)
             raise
         self.store.set_message(event_id, interaction.message.id)
@@ -496,16 +591,16 @@ class EventsCog(commands.Cog):
             return
         title = " ".join(title.split())
         event_id = self.store.add(guild_id, interaction.channel_id, interaction.user.id, title, starts_at, limit, remind, now)
-        # The host is going to their own event.
-        self.store.sign_up(event_id, interaction.user.id, GOING, now)
-        event = self.store.get(event_id)
         try:
+            # The host is going to their own event.
+            self.store.sign_up(event_id, interaction.user.id, GOING, now)
+            event = self.store.get(event_id)
             callback = await interaction.response.send_message(
-                embed=self.render(event, self.store.roster(event)),
+                embed=self.render(event, self.store.roster(event), self.hidden_ids(guild_id)),
                 view=self._localised_view(guild_id),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
-        except discord.HTTPException:
+        except Exception:
             # Nothing was posted: the event goes too.
             self.store.delete(event_id)
             raise

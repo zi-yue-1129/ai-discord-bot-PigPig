@@ -20,6 +20,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from addons.confirm import ConfirmView, ask
 from addons.logging import get_logger
 from addons.settings import base_config
 from addons.tokens import tokens
@@ -175,6 +176,7 @@ class CommunityCog(commands.Cog):
         self._retries: Dict[Tuple[Any, ...], Tuple[int, float]] = {}
         # (guild_id, member_id) -> the birthday proposal waiting for that member's answer.
         self._birthday_proposals: Dict[Tuple[int, int], BirthdayProposalView] = {}
+        self._removal_asks: Dict[Tuple[int, int], ConfirmView] = {}
 
     async def cog_load(self) -> None:
         self.lang_manager = LanguageManager.get_instance(self.bot)
@@ -915,6 +917,31 @@ class CommunityCog(commands.Cog):
             view.stop()
             raise
         return "proposed"
+
+    async def propose_birthday_removal(self, channel: Any, member: Any) -> str:
+        """Asks ``member`` to confirm deleting their saved birthday (the AI's ``remove_my_birthday``).
+
+        The database is only read here (never created); nothing is deleted until they press Confirm.
+
+        Returns:
+            "asked", "none" (no birthday saved) or "unavailable" (the database cannot be read).
+        """
+        guild_id = channel.guild.id
+        try:
+            if self.store.read_birthday(guild_id, member.id) is None:
+                return "none"
+        except sqlite3.Error:
+            return "unavailable"
+
+        async def on_confirm() -> str:
+            removed = self.store.remove_birthday(guild_id, member.id)
+            return f"<@{member.id}> " + self._t(guild_id, "birthday_removed" if removed else "birthday_none")
+
+        view = ConfirmView(
+            member.id, lambda key: self._t(guild_id, key), on_confirm, self._removal_asks, (guild_id, member.id)
+        )
+        await ask(channel, self._t(guild_id, "removal_prompt", member=f"<@{member.id}>"), view)
+        return "asked"
 
     @birthday.command(name="remove", description="Remove your saved birthday from this server")
     async def birthday_remove(self, interaction: discord.Interaction) -> None:

@@ -16,10 +16,10 @@ import discord
 import pytest
 
 import addons.visibility as visibility
-from cogs.community import BirthdayProposalView, CommunityCog
+from cogs.community import CommunityCog
 from cogs.community_lib.store import CommunityStore
 from cogs.events import MAX_UPCOMING_PER_USER, EventDraftView, EventsCog
-from cogs.events_lib.store import CANCELLED, GOING, EventStore
+from cogs.events_lib.store import CANCELLED, GOING, MAYBE, EventStore
 from cogs.wheel import WheelCog
 from llm import tools_factory
 from llm.tools.community_tools import CommunityTools, EventTools
@@ -109,7 +109,15 @@ class FakeInteraction:
         self.channel_id = message.channel.id
         self.sent: List[tuple] = []
         self.edits: List[dict] = []
-        self.response = SimpleNamespace(send_message=self._send, edit_message=self._edit)
+        self.deferred = False
+        self.response = SimpleNamespace(send_message=self._send, edit_message=self._edit, defer=self._defer)
+
+    async def _defer(self, **kwargs: Any) -> None:
+        self.deferred = True
+
+    async def edit_original_response(self, **kwargs: Any) -> None:
+        assert self.deferred
+        self.edits.append(kwargs)
 
     async def _send(self, content: Any = None, **kwargs: Any) -> None:
         self.sent.append((content, kwargs))
@@ -136,6 +144,8 @@ def world(tmp_path: Path) -> SimpleNamespace:
     events.lang_manager = FakeLang()
     events._now = lambda: NOW
     events.parse_time = lambda text: None if text == "???" else SimpleNamespace(timestamp=lambda: NOW + float(text))
+    hidden: Dict[str, Any] = {"ids": set()}
+    events.hidden_ids = lambda guild_id: hidden["ids"]
     wheel_cog = WheelCog(bot)
     wheel_cog.lang_manager = FakeLang()
     wheel_cog.frame_seconds = 0
@@ -143,7 +153,9 @@ def world(tmp_path: Path) -> SimpleNamespace:
     cogs.update(EventsCog=events, WheelCog=wheel_cog, LanguageManager=FakeLang(), CommunityCog=community)
     message = SimpleNamespace(guild=guild, author=guild.get_member(HOST_ID), channel=here)
     runtime = SimpleNamespace(bot=bot, message=message, logger=None)
-    return SimpleNamespace(guild=guild, here=here, store=store, events=events, runtime=runtime, cogs=cogs, community=community)
+    return SimpleNamespace(
+        guild=guild, here=here, store=store, events=events, runtime=runtime, cogs=cogs, community=community, hidden=hidden
+    )
 
 
 def _tools(world: SimpleNamespace, cls: Any) -> Dict[str, Any]:
@@ -286,18 +298,154 @@ async def test_the_create_tool_explains_problems_and_points_to_the_confirm_butto
     assert "could not be posted" in await create(title="raid", time="3600")
 
 
+async def _press(view: Any, message: FakeMessage, user_id: int, button: str = "confirm") -> FakeInteraction:
+    press = FakeInteraction(user_id, message)
+    if await view.interaction_check(press):
+        await getattr(view, button).callback(press)
+    return press
+
+
 @pytest.mark.asyncio
-async def test_the_join_tool_hides_the_title_of_an_event_in_a_private_channel(world: SimpleNamespace) -> None:
-    world.guild.channel(666, readers={HOST_ID, 3}, public=False)
-    secret = _event(world, channel_id=666, title="secret plan")
-    here = _event(world, title="open raid")
+async def test_the_join_tool_changes_nothing_until_the_member_confirms(world: SimpleNamespace) -> None:
+    event = _event(world, title="open raid")
     join = _tools(world, EventTools)["join_event"].coroutine
 
-    reply = await join(event_id=secret.id)
-    assert "is going" in reply and "secret plan" not in reply and "discord.com/channels" in reply
-    assert "<<<open raid>>>" in await join(event_id=f"#{here.id}", status="maybe")
-    assert "no longer on the list" in await join(event_id=here.id, status="leave")
-    assert "status must be" in await join(event_id=here.id, status="yes")
+    reply = await join(event_id=f"#{event.id}")
+    assert "Confirm" in reply and "Nothing changes" in reply
+    asked = world.here.messages[-1]
+    assert asked.content.startswith("ask_going|") and "title=**open raid**" in asked.content
+    assert asked.kwargs["allowed_mentions"].users is False
+    assert world.store.roster(event).going == [3]
+    view = asked.kwargs["view"]
+
+    stranger = await _press(view, asked, 2)
+    assert stranger.sent[0][0] == "ask_not_yours|" and world.store.roster(event).going == [3]
+
+    press = await _press(view, asked, HOST_ID)
+    assert world.store.roster(event).going == [3, HOST_ID]
+    assert press.edits[0] == {"content": "<@1> you_are_going|", "view": None}
+    again = await _press(view, asked, HOST_ID)
+    assert again.sent[0][0] == "ask_done|"
+
+    await join(event_id=event.id, status="leave")
+    leave = world.here.messages[-1]
+    cancel = await _press(leave.kwargs["view"], leave, HOST_ID, "cancel")
+    assert cancel.edits[0]["content"] == "ask_cancelled|" and HOST_ID in world.store.roster(event).going
+    assert "status must be" in await join(event_id=event.id, status="yes")
+
+
+@pytest.mark.asyncio
+async def test_a_newer_join_question_replaces_the_open_one_and_old_ones_expire(world: SimpleNamespace) -> None:
+    event = _event(world)
+    join = _tools(world, EventTools)["join_event"].coroutine
+    await join(event_id=event.id)
+    first = world.here.messages[-1]
+    await join(event_id=event.id, status="maybe")
+    second = world.here.messages[-1]
+
+    assert first.edits == [{"content": "ask_replaced|", "view": None}]
+    late = await _press(first.kwargs["view"], first, HOST_ID)
+    assert late.sent[0][0] == "ask_done|" and HOST_ID not in world.store.roster(event).going
+    await second.kwargs["view"].on_timeout()
+    assert second.edits == [{"content": "ask_expired|", "view": None}]
+    assert world.store.roster(event).maybe == []
+
+
+@pytest.mark.asyncio
+async def test_the_join_question_hides_the_title_of_an_event_in_another_channel(world: SimpleNamespace) -> None:
+    world.guild.channel(666, readers={HOST_ID, 3}, public=False)
+    secret = _event(world, channel_id=666, title="secret plan")
+    await _tools(world, EventTools)["join_event"].coroutine(event_id=secret.id)
+
+    asked = world.here.messages[-1]
+    assert "secret plan" not in asked.content and "untitled_event|" in asked.content
+
+
+@pytest.mark.asyncio
+async def test_joining_a_full_event_through_the_ai_never_tells_the_place_in_line(world: SimpleNamespace) -> None:
+    event = _event(world, capacity=1)
+    world.store.sign_up(event.id, 2, GOING, NOW + 1)
+    await _tools(world, EventTools)["join_event"].coroutine(event_id=event.id)
+    asked = world.here.messages[-1]
+
+    press = await _press(asked.kwargs["view"], asked, HOST_ID)
+    assert world.store.roster(world.store.get(event.id)).waiting == [2, HOST_ID]
+    assert press.edits[0]["content"] == "<@1> you_are_waiting_public|"
+
+
+@pytest.mark.asyncio
+async def test_the_join_tool_refuses_other_servers_started_and_unreadable_events(world: SimpleNamespace) -> None:
+    join = _tools(world, EventTools)["join_event"].coroutine
+    elsewhere = world.store.add(GUILD_ID + 1, 500, 3, "theirs", NOW + 3600, 0, 15, NOW)
+    started = world.store.add(GUILD_ID, 500, 3, "late", NOW - 60, 0, 15, NOW - 600)
+    world.guild.channel(666, readers={3})
+    private = _event(world, channel_id=666)
+
+    assert "no such event" in await join(event_id=elsewhere)
+    assert "already started" in await join(event_id=started)
+    assert "no such event" in await join(event_id=private.id)
+    assert world.here.messages == []
+
+
+@pytest.mark.asyncio
+async def test_joining_again_keeps_the_place_in_line(world: SimpleNamespace) -> None:
+    event = _event(world, capacity=1)
+    for user_id in (2, HOST_ID):
+        await world.events.answer_for_member(world.guild, user_id, event.id, GOING)
+    await world.events.answer_for_member(world.guild, 2, event.id, GOING)
+
+    assert world.store.roster(world.store.get(event.id)).waiting == [2, HOST_ID]
+
+
+@pytest.mark.asyncio
+async def test_a_started_event_cannot_be_joined_when_the_member_confirms(world: SimpleNamespace) -> None:
+    event = _event(world)
+    await _tools(world, EventTools)["join_event"].coroutine(event_id=event.id)
+    asked = world.here.messages[-1]
+    world.events._now = lambda: NOW + 7200
+
+    press = await _press(asked.kwargs["view"], asked, HOST_ID)
+    assert press.edits[0]["content"] == "event_started|" and HOST_ID not in world.store.roster(event).going
+
+
+# ------------------------------------------------------------------ hidden members on the event message
+def _embed_text(embed: discord.Embed) -> str:
+    return " ".join([embed.description or ""] + [f"{f.name} {f.value}" for f in embed.fields])
+
+
+def test_the_event_message_never_names_or_counts_hidden_members(world: SimpleNamespace) -> None:
+    event = _event(world, capacity=1)  # member 3 hosts and is going
+    world.store.sign_up(event.id, 2, GOING, NOW + 1)  # member 2 waits
+    world.store.sign_up(event.id, HOST_ID, MAYBE, NOW + 2)
+    roster = world.store.roster(event)
+
+    text = _embed_text(world.events.render(event, roster, {2, 3}))
+    assert "<@2>" not in text and "<@3>" not in text and "<@1>" in text
+    assert "host=hidden_host|" in text and "going_field_limited|count=0|limit=1" in text
+    assert "waiting_field" not in text
+
+    # An unreadable opt-out list hides everyone.
+    assert "<@" not in _embed_text(world.events.render(event, roster, None))
+
+
+@pytest.mark.asyncio
+async def test_the_event_message_is_left_alone_while_the_opt_out_list_cannot_be_read(world: SimpleNamespace) -> None:
+    edits: List[dict] = []
+    message = SimpleNamespace(edit=lambda **kwargs: _record(edits, kwargs))
+    world.events.bot.get_channel = lambda channel_id: SimpleNamespace(get_partial_message=lambda message_id: message)
+    event = _event(world)
+
+    world.hidden["ids"] = None
+    await world.events.answer_for_member(world.guild, HOST_ID, event.id, GOING)
+    assert edits == [] and HOST_ID in world.store.roster(event).going
+
+    world.hidden["ids"] = set()
+    await world.events.answer_for_member(world.guild, HOST_ID, event.id, MAYBE)
+    assert "<@1>" in _embed_text(edits[-1]["embed"])
+
+
+async def _record(edits: List[dict], kwargs: dict) -> None:
+    edits.append(kwargs)
 
 
 # ------------------------------------------------------------------ dice and wheel
@@ -341,21 +489,38 @@ def test_fun_tools_are_in_the_fun_group(world: SimpleNamespace) -> None:
 
 # ------------------------------------------------------------------ birthday
 @pytest.mark.asyncio
-async def test_a_birthday_can_only_be_removed_for_the_asker(world: SimpleNamespace) -> None:
-    """Removing only ever takes something away, so it needs no button; saving one goes through
-    propose_birthday, which waits for the member's own answer."""
-    world.cogs["LeaderboardCog"] = None
-    tools = _tools(world, CommunityTools)
-    assert "set_my_birthday" not in tools
-    tool = tools["remove_my_birthday"]
+async def test_a_birthday_is_only_removed_when_its_member_confirms(birthdays: SimpleNamespace) -> None:
+    world = birthdays
+    tool = _tools(world, CommunityTools)["remove_my_birthday"]
     assert set(tool.args) == set()
-    store = world.community.store
+    store = world.cog.store
     store.set_birthday(GUILD_ID, HOST_ID, 3, 5)
     store.set_birthday(GUILD_ID, 2, 4, 1)
 
-    assert await tool.coroutine() == "Removed their saved birthday."
+    assert "only deleted when they press Confirm" in await tool.coroutine()
+    asked = world.here.messages[-1]
+    assert asked.content == "removal_prompt|member=<@1>" and asked.kwargs["allowed_mentions"].users is False
+    assert store.get_birthday(GUILD_ID, HOST_ID) == (3, 5)
+
+    stranger = await _press(asked.kwargs["view"], asked, 2)
+    assert stranger.sent[0][0] == "ask_not_yours|" and store.get_birthday(GUILD_ID, HOST_ID) == (3, 5)
+    press = await _press(asked.kwargs["view"], asked, HOST_ID)
+    assert press.edits[0]["content"] == "<@1> birthday_removed|"
     assert store.get_birthday(GUILD_ID, HOST_ID) is None and store.get_birthday(GUILD_ID, 2) == (4, 1)
     assert await tool.coroutine() == "They had no birthday saved here."
+
+
+@pytest.mark.asyncio
+async def test_removing_a_birthday_never_creates_the_community_database(world: SimpleNamespace, tmp_path: Path) -> None:
+    missing = tmp_path / "nowhere" / "community.db"
+    cog = CommunityCog(SimpleNamespace(get_cog=world.cogs.get), store=CommunityStore(missing))
+    cog.lang_manager = FakeLang()
+    world.cogs["CommunityCog"] = cog
+    world.cogs["LeaderboardCog"] = None
+
+    reply = await _tools(world, CommunityTools)["remove_my_birthday"].coroutine()
+
+    assert "not available" in reply.lower() and not missing.exists() and world.here.messages == []
 
 
 @pytest.fixture
@@ -386,7 +551,7 @@ async def test_a_proposed_birthday_is_saved_only_when_its_member_presses_save(bi
     # Only the member being asked is pinged, never the asker.
     assert [m.id for m in posted.kwargs["allowed_mentions"].users] == [2]
     assert world.cog.store.get_birthday(GUILD_ID, 2) is None
-    view: BirthdayProposalView = posted.kwargs["view"]
+    view = posted.kwargs["view"]
 
     asker = FakeInteraction(HOST_ID, posted)
     assert await view.interaction_check(asker) is False
@@ -518,6 +683,147 @@ async def test_the_member_is_named_safely_to_the_model(birthdays: SimpleNamespac
     assert reply.count("<<<") == 1 and "@everyone" not in reply and "evil.example" not in reply
 
 
+# ------------------------------------------------------------------ more event draft guards
+@pytest.mark.asyncio
+async def test_a_new_draft_from_the_same_host_replaces_the_open_one(world: SimpleNamespace) -> None:
+    host = world.guild.get_member(HOST_ID)
+    for _ in range(30):
+        await world.events.post_draft(world.here, host, "raid", "3600")
+
+    open_drafts = [m for m in world.here.messages if not m.edits]
+    assert len(open_drafts) == 1 and len(world.events._drafts) == 1
+    assert all(m.edits == [{"content": "draft_replaced|", "view": None}] for m in world.here.messages[:-1])
+    old = world.here.messages[0]
+    late = await _press(old.kwargs["view"], old, HOST_ID)
+    await world.events.confirm_draft(late, old.kwargs["view"])
+    assert world.store.upcoming(GUILD_ID, NOW) == []
+
+
+@pytest.mark.asyncio
+async def test_a_server_has_at_most_a_few_drafts_waiting(world: SimpleNamespace) -> None:
+    from cogs.events import MAX_PENDING_DRAFTS_PER_GUILD
+
+    for member_id in range(10, 10 + MAX_PENDING_DRAFTS_PER_GUILD):
+        assert (await world.events.post_draft(world.here, world.guild.add(member_id), "raid", "3600"))[0] is None
+    assert await world.events.post_draft(world.here, world.guild.get_member(HOST_ID), "raid", "3600") == ("draft_limit", None)
+    # A host who already has one may still replace it.
+    assert (await world.events.post_draft(world.here, world.guild.get_member(10), "raid 2", "3600"))[0] is None
+    # Answered drafts free their place.
+    first = world.here.messages[1]
+    await _press(first.kwargs["view"], first, 11, "cancel")
+    assert (await world.events.post_draft(world.here, world.guild.get_member(HOST_ID), "raid", "3600"))[0] is None
+
+
+@pytest.mark.asyncio
+async def test_cancel_and_timeout_do_nothing_after_a_confirm(world: SimpleNamespace) -> None:
+    await world.events.post_draft(world.here, world.guild.get_member(HOST_ID), "raid", "3600")
+    posted = world.here.messages[-1]
+    view = posted.kwargs["view"]
+    await world.events.confirm_draft(FakeInteraction(HOST_ID, posted), view)
+
+    cancel = await _press(view, posted, HOST_ID, "cancel")
+    await view.on_timeout()
+    assert cancel.sent[0][0] == "draft_done|" and posted.edits == []
+    assert len(world.store.upcoming(GUILD_ID, NOW)) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_server_limit_is_checked_again_on_confirm(world: SimpleNamespace) -> None:
+    from cogs.events import MAX_UPCOMING_PER_GUILD
+
+    await world.events.post_draft(world.here, world.guild.get_member(HOST_ID), "raid", "3600")
+    posted = world.here.messages[-1]
+    for index in range(MAX_UPCOMING_PER_GUILD):
+        world.store.add(GUILD_ID, 500, 100 + index, f"other {index}", NOW + 600, 0, 15, NOW)
+    press = FakeInteraction(HOST_ID, posted)
+    await world.events.confirm_draft(press, posted.kwargs["view"])
+    assert press.edits[0]["content"] == f"guild_limit|limit={MAX_UPCOMING_PER_GUILD}"
+
+
+@pytest.mark.asyncio
+async def test_a_confirmed_event_pings_nobody(world: SimpleNamespace) -> None:
+    await world.events.post_draft(world.here, world.guild.get_member(HOST_ID), "raid", "3600")
+    posted = world.here.messages[-1]
+    press = FakeInteraction(HOST_ID, posted)
+    await world.events.confirm_draft(press, posted.kwargs["view"])
+    assert press.edits[0]["allowed_mentions"].users is False and press.edits[0]["allowed_mentions"].everyone is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("breaks", ["sign_up", "edit"])
+async def test_a_failed_confirm_leaves_no_event_behind(world: SimpleNamespace, breaks: str) -> None:
+    import sqlite3
+
+    await world.events.post_draft(world.here, world.guild.get_member(HOST_ID), "raid", "3600")
+    posted = world.here.messages[-1]
+    press = FakeInteraction(HOST_ID, posted)
+    if breaks == "sign_up":
+        def broken(*args: Any) -> None:
+            raise sqlite3.OperationalError("disk I/O error")
+
+        world.store.sign_up = broken
+        error: type = sqlite3.OperationalError
+    else:
+        async def broken_edit(**kwargs: Any) -> None:
+            raise discord.HTTPException(SimpleNamespace(status=500, reason="no"), "no")
+
+        press.response.edit_message = broken_edit
+        error = discord.HTTPException
+    with pytest.raises(error):
+        await world.events.confirm_draft(press, posted.kwargs["view"])
+    assert world.store.upcoming(GUILD_ID, NOW) == [] and world.store.count_upcoming(GUILD_ID, NOW) == 0
+
+
+@pytest.mark.asyncio
+async def test_drafts_read_real_times(world: SimpleNamespace) -> None:
+    import time as clock
+
+    world.events.parse_time = EventsCog.parse_time.__get__(world.events)
+    world.events._now = clock.time
+    problem, draft = await world.events.post_draft(world.here, world.guild.get_member(HOST_ID), "raid", "in 2 hours")
+    assert problem is None and abs(draft.starts_at - (clock.time() + 7200)) < 120
+    assert (await world.events.post_draft(world.here, world.guild.get_member(2), "raid", "banana o'clock"))[0] == "invalid_time"
+    assert (await world.events.post_draft(world.here, world.guild.get_member(2), "raid", "2 hours ago"))[0] == "past_time"
+
+
+# ------------------------------------------------------------------ direct messages
+def test_event_and_fun_tools_are_not_offered_in_direct_messages(world: SimpleNamespace) -> None:
+    world.runtime.message = SimpleNamespace(guild=None, author=world.guild.get_member(HOST_ID), channel=world.here)
+    assert _tools(world, EventTools) == {} and _tools(world, FunTools) == {}
+
+
+# ------------------------------------------------------------------ dice and wheel limits
+@pytest.mark.asyncio
+async def test_dice_notation_and_reason_are_cut_and_big_rolls_refused(world: SimpleNamespace) -> None:
+    roll = _tools(world, FunTools)["roll_dice"].coroutine
+
+    reply = await roll(notation="d20" + " " * 57 + "+5", reason="x" * 300)
+    posted = world.here.messages[-1]
+    assert reply.startswith("Posted the roll: 1d20 → ") and "+ 5" not in reply
+    assert posted.content.split("roll_reason|reason=")[1] == "x" * 100
+    for notation in ("60d6+60d6", "1d1001", "101d6"):
+        assert "Too many dice" in await roll(notation=notation)
+    assert len(world.here.messages) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_wheel_cuts_options_frees_the_channel_and_pings_nobody(world: SimpleNamespace) -> None:
+    spin = _tools(world, FunTools)["spin_wheel"].coroutine
+    options = [f"<@{n}> option {n} " + "y" * 100 for n in range(30)]
+
+    await spin(options=options)
+    posted = world.here.messages[-1]
+    embed = posted.edits[-1]["embed"]
+    assert embed.description.count("option") == 20
+    assert all(len(line) < 120 for line in embed.description.splitlines())
+    assert posted.kwargs["allowed_mentions"].users is False
+    assert all(edit["allowed_mentions"].users is False for edit in posted.edits)
+    assert world.cogs["WheelCog"]._spinning == set()
+
+    world.here.fail = True
+    assert "could not be posted" in await spin(options=["a", "b"])
+    assert world.cogs["WheelCog"]._spinning == set()
+
 # ------------------------------------------------------------------ text members wrote
 @pytest.mark.asyncio
 async def test_titles_and_options_are_made_safe_before_the_model_reads_them(world: SimpleNamespace) -> None:
@@ -528,7 +834,7 @@ async def test_titles_and_options_are_made_safe_before_the_model_reads_them(worl
 
     event = _event(world, title=sneaky)
     joined = await _tools(world, EventTools)["join_event"].coroutine(event_id=event.id)
-    assert joined.count("<<<") == 1 and "@everyone" not in joined
+    assert "call join_event" not in joined and "@everyone" not in joined
 
     spin = _tools(world, FunTools)["spin_wheel"].coroutine
     landed = await spin(options=[sneaky, sneaky + " 2"])

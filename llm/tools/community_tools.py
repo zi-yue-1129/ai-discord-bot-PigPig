@@ -432,15 +432,20 @@ class CommunityTools:
             )
 
         async def remove_my_birthday() -> str:
-            """Removes the birthday the person asking saved on this server (as /birthday remove).
+            """Asks the person asking, with buttons, whether to delete the birthday they saved here.
 
-            Only call this when the person asking clearly wants their own birthday removed.
+            Only call this when the person asking clearly wants their own birthday removed. Nothing
+            is deleted until they press Confirm themselves.
 
             Returns:
-                Whether a birthday was removed.
+                Whether the question was posted.
             """
-            removed = community.store.remove_birthday(guild.id, message.author.id)
-            return "Removed their saved birthday." if removed else "They had no birthday saved here."
+            result = await community.propose_birthday_removal(message.channel, message.author)
+            return {
+                "asked": "Posted a question with Confirm and Cancel buttons; it is only deleted when they press Confirm.",
+                "none": "They had no birthday saved here.",
+                "unavailable": UNAVAILABLE,
+            }[result]
 
         async def propose_birthday(month: int, day: int, user_id: Optional[str] = None) -> str:
             """Asks a member, with buttons in this channel, whether to save a birthday for them here.
@@ -580,18 +585,19 @@ class EventTools:
             )
 
         async def join_event(event_id: int, status: str = "going") -> str:
-            """Signs the person asking up for an event, marks them as maybe, or takes them off it.
+            """Asks the person asking, with buttons, to confirm signing up for an event, marking
+            themselves as maybe, or leaving it.
 
             Only call this when the person asking clearly wants it for themselves; it only ever
-            changes the person asking. Use list_upcoming_events first if you do not know the
-            event's number.
+            changes the person asking, and only once they press Confirm. Use list_upcoming_events
+            first if you do not know the event's number.
 
             Args:
                 event_id: The event's number (shown as #N under the event).
                 status: "going", "maybe" or "leave".
 
             Returns:
-                Where they now stand: going, waiting in line (with their place), maybe, or not on it.
+                Whether the question was posted.
             """
             from cogs.events_lib.store import GOING, MAYBE
 
@@ -603,28 +609,13 @@ class EventTools:
                 event_id = int(str(event_id).lstrip("#"))
             except (TypeError, ValueError):
                 return "Give the event's number, e.g. 12."
-            problem, event, roster = await events.answer_for_member(guild, message.author.id, event_id, wanted[status])
+            problem = await events.propose_answer(message.channel, message.author, event_id, wanted[status])
             if problem is not None:
                 return _EVENT_PROBLEMS.get(problem, "That event could not be changed.")
-            user_id = message.author.id
-            if user_id in roster.going:
-                where = "is going"
-            elif user_id in roster.waiting:
-                where = f"is waiting in line (#{roster.waiting.index(user_id) + 1}); they move up when someone leaves"
-            elif user_id in roster.maybe:
-                where = "is marked as maybe"
-            else:
-                where = "is no longer on the list"
-            return f"Done: they {where} for event #{event.id} ({_event_name(event)})."
-
-        def _event_name(event: Any) -> str:
-            """The event's title when everyone here may read it, otherwise its link."""
-            lookup = getattr(guild, "get_channel_or_thread", None) or guild.get_channel
-            channel = lookup(event.channel_id)
-            here = getattr(getattr(message, "channel", None), "id", None)
-            if channel is not None and (channel.id == here or shareable(channel)):
-                return user_text(event.title)
-            return f"https://discord.com/channels/{event.guild_id}/{event.channel_id}/{event.message_id}"
+            return (
+                f"Posted a question with Confirm and Cancel buttons for event #{event_id}. Nothing changes until "
+                "they press Confirm within 3 minutes; tell them so."
+            )
 
         events_group = {"target_agent_mode": "info", "tool_group": "events"}
         return [
@@ -643,6 +634,7 @@ _EVENT_PROBLEMS = {
     "too_far": "Events can be at most 180 days ahead.",
     "user_limit": "They already host 5 upcoming events; one must end or be cancelled first.",
     "guild_limit": "This server already has 25 upcoming events.",
+    "draft_limit": "Too many event proposals on this server are waiting for confirmation; try again later.",
     "not_found": "There is no such event here (or they cannot see its channel).",
     "event_gone": "That event was cancelled or no longer exists.",
     "event_started": "That event has already started, so sign-ups are closed.",

@@ -39,6 +39,20 @@
         "draft_not_yours": "只有發起人可以確認或取消這個活動。",
         "draft_cancelled": "已取消，這個活動沒有建立。",
         "draft_expired": "太久沒有確認，這個活動沒有建立。",
-        "draft_done": "這個活動已經處理過了。"
+        "draft_done": "這個活動已經處理過了。",
+        "hidden_host": "一位成員",
+        "draft_replaced": "已被同一位發起人的新提議取代，這個活動沒有建立。",
+        "draft_limit": "這個伺服器已經有 {limit} 個等待確認的活動提議了，請稍後再試。",
+        "ask_going": "{member}，要幫你報名參加{title}嗎？",
+        "ask_maybe": "{member}，要把你在{title}標記為「也許」嗎？",
+        "ask_leave": "{member}，要把你從{title}的名單移除嗎？",
+        "you_are_waiting_public": "人數已滿，已排入候補，有人退出就會自動補上。",
+        "ask_confirm": "確認",
+        "ask_cancel": "取消",
+        "ask_not_yours": "只有被詢問的人可以回答。",
+        "ask_done": "這個問題已經回答過了。",
+        "ask_cancelled": "已取消，什麼都沒有變。",
+        "ask_expired": "太久沒有回答，什麼都沒有變。",
+        "ask_replaced": "已被新的詢問取代，什麼都沒有變。"
     }
 }

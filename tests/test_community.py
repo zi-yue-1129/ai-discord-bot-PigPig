@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,7 +13,6 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from cogs import community as community_module
 from cogs.community import CommunityCog
 from cogs.community_lib.dates import (
     anniversary_years,
@@ -25,6 +25,10 @@ from cogs.community_lib.dates import (
 from cogs.community_lib.joins import JoinTracker
 from cogs.community_lib.limits import CommunityLimits
 from cogs.community_lib.store import CommunityStore, GuildSettings
+
+# The module the cog really runs in. ``from cogs import community`` could return a copy another test
+# file imported while it was collected, and patching that copy would not reach the cog.
+community_module = sys.modules[CommunityCog.__module__]
 
 ROOT = Path(__file__).resolve().parents[1]
 GUILD_ID = 42

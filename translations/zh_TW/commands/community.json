@@ -90,6 +90,15 @@
         "playing_room_limit": "這個伺服器已經開了夠多的語音房，請加入其中一個，或等有房間空出來。",
         "playing_room_closed": "這則提議的語音房已經開過，也已經關閉了。",
         "playing_room_denied": "你現在無法在這裡使用這個按鈕。",
-        "playing_room_opening": "這則提議的語音房還在開啟中，請過一分鐘再試。"
+        "playing_room_opening": "這則提議的語音房還在開啟中，請過一分鐘再試。",
+        "removal_prompt": "{member}，要刪除你在這個伺服器儲存的生日嗎？",
+        "birthday_unavailable": "現在讀不到生日資料，請稍後再試，或用 /birthday remove。",
+        "ask_confirm": "確認",
+        "ask_cancel": "取消",
+        "ask_not_yours": "只有被詢問的人可以回答。",
+        "ask_done": "這個問題已經回答過了。",
+        "ask_cancelled": "已取消，什麼都沒有變。",
+        "ask_expired": "太久沒有回答，什麼都沒有變。",
+        "ask_replaced": "已被新的詢問取代，什麼都沒有變。"
     }
 }
