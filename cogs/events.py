@@ -400,11 +400,6 @@ class EventsCog(commands.Cog):
             return "not_found"
         if event.starts_at <= self._now():
             return "event_started"
-        # The title is only shown in the event's own channel, and only when everyone there may read its
-        # history (the title is in an older message); otherwise the event is named by number and link.
-        title = self._shown_title(event, channel) if event.channel_id == channel.id else self._untitled(event)
-        if title == event.title:
-            title = f"**{title}**"
         prompt_key = {GOING: "ask_going", MAYBE: "ask_maybe", None: "ask_leave"}[status]
 
         async def on_confirm() -> str:
@@ -419,7 +414,16 @@ class EventsCog(commands.Cog):
         view = ConfirmView(
             member.id, lambda key: self._t(guild.id, key), on_confirm, self._answer_asks, (guild.id, member.id)
         )
-        await ask(channel, self._t(guild.id, prompt_key, member=f"<@{member.id}>", title=title), view)
+        def prompt() -> str:
+            # Worked out right before posting (after any replaced question was closed): the title is
+            # only shown in the event's own channel, and only when everyone there may read its history
+            # (it is in an older message); otherwise the event is named by number and link.
+            title = self._shown_title(event, channel) if event.channel_id == channel.id else self._untitled(event)
+            if title == event.title:
+                title = f"**{title}**"
+            return self._t(guild.id, prompt_key, member=f"<@{member.id}>", title=title)
+
+        await ask(channel, prompt, view)
         return None
 
     def _answer_text(self, guild_id: Any, user_id: int, status: Optional[str], roster: Roster) -> str:

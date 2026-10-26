@@ -115,9 +115,11 @@ class BirthdayProposalView(discord.ui.View):
         if not self._finish():
             await interaction.response.send_message(self.cog._t(self.guild_id, "birthday_proposal_done"), ephemeral=True)
             return
+        # Acknowledged before the database is touched: a locked database must not outlast Discord's 3 seconds.
+        await interaction.response.defer()
         store = self.cog.store
-        if not self.cog.database_ready(self.guild_id):
-            await interaction.response.edit_message(content=self.cog._t(self.guild_id, "birthday_unavailable"), view=None)
+        if not await asyncio.to_thread(self.cog.database_ready, self.guild_id):
+            await interaction.edit_original_response(content=self.cog._t(self.guild_id, "birthday_unavailable"), view=None)
             return
         store.set_birthday(self.guild_id, self.target_id, self.month, self.day)
         # Saying yes is the member asking for it themselves, so proposals are welcome again.
@@ -127,15 +129,16 @@ class BirthdayProposalView(discord.ui.View):
         )
         if not store.get_settings(self.guild_id).birthday_enabled:
             text += "\n" + self.cog._t(self.guild_id, "birthday_feature_off")
-        await interaction.response.edit_message(content=text, view=None)
+        await interaction.edit_original_response(content=text, view=None)
 
     @discord.ui.button(emoji="✖️", label="Decline", style=discord.ButtonStyle.secondary)
     async def decline(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not self._finish():
             await interaction.response.send_message(self.cog._t(self.guild_id, "birthday_proposal_done"), ephemeral=True)
             return
-        if not self.cog.database_ready(self.guild_id):
-            await interaction.response.edit_message(content=self.cog._t(self.guild_id, "birthday_unavailable"), view=None)
+        await interaction.response.defer()
+        if not await asyncio.to_thread(self.cog.database_ready, self.guild_id):
+            await interaction.edit_original_response(content=self.cog._t(self.guild_id, "birthday_unavailable"), view=None)
             return
         if self.asker_id == self.target_id:
             # Turning down one's own request changes nothing for other people's proposals.
@@ -143,7 +146,7 @@ class BirthdayProposalView(discord.ui.View):
         else:
             self.cog.store.block_birthday_proposals(self.guild_id, self.target_id, True)
             text = self.cog._t(self.guild_id, "birthday_proposal_declined", target=f"<@{self.target_id}>")
-        await interaction.response.edit_message(content=text, view=None)
+        await interaction.edit_original_response(content=text, view=None)
 
     async def close(self, key: str) -> None:
         """Ends the proposal unanswered: "birthday_proposal_expired" or "birthday_proposal_replaced"."""
@@ -994,7 +997,7 @@ class CommunityCog(commands.Cog):
             return "unavailable"
 
         async def on_confirm() -> str:
-            if not self.database_ready(guild_id):
+            if not await asyncio.to_thread(self.database_ready, guild_id):
                 return self._t(guild_id, "birthday_unavailable")
             removed = self.store.remove_birthday(guild_id, member.id)
             return f"<@{member.id}> " + self._t(guild_id, "birthday_removed" if removed else "birthday_none")

@@ -1161,6 +1161,58 @@ async def test_a_question_replaced_while_it_was_being_sent_is_closed(birthdays: 
     newest = world.here.messages[0].kwargs["view"]
     assert not newest.done
 
+# ------------------------------------------------------------------ review round 6
+@pytest.mark.asyncio
+async def test_the_join_title_is_decided_after_the_old_question_is_closed(world: SimpleNamespace) -> None:
+    event = _event(world, title="OLD_TITLE")
+    host = world.guild.get_member(HOST_ID)
+    await world.events.propose_answer(world.here, host, event.id, GOING)
+    first = world.here.messages[-1]
+    assert "OLD_TITLE" in first.content
+
+    async def lose_history(**kwargs: Any) -> None:
+        world.here.public = False  # someone loses Read History while the old question is edited
+
+    first.edit = lose_history
+    await world.events.propose_answer(world.here, host, event.id, MAYBE)
+    assert "OLD_TITLE" not in world.here.messages[-1].content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("button", ["save", "decline"])
+async def test_birthday_buttons_answer_discord_before_reading_the_database(birthdays: SimpleNamespace, button: str) -> None:
+    world = birthdays
+    await world.propose(month=1, day=1, user_id="2")
+    posted = world.here.messages[-1]
+    press = FakeInteraction(2, posted)
+    seen = []
+    ready = world.cog.database_ready
+
+    def checking(guild_id: int) -> bool:
+        seen.append(press.deferred)
+        return ready(guild_id)
+
+    world.cog.database_ready = checking
+    await getattr(posted.kwargs["view"], button).callback(press)
+    assert seen == [True] and press.edits[-1]["view"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_late_question_whose_close_fails_is_retried_then_deleted() -> None:
+    from addons.confirm import close_late
+
+    calls: List[str] = []
+
+    async def failing_edit(**kwargs: Any) -> None:
+        calls.append("edit")
+        raise discord.HTTPException(SimpleNamespace(status=500, reason="no"), "no")
+
+    async def delete() -> None:
+        calls.append("delete")
+
+    await close_late(SimpleNamespace(edit=failing_edit, delete=delete), "replaced")
+    assert calls == ["edit", "edit", "delete"]
+
 # ------------------------------------------------------------------ direct messages
 def test_event_and_fun_tools_are_not_offered_in_direct_messages(world: SimpleNamespace) -> None:
     world.runtime.message = SimpleNamespace(guild=None, author=world.guild.get_member(HOST_ID), channel=world.here)
