@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Set, Tuple
@@ -44,6 +45,8 @@ COMMUNITY_DB_PATH = "data/community.db"
 MESSAGE_LIMIT = 2000
 # A failed daily job or role removal waits longer after each failure, up to this long.
 MAX_RETRY_SECONDS = 3600
+# How long a birthday the AI proposed waits for its member to answer.
+PROPOSAL_SECONDS = 3600
 # A birthday role must not carry any of these: the bot hands it out without a moderator.
 _UNSAFE_ROLE_PERMISSIONS = discord.Permissions.elevated() | discord.Permissions(
     mute_members=True, deafen_members=True, move_members=True, manage_nicknames=True, mention_everyone=True
@@ -66,6 +69,80 @@ _WEEKDAYS = [
     app_commands.Choice(name=name, value=index)
     for index, name in enumerate(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"])
 ]
+
+
+class BirthdayProposalView(discord.ui.View):
+    """Save and Decline buttons under a birthday the AI proposed; only the member it is for may press them."""
+
+    def __init__(
+        self, cog: "CommunityCog", guild_id: int, asker_id: int, target_id: int, month: int, day: int,
+        timeout: float = PROPOSAL_SECONDS,
+    ) -> None:
+        super().__init__(timeout=timeout)
+        self.cog = cog
+        self.guild_id = guild_id
+        self.asker_id = asker_id
+        self.target_id = target_id
+        self.month = month
+        self.day = day
+        self.message: Any = None
+        # Set before the first await of a press, so a second press can never answer twice.
+        self.done = False
+        for item, key in zip(self.children, ("birthday_proposal_save", "birthday_proposal_decline")):
+            item.label = cog._t(guild_id, key)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.target_id:
+            await interaction.response.send_message(self.cog._t(self.guild_id, "birthday_proposal_not_yours"), ephemeral=True)
+            return False
+        return True
+
+    def _finish(self) -> bool:
+        """Marks the proposal answered; False when it already was."""
+        if self.done:
+            return False
+        self.done = True
+        self.stop()
+        self.cog._birthday_proposals.pop((self.guild_id, self.target_id), None)
+        return True
+
+    @discord.ui.button(emoji="🎂", label="Save", style=discord.ButtonStyle.success)
+    async def save(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not self._finish():
+            await interaction.response.send_message(self.cog._t(self.guild_id, "birthday_proposal_done"), ephemeral=True)
+            return
+        store = self.cog.store
+        store.set_birthday(self.guild_id, self.target_id, self.month, self.day)
+        # Saying yes is the member asking for it themselves, so proposals are welcome again.
+        store.block_birthday_proposals(self.guild_id, self.target_id, False)
+        text = self.cog._t(
+            self.guild_id, "birthday_proposal_saved", target=f"<@{self.target_id}>", month=self.month, day=self.day
+        )
+        if not store.get_settings(self.guild_id).birthday_enabled:
+            text += "\n" + self.cog._t(self.guild_id, "birthday_feature_off")
+        await interaction.response.edit_message(content=text, view=None)
+
+    @discord.ui.button(emoji="✖️", label="Decline", style=discord.ButtonStyle.secondary)
+    async def decline(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not self._finish():
+            await interaction.response.send_message(self.cog._t(self.guild_id, "birthday_proposal_done"), ephemeral=True)
+            return
+        if self.asker_id == self.target_id:
+            # Turning down one's own request changes nothing for other people's proposals.
+            text = self.cog._t(self.guild_id, "birthday_proposal_declined_self")
+        else:
+            self.cog.store.block_birthday_proposals(self.guild_id, self.target_id, True)
+            text = self.cog._t(self.guild_id, "birthday_proposal_declined", target=f"<@{self.target_id}>")
+        await interaction.response.edit_message(content=text, view=None)
+
+    async def on_timeout(self) -> None:
+        # Not answering is not a decline: later proposals are still asked.
+        if not self._finish() or self.message is None:
+            return
+        try:
+            await self.message.edit(content=self.cog._t(self.guild_id, "birthday_proposal_expired"), view=None)
+        except discord.HTTPException:
+            pass
 
 
 class CommunityCog(commands.Cog):
@@ -96,6 +173,8 @@ class CommunityCog(commands.Cog):
         self._flushes: Dict[int, asyncio.Task] = {}
         # key -> (failures so far, time of the next try); see _may_retry and _failed.
         self._retries: Dict[Tuple[Any, ...], Tuple[int, float]] = {}
+        # (guild_id, member_id) -> the birthday proposal waiting for that member's answer.
+        self._birthday_proposals: Dict[Tuple[int, int], BirthdayProposalView] = {}
 
     async def cog_load(self) -> None:
         self.lang_manager = LanguageManager.get_instance(self.bot)
@@ -781,10 +860,61 @@ class CommunityCog(commands.Cog):
             await interaction.response.send_message(self._t(interaction.guild_id, "invalid_date"), ephemeral=True)
             return
         self.store.set_birthday(interaction.guild_id, interaction.user.id, month, day)
+        # Setting it themselves counts as asking again: other people may propose a birthday for them once more.
+        self.store.block_birthday_proposals(interaction.guild_id, interaction.user.id, False)
         text = self._t(interaction.guild_id, "birthday_saved", month=month, day=day)
         if not self.store.get_settings(interaction.guild_id).birthday_enabled:
             text += "\n" + self._t(interaction.guild_id, "birthday_feature_off")
         await interaction.response.send_message(text, ephemeral=True)
+
+    async def propose_birthday(self, channel: Any, asker: Any, target: Any, month: int, day: int) -> str:
+        """Posts a birthday the AI proposed for ``target``, with Save and Decline buttons only they may press.
+
+        Nothing is saved until they press Save. Once they decline a proposal someone else made, later
+        proposals from other people are turned away here until they ask for one themselves (in chat or
+        with /birthday set). Members hidden with /leaderboard optout are never asked on someone else's behalf.
+
+        Returns:
+            "proposed", or a problem: "invalid_date", "bot", "cannot_see", "blocked" or "pending".
+        """
+        if not is_valid_birthday(month, day):
+            return "invalid_date"
+        if getattr(target, "bot", False):
+            return "bot"
+        guild_id = channel.guild.id
+        key = (guild_id, target.id)
+        if key in self._birthday_proposals:
+            return "pending"
+        try:
+            can_see = channel.permissions_for(target).view_channel
+        except Exception:
+            can_see = False
+        if not can_see:
+            return "cannot_see"
+        if asker.id != target.id:
+            try:
+                hidden = self.store.read_optouts(guild_id)
+            except sqlite3.Error:
+                return "blocked"
+            if target.id in hidden or self.store.birthday_proposals_blocked(guild_id, target.id):
+                return "blocked"
+        view = BirthdayProposalView(self, guild_id, asker.id, target.id, month, day)
+        # Reserved before the await, so two quick requests cannot both ping the member.
+        self._birthday_proposals[key] = view
+        if asker.id == target.id:
+            text = self._t(guild_id, "birthday_proposal_self", target=target.mention, month=month, day=day)
+        else:
+            text = self._t(
+                guild_id, "birthday_proposal", target=target.mention, asker=asker.mention, month=month, day=day
+            )
+        try:
+            # Only the member being asked is pinged.
+            view.message = await channel.send(text, view=view, allowed_mentions=discord.AllowedMentions(users=[target]))
+        except Exception:
+            self._birthday_proposals.pop(key, None)
+            view.stop()
+            raise
+        return "proposed"
 
     @birthday.command(name="remove", description="Remove your saved birthday from this server")
     async def birthday_remove(self, interaction: discord.Interaction) -> None:

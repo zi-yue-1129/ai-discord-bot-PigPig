@@ -1,7 +1,8 @@
-"""AI tools that act: proposing and joining events, rolling dice, spinning the wheel, removing a birthday.
+"""AI tools that act: proposing and joining events, rolling dice, spinning the wheel, proposing and
+removing a birthday.
 
-They only ever act for the person talking to the bot, and an event the AI proposes is made only
-once its host presses Confirm.
+They only ever act for the person talking to the bot. An event the AI proposes is made only once its
+host presses Confirm, and a birthday it proposes is saved only once the member it is for presses Save.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import discord
 import pytest
 
 import addons.visibility as visibility
+from cogs.community import BirthdayProposalView, CommunityCog
 from cogs.community_lib.store import CommunityStore
 from cogs.events import MAX_UPCOMING_PER_USER, EventDraftView, EventsCog
 from cogs.events_lib.store import CANCELLED, GOING, EventStore
@@ -339,9 +341,9 @@ def test_fun_tools_are_in_the_fun_group(world: SimpleNamespace) -> None:
 
 # ------------------------------------------------------------------ birthday
 @pytest.mark.asyncio
-async def test_a_birthday_can_only_be_removed_from_chat_and_only_the_askers(world: SimpleNamespace) -> None:
-    """Saving a birthday makes the bot announce it on the day, so (like showing oneself again on
-    the leaderboard) it is left to /birthday set; removing it only ever takes something away."""
+async def test_a_birthday_can_only_be_removed_for_the_asker(world: SimpleNamespace) -> None:
+    """Removing only ever takes something away, so it needs no button; saving one goes through
+    propose_birthday, which waits for the member's own answer."""
     world.cogs["LeaderboardCog"] = None
     tools = _tools(world, CommunityTools)
     assert "set_my_birthday" not in tools
@@ -354,6 +356,166 @@ async def test_a_birthday_can_only_be_removed_from_chat_and_only_the_askers(worl
     assert await tool.coroutine() == "Removed their saved birthday."
     assert store.get_birthday(GUILD_ID, HOST_ID) is None and store.get_birthday(GUILD_ID, 2) == (4, 1)
     assert await tool.coroutine() == "They had no birthday saved here."
+
+
+@pytest.fixture
+def birthdays(world: SimpleNamespace) -> SimpleNamespace:
+    """``world`` with a real community cog, so proposals post buttons and the store is real."""
+    cog = CommunityCog(SimpleNamespace(get_cog=world.cogs.get), store=world.community.store)
+    cog.lang_manager = FakeLang()
+    cog.store.get_settings(GUILD_ID)  # the opt-out list is read without creating the database
+    world.cogs["CommunityCog"] = cog
+    world.cogs["LeaderboardCog"] = None
+    world.cog = cog
+    world.propose = _tools(world, CommunityTools)["propose_birthday"].coroutine
+    return world
+
+
+def _ask(world: SimpleNamespace, asker_id: int) -> None:
+    world.runtime.message.author = world.guild.get_member(asker_id)
+
+
+@pytest.mark.asyncio
+async def test_a_proposed_birthday_is_saved_only_when_its_member_presses_save(birthdays: SimpleNamespace) -> None:
+    world = birthdays
+    reply = await world.propose(month=4, day=1, user_id="2")
+
+    assert reply.startswith("Posted a question") and "do not say it is saved" in reply
+    posted = world.here.messages[-1]
+    assert posted.content.startswith("birthday_proposal|") and "asker=<@1>" in posted.content and "target=<@2>" in posted.content
+    # Only the member being asked is pinged, never the asker.
+    assert [m.id for m in posted.kwargs["allowed_mentions"].users] == [2]
+    assert world.cog.store.get_birthday(GUILD_ID, 2) is None
+    view: BirthdayProposalView = posted.kwargs["view"]
+
+    asker = FakeInteraction(HOST_ID, posted)
+    assert await view.interaction_check(asker) is False
+    assert asker.sent[0][0] == "birthday_proposal_not_yours|"
+
+    member = FakeInteraction(2, posted)
+    assert await view.interaction_check(member) is True
+    await view.save.callback(member)
+    assert world.cog.store.get_birthday(GUILD_ID, 2) == (4, 1)
+    assert member.edits[0]["view"] is None and member.edits[0]["content"].startswith("birthday_proposal_saved|")
+
+    again = FakeInteraction(2, posted)
+    await view.decline.callback(again)
+    assert again.sent[0][0] == "birthday_proposal_done|" and not world.cog.store.birthday_proposals_blocked(GUILD_ID, 2)
+
+
+@pytest.mark.asyncio
+async def test_after_a_decline_other_people_are_turned_away_until_the_member_asks(birthdays: SimpleNamespace) -> None:
+    world = birthdays
+    await world.propose(month=4, day=1, user_id="2")
+    posted = world.here.messages[-1]
+    press = FakeInteraction(2, posted)
+    await posted.kwargs["view"].decline.callback(press)
+    assert press.edits[0]["content"].startswith("birthday_proposal_declined|")
+    assert world.cog.store.get_birthday(GUILD_ID, 2) is None
+
+    # Anyone else asking again is refused without pinging the member.
+    for asker_id in (HOST_ID, 3):
+        _ask(world, asker_id)
+        reply = await world.propose(month=4, day=2, user_id="2")
+        assert "cannot be asked" in reply and "Do not retry" in reply
+    assert len(world.here.messages) == 1
+
+    # The member asking for themselves still gets the question, and saving lifts the block.
+    _ask(world, 2)
+    assert (await world.propose(month=4, day=3)).startswith("Posted a question")
+    own = world.here.messages[-1]
+    assert own.content.startswith("birthday_proposal_self|")
+    await own.kwargs["view"].save.callback(FakeInteraction(2, own))
+    assert world.cog.store.get_birthday(GUILD_ID, 2) == (4, 3)
+    _ask(world, HOST_ID)
+    assert (await world.propose(month=4, day=4, user_id="2")).startswith("Posted a question")
+
+
+@pytest.mark.asyncio
+async def test_birthday_set_lifts_the_block_but_declining_ones_own_request_never_sets_it(
+    birthdays: SimpleNamespace,
+) -> None:
+    world = birthdays
+    _ask(world, 2)
+    await world.propose(month=5, day=5)
+    own = world.here.messages[-1]
+    await own.kwargs["view"].decline.callback(FakeInteraction(2, own))
+    assert not world.cog.store.birthday_proposals_blocked(GUILD_ID, 2)
+
+    world.cog.store.block_birthday_proposals(GUILD_ID, 2, True)
+    interaction = SimpleNamespace(
+        guild_id=GUILD_ID, user=SimpleNamespace(id=2), response=SimpleNamespace(send_message=_ignore)
+    )
+    await CommunityCog.birthday_set.callback(world.cog, interaction, 5, 5)
+    assert not world.cog.store.birthday_proposals_blocked(GUILD_ID, 2)
+
+
+async def _ignore(*args: Any, **kwargs: Any) -> None:
+    return None
+
+
+@pytest.mark.asyncio
+async def test_an_unanswered_proposal_expires_without_counting_as_a_decline(birthdays: SimpleNamespace) -> None:
+    world = birthdays
+    await world.propose(month=6, day=6, user_id="2")
+    # One question at a time per member.
+    assert "already has a birthday question" in await world.propose(month=6, day=7, user_id="2")
+    posted = world.here.messages[-1]
+    await posted.kwargs["view"].on_timeout()
+
+    assert posted.edits[0] == {"content": "birthday_proposal_expired|", "view": None}
+    assert world.cog.store.get_birthday(GUILD_ID, 2) is None
+    assert not world.cog.store.birthday_proposals_blocked(GUILD_ID, 2)
+    assert (await world.propose(month=6, day=7, user_id="2")).startswith("Posted a question")
+
+
+@pytest.mark.asyncio
+async def test_hidden_bots_and_members_who_cannot_see_the_channel_are_not_asked(birthdays: SimpleNamespace) -> None:
+    world = birthdays
+    world.cog.store.set_optout(GUILD_ID, 2, True)
+    assert "cannot be asked" in await world.propose(month=1, day=1, user_id="2")
+    world.guild.members[3].bot = True
+    assert "Bots" in await world.propose(month=1, day=1, user_id="3")
+    world.guild.add(4)
+    world.here.readers = {HOST_ID, 2, 3}
+    assert "cannot see this channel" in await world.propose(month=1, day=1, user_id="4")
+    assert "not a real date" in await world.propose(month=2, day=30)
+    assert world.here.messages == []
+
+    # Hidden members may still ask for their own.
+    _ask(world, 2)
+    assert (await world.propose(month=1, day=1)).startswith("Posted a question")
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_opt_out_list_stops_proposals_for_other_people(
+    birthdays: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sqlite3
+
+    def broken(guild_id: int) -> set:
+        raise sqlite3.OperationalError("locked")
+
+    monkeypatch.setattr(birthdays.cog.store, "read_optouts", broken)
+    assert "cannot be asked" in await birthdays.propose(month=1, day=1, user_id="2")
+    assert (await birthdays.propose(month=1, day=1)).startswith("Posted a question")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_post_frees_the_member_for_the_next_proposal(birthdays: SimpleNamespace) -> None:
+    world = birthdays
+    world.here.fail = True
+    with pytest.raises(discord.HTTPException):
+        await world.cog.propose_birthday(world.here, world.guild.get_member(HOST_ID), world.guild.get_member(2), 1, 1)
+    world.here.fail = False
+    assert (await world.propose(month=1, day=1, user_id="2")).startswith("Posted a question")
+
+
+@pytest.mark.asyncio
+async def test_the_member_is_named_safely_to_the_model(birthdays: SimpleNamespace) -> None:
+    birthdays.guild.members[2].display_name = ">>> @everyone https://evil.example <<<"
+    reply = await birthdays.propose(month=1, day=1, user_id="2")
+    assert reply.count("<<<") == 1 and "@everyone" not in reply and "evil.example" not in reply
 
 
 # ------------------------------------------------------------------ text members wrote

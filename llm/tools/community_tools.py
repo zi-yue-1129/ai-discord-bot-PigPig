@@ -251,6 +251,22 @@ def recap_text(view: RecapView, title_name: Any) -> str:
     return "\n".join(lines)
 
 
+_BIRTHDAY_PROPOSALS = {
+    "proposed": (
+        "Posted a question with Save and Decline buttons for {name}. Nothing is saved until they press Save; "
+        "do not say it is saved."
+    ),
+    "invalid_date": "That is not a real date. Ask for the right month and day.",
+    "bot": "Bots do not have birthdays here.",
+    "cannot_see": "{name} cannot see this channel, so they cannot be asked here.",
+    "blocked": (
+        "{name} cannot be asked about a birthday by other people. Do not retry; they can set it themselves with "
+        "/birthday set or by asking you."
+    ),
+    "pending": "{name} already has a birthday question waiting for their answer.",
+}
+
+
 class CommunityTools:
     """Tools over the leaderboard and community cogs."""
 
@@ -418,15 +434,41 @@ class CommunityTools:
         async def remove_my_birthday() -> str:
             """Removes the birthday the person asking saved on this server (as /birthday remove).
 
-            Only call this when the person asking clearly wants their own birthday removed. Saving
-            a birthday is not possible from chat (it is then announced on the day): they use
-            /birthday set themselves.
+            Only call this when the person asking clearly wants their own birthday removed.
 
             Returns:
                 Whether a birthday was removed.
             """
             removed = community.store.remove_birthday(guild.id, message.author.id)
             return "Removed their saved birthday." if removed else "They had no birthday saved here."
+
+        async def propose_birthday(month: int, day: int, user_id: Optional[str] = None) -> str:
+            """Asks a member, with buttons in this channel, whether to save a birthday for them here.
+
+            Call this when someone asks you to remember or set a birthday on this server: their own
+            or another member's. Nothing is saved unless that member presses Save themselves. If
+            they decline a proposal made by someone else, later ones from other people are turned
+            away until they ask for one themselves.
+
+            Args:
+                month: The birthday's month, 1-12.
+                day: The birthday's day of the month.
+                user_id: Optional Discord user ID or mention of the member whose birthday it is.
+                    Defaults to the person asking.
+
+            Returns:
+                Whether the question was posted. The birthday is not saved yet: never say it is.
+            """
+            member, problem = _resolve_member(guild, user_id, message.author)
+            if problem:
+                return problem
+            try:
+                month, day = int(month), int(day)
+            except (TypeError, ValueError):
+                return "That is not a valid date."
+            name = user_text(member.display_name)
+            result = await community.propose_birthday(message.channel, message.author, member, month, day)
+            return _BIRTHDAY_PROPOSALS.get(result, "Could not ask them.").format(name=name)
 
         info = {"target_agent_mode": "info"}
         community_group = {**info, "tool_group": "community"}
@@ -444,6 +486,8 @@ class CommunityTools:
             tools.append(StructuredTool.from_function(coroutine=get_server_recap, metadata=community_group))
             tools.append(StructuredTool.from_function(coroutine=get_upcoming_birthdays, metadata=community_group))
             tools.append(StructuredTool.from_function(coroutine=remove_my_birthday, metadata=community_group))
+            # Saving needs the member's own button press (see CommunityCog.propose_birthday).
+            tools.append(StructuredTool.from_function(coroutine=propose_birthday, metadata=community_group))
         return tools
 
 

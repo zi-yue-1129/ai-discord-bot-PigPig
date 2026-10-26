@@ -166,7 +166,7 @@ async def _call(world: SimpleNamespace, name: str, cls: Any = CommunityTools, **
 def test_tools_are_only_offered_when_their_cogs_are_loaded(world: SimpleNamespace) -> None:
     assert set(_tools(world)) == {
         "get_leaderboard", "get_achievements", "hide_my_stats", "get_server_recap", "get_upcoming_birthdays",
-        "remove_my_birthday",
+        "remove_my_birthday", "propose_birthday",
     }
 
     del world.cogs["CommunityCog"]
@@ -181,10 +181,12 @@ def test_building_the_tools_reads_no_database(world: SimpleNamespace, monkeypatc
     def no_database(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("the database was read while building the tools")
 
-    for name in ("get_settings", "read_optouts", "optouts", "birthdays", "remove_birthday"):
+    for name in (
+        "get_settings", "read_optouts", "optouts", "birthdays", "remove_birthday", "birthday_proposals_blocked",
+    ):
         monkeypatch.setattr(world.store, name, no_database)
 
-    assert len(_tools(world)) == 6
+    assert len(_tools(world)) == 7
 
 
 @pytest.mark.asyncio

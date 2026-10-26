@@ -106,6 +106,11 @@ CREATE TABLE IF NOT EXISTS birthday_roles (
     remove_at REAL NOT NULL,
     PRIMARY KEY (guild_id, user_id, role_id)
 );
+CREATE TABLE IF NOT EXISTS birthday_declines (
+    guild_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, user_id)
+);
 """
 
 # Columns added after a table first shipped: (table, column, definition).
@@ -523,6 +528,24 @@ class CommunityStore:
             ).fetchall()
 
     # ------------------------------------------------------------ job runs
+    def block_birthday_proposals(self, guild_id: int, user_id: int, blocked: bool) -> None:
+        """Turns away (or allows again) birthdays other people propose for a member through the AI."""
+        with self._session() as connection:
+            if blocked:
+                connection.execute(
+                    "INSERT OR IGNORE INTO birthday_declines (guild_id, user_id) VALUES (?, ?)", (guild_id, user_id)
+                )
+            else:
+                connection.execute("DELETE FROM birthday_declines WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
+
+    def birthday_proposals_blocked(self, guild_id: int, user_id: int) -> bool:
+        """Whether a member declined a proposed birthday and has not asked for one since."""
+        with self._session() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM birthday_declines WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
+            ).fetchone()
+            return row is not None
+
     def has_run(self, guild_id: int, job: str, period: str) -> bool:
         """Whether a job was already marked done for a period (see ``claim_run``)."""
         with self._session() as connection:

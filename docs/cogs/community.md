@@ -32,6 +32,14 @@ Messages are written by the model in the bot's own voice (the server's persona).
 
 Feb 29 birthdays and join dates are celebrated on Feb 28 in common years.
 
+### Birthdays the AI proposes
+
+When someone asks the AI to remember a birthday (their own or another member's), `propose_birthday()` posts a question in the channel that pings only that member, with **Save** and **Decline** buttons only they can press. Nothing is saved until they press Save.
+
+- If they decline a proposal someone else made, later proposals from other people are turned away without pinging them (`birthday_declines`). The block is lifted when they ask for one themselves and press Save, or use `/birthday set`. Declining their own request changes nothing.
+- A proposal that nobody answers expires after an hour (`PROPOSAL_SECONDS`) and is not a decline.
+- One question per member at a time. Bots, members who cannot see the channel and, on someone else's behalf, members hidden with `/leaderboard optout` (or anyone, when the opt-out list cannot be read) are not asked.
+
 ## Welcomes
 
 - Joins within `batch_seconds` of each other share one message.
@@ -108,7 +116,7 @@ community:
 
 ## Storage
 
-`data/community.db` (SQLite): `guild_settings`, `birthdays` (per server), `job_runs`, `birthday_roles`, and for the leaderboard cog `optouts`, `user_achievements`, `achievement_checked`, `titles`, plus `playing_posts` (posts of the last two days, for the cooldown, the daily cap and the button) and `temp_voice_rooms` (rooms the bot opened and still has to delete). Columns added later (such as `achievement_mode`) are added to older files on first use.
+`data/community.db` (SQLite): `guild_settings`, `birthdays` (per server), `job_runs`, `birthday_roles`, `birthday_declines` (members who turned away proposed birthdays), and for the leaderboard cog `optouts`, `user_achievements`, `achievement_checked`, `titles`, plus `playing_posts` (posts of the last two days, for the cooldown, the daily cap and the button) and `temp_voice_rooms` (rooms the bot opened and still has to delete). Columns added later (such as `achievement_mode`) are added to older files on first use.
 
 ## Code
 
