@@ -322,8 +322,14 @@ class CommunityCog(commands.Cog):
         return failures
 
     def _birthday_members(self, guild: discord.Guild, local: datetime) -> List[discord.Member]:
-        """The members (not bots) whose birthday is on ``local``'s day, up to the mention limit."""
-        ids = birthdays_on(local.date(), self.store.birthdays(guild.id))
+        """The members (not bots) whose birthday is on ``local``'s day, up to the mention limit.
+
+        Members hidden with ``/leaderboard optout`` are left out, so they are neither named in the
+        greeting nor marked by the birthday role. When the opt-out list cannot be read this raises,
+        and the job is retried: nobody is named while it is unknown who is hidden.
+        """
+        hidden = self.store.optouts(guild.id)
+        ids = [user_id for user_id in birthdays_on(local.date(), self.store.birthdays(guild.id)) if user_id not in hidden]
         members = [m for m in (guild.get_member(user_id) for user_id in ids) if m is not None and not m.bot]
         return members[: self.limits.birthday_max_mentions]
 
@@ -410,7 +416,8 @@ class CommunityCog(commands.Cog):
     async def celebrate_anniversaries(self, guild: discord.Guild, settings: GuildSettings, local: datetime) -> bool:
         """Posts one message for every member who joined on this day in an earlier year; False when it could not be posted."""
         zone = local.tzinfo
-        found = [(m, anniversary_years(local.date(), m.joined_at, zone)) for m in guild.members if not m.bot]
+        hidden = self.store.optouts(guild.id)  # hidden members are not named; unreadable: the job is retried
+        found = [(m, anniversary_years(local.date(), m.joined_at, zone)) for m in guild.members if not m.bot and m.id not in hidden]
         found = [(m, years) for m, years in found if years > 0][: self.limits.birthday_max_mentions]
         if not found:
             return True

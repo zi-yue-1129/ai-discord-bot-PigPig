@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import json
 import threading
 from pathlib import Path
@@ -119,17 +120,27 @@ class _SummaryInteraction:
         self.sent.append({"content": content, **kwargs})
 
 
-def _human_message(text: str) -> SimpleNamespace:
+def _human_message(text: str, author_id: int = 5) -> SimpleNamespace:
     from datetime import datetime
 
     return SimpleNamespace(
         content=text, created_at=datetime(2026, 1, 1, 9, 0), jump_url="https://discord.com/x",
-        author=SimpleNamespace(bot=False, display_name="Al"),
+        author=SimpleNamespace(bot=False, display_name="Al", id=author_id),
     )
 
 
-def _summarizer() -> SimpleNamespace:
-    return SimpleNamespace(MAX_CHAR_COUNT=15000, EMBED_DESC_LIMIT=4000, lang_manager=None)
+def _summarizer(hidden: Any = frozenset(), broken: bool = False) -> SimpleNamespace:
+    """A stand-in cog whose server has ``hidden`` members (/leaderboard optout); ``broken``: the list cannot be read."""
+
+    def optouts(guild_id: int) -> Any:
+        if broken:
+            raise sqlite3.OperationalError("database is locked")
+        return set(hidden)
+
+    cogs = {"LeaderboardCog": SimpleNamespace(store=SimpleNamespace(optouts=optouts))}
+    return SimpleNamespace(
+        MAX_CHAR_COUNT=15000, EMBED_DESC_LIMIT=4000, lang_manager=None, bot=SimpleNamespace(get_cog=cogs.get)
+    )
 
 
 @pytest.mark.asyncio
@@ -187,6 +198,42 @@ async def test_an_unexpected_failure_does_not_show_the_exception_text(monkeypatc
     await SummarizerCog.summarize.callback(_summarizer(), interaction, limit=10)
 
     assert "10.0.0.5" not in interaction.sent[0]["content"]
+
+
+def _recording_model(monkeypatch: pytest.MonkeyPatch) -> List[Any]:
+    """Replaces the summary model by one that records what it was given; returns that record."""
+    given: List[Any] = []
+
+    class _Agent:
+        async def ainvoke(self, state: Any) -> Any:
+            given.extend(state["messages"])
+            return {"messages": [SimpleNamespace(content="a summary")]}
+
+    monkeypatch.setattr(summarizer, "ModelManager", lambda: SimpleNamespace(get_model=lambda *a, **k: ("m", None)))
+    monkeypatch.setattr(summarizer, "create_model_instance", lambda *a, **k: object())
+    monkeypatch.setattr(summarizer, "create_agent", lambda **k: _Agent())
+    return given
+
+
+@pytest.mark.asyncio
+async def test_a_hidden_members_messages_are_not_summarized(monkeypatch: pytest.MonkeyPatch) -> None:
+    given = _recording_model(monkeypatch)
+    channel = _SummaryChannel([_human_message("what a visible person said", 5), _human_message("what a hidden person said", 11)])
+
+    await SummarizerCog.summarize.callback(_summarizer(hidden={11}), _SummaryInteraction(channel), limit=10)
+
+    texts = " ".join(str(message.content) for message in given)
+    assert "visible person" in texts and "hidden person" not in texts
+
+
+@pytest.mark.asyncio
+async def test_nothing_is_summarized_while_the_opt_out_list_cannot_be_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    given = _recording_model(monkeypatch)
+    interaction = _SummaryInteraction(_SummaryChannel([_human_message("anything at all", 5)]))
+
+    await SummarizerCog.summarize.callback(_summarizer(broken=True), interaction, limit=10)
+
+    assert given == [] and interaction.sent[0]["content"] == "No messages to summarize."
 
 
 # ----------------------------------------------------------- direct messages

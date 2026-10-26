@@ -34,6 +34,7 @@ from langchain_core.tools import tool
 
 from function import func
 from cogs.userdata import UserDataCog
+from llm.memory.privacy import hidden_in_guild
 
 if TYPE_CHECKING:
     from llm.schema import OrchestratorRequest
@@ -159,6 +160,18 @@ class UserMemoryTools:
                     effective_id = int(user_id)
                 except (TypeError, ValueError):
                     return f"Error: invalid user_id {user_id!r}; pass the numeric Discord user ID."
+
+                # A member hidden with /leaderboard optout can read their own memory, nobody else's;
+                # without the opt-out list nobody else's memory is read out either.
+                message = getattr(runtime, "message", None)
+                guild = getattr(message, "guild", None)
+                asker_id = getattr(getattr(message, "author", None), "id", None)
+                if guild is not None and asker_id != effective_id:
+                    hidden = hidden_in_guild(get_bot(), guild.id)
+                    if hidden is None:
+                        return "This memory cannot be shown right now."
+                    if effective_id in hidden:
+                        return "This member's memory is hidden (they opted out); do not share or guess it."
 
                 user_mgr = getattr(cog, "user_manager", None)
                 if user_mgr and not await user_mgr.get_user_info(str(effective_id)):

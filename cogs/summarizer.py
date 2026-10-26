@@ -1,7 +1,8 @@
 import asyncio
 import re
 from datetime import datetime
-from typing import Optional
+from types import SimpleNamespace
+from typing import Any, Optional, Set
 from addons.logging import get_logger
 
 import discord
@@ -21,6 +22,16 @@ log = get_logger(source=__name__, server_id="system")
 # Bounds on one summary: messages read and time the model gets.
 MAX_SUMMARY_MESSAGES = 500
 SUMMARY_TIMEOUT_SECONDS = 120
+
+
+def hidden_authors(bot: Any, guild_id: Optional[int]) -> Optional[Set[int]]:
+    """The members of the server who hid themselves with ``/leaderboard optout``: what they wrote
+    is not summarized. None when the list cannot be read; then nobody's messages are used."""
+    if guild_id is None:  # a direct message: nobody opted out of a conversation with the bot
+        return set()
+    from llm.tools.user_stats import hidden_member_ids
+
+    return hidden_member_ids(SimpleNamespace(bot=bot), guild_id)
 
 
 class SummarizerCog(commands.Cog):
@@ -86,6 +97,7 @@ class SummarizerCog(commands.Cog):
         try:
             log.info(f"Starting message fetch for channel {interaction.channel.name if hasattr(interaction.channel, 'name') else 'unknown'}, limit: {limit}.")
             history = [msg async for msg in interaction.channel.history(limit=limit)]
+            hidden = hidden_authors(self.bot, interaction.guild_id)
             dialogue_history_reversed = []
             source_mapping = {}
             current_char_count = 0
@@ -104,6 +116,8 @@ class SummarizerCog(commands.Cog):
                     # Bots as AIMessage for context
                     dialogue_history_reversed.append(AIMessage(content=formatted_content))
                 else:
+                    if hidden is None or msg.author.id in hidden:
+                        continue  # a hidden member's words are not retold (nor, unreadable list, anyone's)
                     # Detailed format for human messages with MSG-ID
                     human_msg_count += 1
                     msg_id = f"MSG-{human_msg_count}"

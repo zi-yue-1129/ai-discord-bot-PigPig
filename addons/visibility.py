@@ -50,6 +50,17 @@ def can_read(channel: Any, member: Any) -> bool:
     return True
 
 
+def can_view(channel: Any, member: Any) -> bool:
+    """Whether ``member`` may see ``channel`` in the channel list (and who is in it, for a voice channel).
+
+    Fails closed like ``can_read``: a channel or member that cannot be checked counts as not visible.
+    """
+    if channel is None or member is None:
+        return False
+    permissions = _permissions(channel, member)
+    return permissions is not None and bool(permissions.view_channel)
+
+
 _READ = ("view_channel", "read_message_history")
 
 

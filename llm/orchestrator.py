@@ -119,6 +119,7 @@ class Orchestrator:
             procedural_provider=procedural_provider,
             episodic_provider=episodic_provider,
             knowledge_provider=knowledge_provider,
+            bot=bot,
         )
 
 
