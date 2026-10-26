@@ -23,6 +23,7 @@ from fastapi.responses import JSONResponse
 
 from addons.logging import get_logger
 from dashboard.middleware.permission import get_current_user
+from dashboard.services.member_stats import delete_member_stats
 from function import ROOT_DIR
 
 log = get_logger(server_id="Bot", source=__name__)
@@ -381,7 +382,8 @@ async def delete_episodic_by_guild(
 ) -> JSONResponse:
     """Delete the authenticated user's episodic memory for a specific guild.
 
-    Removes only the ``user_stats`` row matching (user_id, guild_id).
+    Removes only the member's stats rows for (user_id, guild_id): ``user_stats`` and
+    ``user_public_terms``.
     Does not affect procedural memory or other guilds.
 
     Args:
@@ -398,12 +400,9 @@ async def delete_episodic_by_guild(
 
     try:
         async with aiosqlite.connect(str(_PROCEDURAL_DB)) as db:
-            cursor = await db.execute(
-                "DELETE FROM user_stats WHERE user_id = ? AND guild_id = ?",
-                (user_id, guild_id),
-            )
+            removed = await delete_member_stats(db, user_id, guild_id)
             await db.commit()
-            deleted = cursor.rowcount
+            deleted = sum(removed.values())
     except Exception as exc:
         log.error(f"delete_episodic_by_guild failed for {user_id}/{guild_id}: {exc}")
         raise HTTPException(status_code=503, detail="Memory database temporarily unavailable")
@@ -463,8 +462,7 @@ async def delete_user_memory(
             async with aiosqlite.connect(str(_PROCEDURAL_DB)) as db:
                 c = await db.execute("DELETE FROM users WHERE discord_id = ?", (user_id,))
                 deleted["procedural_users"] = c.rowcount
-                c = await db.execute("DELETE FROM user_stats WHERE user_id = ?", (user_id,))
-                deleted["user_stats"] = c.rowcount
+                deleted.update(await delete_member_stats(db, user_id))
                 await db.commit()
         except Exception as exc:
             log.error(f"Failed to delete procedural memory for {user_id}: {exc}")

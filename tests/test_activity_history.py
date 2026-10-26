@@ -270,6 +270,46 @@ async def test_public_words_are_capped_per_member_and_channel(storage: StatsStor
     monkeypatch.setattr(module, "MAX_PUBLIC_TERMS", 2)
     await storage.upsert_user_stats(USER, GUILD, "pizza pizza pizza pasta pasta sushi", "1", "2026-10-20T04:00:00Z", public=True)
 
-    await storage.prune_activity_history(datetime(2026, 10, 25, 12, 0).astimezone())
+    # The table was full when sushi came, so it took pasta's place and count (Space-Saving).
+    assert await storage.get_user_public_terms(USER, GUILD, "word", ["1"]) == [("pizza", 3), ("sushi", 3)]
 
-    assert await storage.get_user_public_terms(USER, GUILD, "word", ["1"]) == [("pizza", 3), ("pasta", 2)]
+
+@pytest.mark.asyncio
+async def test_a_new_public_word_used_often_gets_in_despite_old_favourites(
+    storage: StatsStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import cogs.memory.db.stats_storage as module
+
+    monkeypatch.setattr(module, "MAX_PUBLIC_TERMS", 3)
+    with storage.db.get_connection() as conn:
+        conn.executemany(
+            "INSERT INTO user_public_terms (guild_id, user_id, channel_id, kind, term, count) VALUES (?, ?, '1', 'word', ?, 100)",
+            [(GUILD, USER, term) for term in ("apple", "banana", "cherry")],
+        )
+        conn.commit()
+
+    day = datetime(2026, 10, 1, 12, 0).astimezone()
+    for _ in range(11):
+        await storage.upsert_user_stats(USER, GUILD, " ".join(["zebra"] * 10), "1", day.isoformat(), public=True)
+        day += timedelta(days=1)
+        await storage.prune_activity_history(day)
+
+    words = dict(await storage.get_user_public_terms(USER, GUILD, "word", ["1"]))
+    assert len(words) == 3 and words["zebra"] >= 110
+
+
+@pytest.mark.asyncio
+async def test_a_failed_public_word_write_keeps_the_other_counts(storage: StatsStorage) -> None:
+    with storage.db.get_connection() as conn:
+        conn.execute(
+            "CREATE TRIGGER no_public_words BEFORE INSERT ON user_public_terms BEGIN SELECT RAISE(ABORT, 'boom'); END"
+        )
+        conn.commit()
+
+    for n in range(2):
+        stats = await storage.upsert_user_stats(USER, GUILD, "pizza", "1", f"2026-10-20T04:0{n}:00Z", public=True)
+        assert stats["total_messages"] == n + 1
+
+    assert (await storage.get_user_stats(USER, GUILD))["total_messages"] == 2
+    assert await storage.get_weekly_terms(GUILD, "2026-10-19", "word") == [("pizza", 2)]
+    assert await storage.get_user_public_terms(USER, GUILD, "word", ["1"]) == []

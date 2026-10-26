@@ -146,9 +146,9 @@ class UserStatsTools:
             stats = await storage.get_user_stats(effective_id, guild_id)
             if not stats:
                 return f"No stats found for user {effective_id} in this server."
-            stats = await with_public_terms(
-                storage, message.guild, effective_id, stats, also_visible=getattr(message.channel, "id", None)
-            )
+            also_visible = getattr(message.channel, "id", None)
+            terms = await fetch_public_terms(storage, message.guild, effective_id, also_visible)
+            all_time, stats = stats, public_view(message.guild, stats, terms, also_visible)
 
             display_name = f"User {effective_id}"
             avatar_url = None
@@ -186,12 +186,18 @@ class UserStatsTools:
                     avatar_url,
                     image_labels,
                 )
+                # Drawing the image awaited: if a channel in it stopped being public meanwhile,
+                # send no image (the text below is rebuilt from what is public now).
+                if public_view(message.guild, all_time, terms, also_visible) != stats:
+                    raise _ChannelsChanged()
                 await message.channel.send(
                     file=discord.File(
                         io.BytesIO(image_bytes),
                         filename=f"stats_{effective_id}.png",
                     )
                 )
+            except _ChannelsChanged:
+                pass
             except Exception as e:
                 try:
                     await func.report_error(e, "get_user_stats image send failed")
@@ -200,12 +206,16 @@ class UserStatsTools:
                 _logger.error("get_user_stats image failed: %s", e)
 
             # Always return text summary regardless of image success/failure
-            return _format_text_card(display_name, stats, t)
+            return _format_text_card(display_name, public_view(message.guild, all_time, terms, also_visible), t)
 
         _info_meta = {"target_agent_mode": "info"}
         return [
             StructuredTool.from_function(coroutine=get_user_stats, metadata=_info_meta),
         ]
+
+
+class _ChannelsChanged(Exception):
+    """A channel stopped being public while the stats image was drawn."""
 
 
 def _is_hidden(runtime: Any, guild_id: int, user_id: str, db_path: Optional[str] = None) -> bool:
@@ -268,23 +278,43 @@ def public_stats(guild: Any, stats: Dict[str, Any], also_visible: Optional[int] 
     }
 
 
+async def fetch_public_terms(storage: Any, guild: Any, user_id: str, also_visible: Optional[int] = None) -> Dict[str, Any]:
+    """The member's per-channel ``user_public_terms`` rows, for ``public_view``.
+
+    Only messages sent while their channel was readable by everyone were counted there.
+    """
+    lookup = getattr(storage, "get_user_public_term_rows", None)
+    if lookup is None:
+        return {}
+    ids = _visible_channel_ids(guild, also_visible)
+    guild_id = str(getattr(guild, "id", ""))
+    return {kind: await lookup(str(user_id), guild_id, kind, ids) for kind in ("word", "emoji")}
+
+
+def public_view(
+    guild: Any, stats: Dict[str, Any], terms: Dict[str, Any], also_visible: Optional[int] = None
+) -> Dict[str, Any]:
+    """``public_stats`` plus the words and emojis from ``terms`` in channels that are public now.
+
+    It does not await, so call it right before the reply: a channel made private after
+    ``fetch_public_terms`` is left out.
+    """
+    from cogs.memory.db.stats_storage import sum_public_terms
+
+    shown = public_stats(guild, stats, also_visible)
+    if terms:
+        ids = _visible_channel_ids(guild, also_visible)
+        shown["top_words"] = dict(sum_public_terms(terms.get("word", []), ids, PUBLIC_WORDS))
+        shown["top_emojis"] = dict(sum_public_terms(terms.get("emoji", []), ids, PUBLIC_EMOJIS))
+    return shown
+
+
 async def with_public_terms(
     storage: Any, guild: Any, user_id: str, stats: Dict[str, Any], also_visible: Optional[int] = None
 ) -> Dict[str, Any]:
-    """``public_stats`` plus the member's words and emojis that may be shown.
-
-    They come from ``user_public_terms``: only messages sent while their channel was readable
-    by everyone were counted there, and only channels that still are (or ``also_visible``) count.
-    """
-    shown = public_stats(guild, stats, also_visible)
-    lookup = getattr(storage, "get_user_public_terms", None)
-    if lookup is None:
-        return shown
-    ids = _visible_channel_ids(guild, also_visible)
-    guild_id = str(getattr(guild, "id", ""))
-    shown["top_words"] = dict(await lookup(str(user_id), guild_id, "word", ids, PUBLIC_WORDS))
-    shown["top_emojis"] = dict(await lookup(str(user_id), guild_id, "emoji", ids, PUBLIC_EMOJIS))
-    return shown
+    """``fetch_public_terms`` then ``public_view``: what may be shown of the member's stats now."""
+    terms = await fetch_public_terms(storage, guild, user_id, also_visible)
+    return public_view(guild, stats, terms, also_visible)
 
 
 # ======================================================================
