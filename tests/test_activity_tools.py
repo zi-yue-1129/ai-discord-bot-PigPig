@@ -52,7 +52,10 @@ class FakeChannel:
     def permissions_for(self, member: Any) -> Any:
         view = self.viewers is None or member.id in self.viewers
         post = view and member.id not in self.muted
-        return SimpleNamespace(view_channel=view, send_messages=post, use_application_commands=post)
+        return SimpleNamespace(
+            view_channel=view, read_message_history=view, manage_threads=False, send_messages=post,
+            use_application_commands=post,
+        )
 
     async def send(self, content: Any = None, **kwargs: Any) -> Any:
         if self.broken:
@@ -424,6 +427,72 @@ async def test_the_song_pool_is_read_off_the_event_loop(games: GamesCog, monkeyp
     assert seen == [True]
 
 
+@pytest.mark.asyncio
+async def test_round_three_offer_regressions(games: GamesCog, monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    channel = FakeChannel()
+    tool = _tool(GameTools, _runtime({"GamesCog": games}, channel, {HOST_ID: _member(HOST_ID)}))
+
+    # Cancelled while the replaced offer is taken down: neither offer is left holding a place.
+    await tool.coroutine(game="chain")
+
+    async def cancelled_edit(**kwargs: Any) -> None:
+        raise asyncio.CancelledError()
+
+    channel.messages[0].edit = cancelled_edit
+    with pytest.raises(asyncio.CancelledError):
+        await tool.coroutine(game="chain")
+    assert games._offers == {}
+
+    # Permissions taken away while guess the song reads its pool: Start does not start it.
+    music = SimpleNamespace(youtube=object(), queue_manager=SimpleNamespace(is_queue_empty=lambda guild_id: True))
+    games.bot.get_cog = lambda name: music if name == "YTMusic" else None
+    reads: list = []
+
+    def song_pool(music: Any, guild_id: int) -> list:
+        reads.append(threading.current_thread())
+        if len(reads) == 2:  # the read for Start
+            channel.muted.add(HOST_ID)
+        return [("a", "A"), ("b", "B"), ("c", "C")]
+
+    monkeypatch.setattr(games, "song_pool", song_pool)
+    host = _member(HOST_ID, voice=SimpleNamespace(channel=SimpleNamespace(id=1, mention="#voice")))
+    tool = _tool(GameTools, _runtime({"GamesCog": games}, channel, {HOST_ID: host}))
+    await tool.coroutine(game="guess_song")
+    pressed = await _press(channel.sent[-1][1]["view"], "offer_start", host)
+    assert pressed.edited[0]["content"] == "offer_denied|"
+    assert games._tasks == set() and games.limits.running == set() and games.limits.song_guilds == set()
+
+
+@pytest.mark.asyncio
+async def test_slash_guess_song_waiting_on_its_pool_when_the_cog_unloads_starts_nothing(games: GamesCog, monkeypatch: pytest.MonkeyPatch) -> None:
+    music = SimpleNamespace(youtube=object(), queue_manager=SimpleNamespace(is_queue_empty=lambda guild_id: True))
+    games.bot.get_cog = lambda name: music if name == "YTMusic" else None
+
+    def song_pool(music: Any, guild_id: int) -> list:
+        games._unloaded = True  # cog_unload ran while this was read
+        return [("a", "A"), ("b", "B"), ("c", "C")]
+
+    monkeypatch.setattr(games, "song_pool", song_pool)
+    played: list = []
+
+    async def play_song_game(*args: Any) -> None:
+        played.append(args)
+
+    monkeypatch.setattr(games, "_play_song_game", play_song_game)
+    response = FakeResponse()
+    host = _member(HOST_ID, voice=SimpleNamespace(channel=SimpleNamespace(id=1, mention="#voice")))
+    interaction = SimpleNamespace(
+        guild=SimpleNamespace(id=GUILD_ID, voice_client=None), channel=FakeChannel(), user=host, response=response
+    )
+
+    await GamesCog.guess_song.callback(games, interaction)
+
+    assert response.sent == [("unavailable|", {"ephemeral": True})] and played == []
+    assert games.limits.running == set() and games.limits.song_guilds == set()
+
+
 # ------------------------------------------------------------------ who is playing
 @pytest.fixture
 def playing(tmp_path: Path) -> PlayingCog:
@@ -677,7 +746,7 @@ async def test_databases_are_read_off_the_event_loop(song_world: SimpleNamespace
         return call
 
     monkeypatch.setattr(song_world.taste, "plays_with_places", watched(song_world.taste.plays_with_places))
-    monkeypatch.setattr(playing, "_feature_on", watched(playing._feature_on))
+    monkeypatch.setattr(playing, "feature_on_read_only", watched(playing.feature_on_read_only))
     leaderboard = _optouts(set())
     leaderboard.store.read_optouts = watched(leaderboard.store.read_optouts)
     cogs = {"YTMusic": SimpleNamespace(_taste_store=song_world.taste), "PlayingCog": playing, "LeaderboardCog": leaderboard}
@@ -698,13 +767,13 @@ async def test_someone_who_hides_while_the_tools_read_is_left_out(song_world: Si
     # who_is_playing: user10 hides while the server settings are read.
     playing.tracker.update(GUILD_ID, HOST_ID, ("Minecraft", None), time.time())
     playing.store.update_settings(GUILD_ID, playing_enabled=True)
-    feature_on = playing._feature_on
+    feature_on = playing.feature_on_read_only
 
     def hide_while_reading(guild_id: int) -> bool:
         hidden.add(HOST_ID)
         return feature_on(guild_id)
 
-    monkeypatch.setattr(playing, "_feature_on", hide_while_reading)
+    monkeypatch.setattr(playing, "feature_on_read_only", hide_while_reading)
     runtime = _runtime({"PlayingCog": playing, "LeaderboardCog": leaderboard}, FakeChannel(), members)
     assert "user10" not in await _tool(PlayingTools, runtime).coroutine()
 
@@ -751,3 +820,41 @@ def test_a_slow_chart_read_does_not_hold_up_the_players_writes(tmp_path: Path) -
     finally:
         done.set()
         reader.join()
+
+
+@pytest.mark.asyncio
+async def test_who_is_playing_names_only_members_of_a_private_thread(playing: PlayingCog) -> None:
+    members = {HOST_ID: _member(HOST_ID), 6: _member(6)}
+    thread = FakeChannel(700)
+    thread.type = discord.ChannelType.private_thread
+    thread.members = [members[HOST_ID]]  # member 6 sees the parent, but is not in the thread
+    now = time.time()
+    playing.tracker.update(GUILD_ID, 6, ("Minecraft", None), now)
+    playing.tracker.update(GUILD_ID, HOST_ID, ("Chess", None), now)
+    playing.store.update_settings(GUILD_ID, playing_enabled=True)
+    tool = _tool(PlayingTools, _runtime({"PlayingCog": playing, "LeaderboardCog": _optouts(set())}, thread, members))
+
+    text = await tool.coroutine()
+
+    assert "user6" not in text and "Minecraft" not in text and "<<<user10>>>" in text
+
+
+def test_worker_thread_reads_do_not_wait_for_the_stores_locks(tmp_path: Path, playing: PlayingCog) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    taste = TasteStore(tmp_path / "taste.db")
+    taste.add_play_event(GUILD_ID, "a", "A", requester_id=1, autoplay=False)
+    playing.store.update_settings(GUILD_ID, playing_enabled=True)
+    # A write on the event loop holds each lock (as a slow write or a waiting reader would).
+    pool = ThreadPoolExecutor(3)
+    try:
+        with taste._lock, playing.store._lock:
+            reads = [
+                pool.submit(taste.top_played, GUILD_ID, 0, time.time() + 1),
+                pool.submit(taste.plays_with_places, GUILD_ID, 0, time.time() + 1),
+                pool.submit(playing.feature_on_read_only, GUILD_ID),
+            ]
+            results = [read.result(timeout=2) for read in reads]
+    finally:
+        pool.shutdown(wait=True)
+    assert results[0][0][0] == "a" and results[1][0][0] == "a" and results[2] is True

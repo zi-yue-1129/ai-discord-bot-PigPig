@@ -17,6 +17,7 @@ import discord
 from langchain_core.tools.structured import StructuredTool
 
 from addons.logging import get_logger
+from addons.visibility import can_read
 from llm.tools.community_tools import UNAVAILABLE, shareable, user_text
 from llm.tools.user_stats import hidden_member_ids
 
@@ -151,7 +152,7 @@ class PlayingTools:
             if hidden is None:
                 return UNAVAILABLE
             try:
-                if not await asyncio.to_thread(playing._feature_on, guild.id):
+                if not await asyncio.to_thread(playing.feature_on_read_only, guild.id):
                     return 'Showing what members are playing is turned off on this server (/community playing).'
             except Exception:
                 _logger.error("who_is_playing: could not read the server's settings", exc_info=True)
@@ -162,9 +163,10 @@ class PlayingTools:
                 return UNAVAILABLE
             found: List[tuple] = []
             for group in playing.tracker.groups(guild.id, time.time(), 0):
-                # Only members who can see this channel, are not bots and did not hide themselves;
+                # Only members who can read this channel, are not bots and did not hide themselves;
                 # hidden members are not counted either.
-                players = playing._players(guild, here, group, hidden)
+                # A private thread's parent permissions are not enough: only its members are named.
+                players = [member for member in playing._players(guild, here, group, hidden) if can_read(here, member)]
                 if not players:
                     continue
                 names = ", ".join(user_text(member.display_name) for member in players[:MAX_NAMES])

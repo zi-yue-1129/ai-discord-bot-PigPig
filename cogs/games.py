@@ -327,13 +327,13 @@ class GamesCog(commands.Cog):
         # Registered before the old offer is taken down (an await), so two quick requests leave one offer.
         offer = GameOfferView(self, guild, channel, host, game, options)
         self._offers[host.id] = offer
-        if previous is not None:
-            await previous.expire()
         text = self._t(
             guild.id, "offer", user=host.mention, game=self._t(guild.id, f"game_{game}"),
             seconds=int(GAME_OFFER_SECONDS),
         )
         try:
+            if previous is not None:
+                await previous.expire()
             offer.message = await channel.send(text, view=offer, allowed_mentions=discord.AllowedMentions.none())
         except discord.HTTPException:
             offer.close()
@@ -362,6 +362,9 @@ class GamesCog(commands.Cog):
         problem, pool = await self._start_problem(game, guild, channel, host)
         if problem is None and self._unloaded:
             problem = self._t(guild.id, "unavailable")
+        # Checked again after the reads above: the host's permissions may have changed meanwhile.
+        if problem is None and not self.host_may_play(channel, host):
+            problem = self._t(guild.id, "offer_denied")
         if problem is not None:
             return problem
 
@@ -916,6 +919,9 @@ class GamesCog(commands.Cog):
     async def guess_song(self, interaction: discord.Interaction, rounds: app_commands.Range[int, 3, 10] = 5) -> None:
         guild, channel = interaction.guild, interaction.channel
         text, pool = await self._song_problem(guild, channel, interaction.user)
+        if not text and self._unloaded:
+            # Unloaded while the pool was read: nobody would be listening for the answers.
+            text = self._t(guild.id, "unavailable")
         if text:
             await interaction.response.send_message(text, ephemeral=True)
             return

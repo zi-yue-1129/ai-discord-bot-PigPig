@@ -18,7 +18,7 @@ The AI's answer is posted for everyone in the channel, so each tool returns only
 | `get_upcoming_birthdays` | community | CommunityCog is loaded (says so when birthdays are off for the server; building the tool list reads no database) | `days`: 1 to 30 | Saved birthdays, soonest first, without hidden members, bots or leavers |
 | `list_upcoming_events` | events | EventsCog is loaded | none | Up to 10 events: number, title, Discord start timestamp, sign-up counts (without hidden members and people who left), link |
 | `start_server_game` | games | GamesCog is loaded | `game`: quiz, chain or guess_song; `rounds`; `homophones`; `days`; `this_channel` | Posts an offer with Start and Cancel buttons only the asker can press; the game starts on Start, with the asker as host (same checks, again on the press, and quota as `/game`) |
-| `who_is_playing` | playing | PlayingCog is loaded (says so when `/community playing` is off) | none | Games being played now, most players first, naming and counting only players who can see the channel and are not hidden |
+| `who_is_playing` | playing | PlayingCog is loaded (says so when `/community playing` is off) | none | Games being played now, most players first, naming and counting only players who can read the channel (in a private thread: its members) and are not hidden |
 | `get_popular_songs` | music | the music player's play log exists | `period`: week or month; `limit` | The most played songs and their play and skip counts, counted only where everyone could hear them |
 
 ### Starting a game
@@ -27,7 +27,7 @@ The model never starts a game by itself: `start_server_game` posts an offer that
 
 ### Popular songs
 
-The play log records the player's text channel and the voice channel of each play. A play is counted only when the voice channel is shareable and `@everyone` may connect to it (no overwrite denying Connect), and the text channel is shareable or is the channel the answer goes to, and not when a hidden member asked for it. Plays logged before the channels were recorded are not counted. The opt-out list, the play log and the server settings are read on worker threads, so a locked database cannot stall the bot; the opt-out list is read last, so someone who hides while the tool reads is left out. The play log is in WAL mode and chart reads do not take its lock, so a slow read never holds up the player's writes. `/game guess_song` still picks its songs from the whole log.
+The play log records the player's text channel and the voice channel of each play. A play is counted only when the voice channel is shareable and `@everyone` may connect to it (no overwrite denying Connect), and the text channel is shareable or is the channel the answer goes to, and not when a hidden member asked for it. Plays logged before the channels were recorded are not counted. The opt-out list, the play log and the server settings are read on worker threads without the stores' locks (`CommunityStore.read_settings`, `TasteStore._reader`), so a locked or slow database cannot stall the bot; the opt-out list is read last, so someone who hides while the tool reads is left out. The play log is in WAL mode and chart reads do not take its lock, so a slow read never holds up the player's writes. `/game guess_song` still picks its songs from the whole log.
 
 ### The recap
 
