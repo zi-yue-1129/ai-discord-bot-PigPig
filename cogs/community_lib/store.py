@@ -87,9 +87,7 @@ CREATE TABLE IF NOT EXISTS playing_posts (
     room_claimed_at REAL,
     sent INTEGER NOT NULL DEFAULT 1,
     room_token TEXT,
-    room_used_at REAL,
-    room_pending_name TEXT,
-    room_pending_category INTEGER
+    room_used_at REAL
 );
 CREATE INDEX IF NOT EXISTS idx_playing_posts_guild ON playing_posts (guild_id, posted_at);
 CREATE TABLE IF NOT EXISTS temp_voice_rooms (
@@ -125,8 +123,6 @@ _ADDED_COLUMNS = [
     ("playing_posts", "sent", "INTEGER NOT NULL DEFAULT 1"),
     ("playing_posts", "room_token", "TEXT"),
     ("playing_posts", "room_used_at", "REAL"),
-    ("playing_posts", "room_pending_name", "TEXT"),
-    ("playing_posts", "room_pending_category", "INTEGER"),
 ]
 
 
@@ -334,8 +330,7 @@ class CommunityStore:
         """
         with self._session() as connection:
             cursor = connection.execute(
-                "UPDATE playing_posts SET voice_channel_id = -1, room_claimed_at = ?, room_token = ?,"
-                " room_pending_name = NULL, room_pending_category = NULL"
+                "UPDATE playing_posts SET voice_channel_id = -1, room_claimed_at = ?, room_token = ?"
                 " WHERE message_id = ? AND voice_channel_id IS NULL AND room_used_at IS NULL AND ? + ("
                 "  SELECT COUNT(*) FROM playing_posts AS other"
                 "  WHERE other.guild_id = playing_posts.guild_id AND other.voice_channel_id = -1"
@@ -352,29 +347,11 @@ class CommunityStore:
         """
         with self._session() as connection:
             cursor = connection.execute(
-                "UPDATE playing_posts SET room_used_at = ?, room_pending_name = NULL, room_pending_category = NULL"
-                " WHERE message_id = ? AND room_token IS ? AND room_used_at IS NULL",
+                "UPDATE playing_posts SET room_used_at = ?"
+                " WHERE message_id = ? AND room_token IS ? AND voice_channel_id = -1 AND room_used_at IS NULL",
                 (now, message_id, token),
             )
             return cursor.rowcount == 1
-
-    def mark_room_uncertain(self, message_id: int, token: Optional[str], name: str, category_id: Optional[int]) -> None:
-        """Remembers that Discord may still create this claim's room (its request timed out or was cut off)."""
-        with self._session() as connection:
-            connection.execute(
-                "UPDATE playing_posts SET room_pending_name = ?, room_pending_category = ?"
-                " WHERE message_id = ? AND room_token IS ? AND voice_channel_id = -1",
-                (name, category_id, message_id, token),
-            )
-
-    def uncertain_rooms(self, guild_id: int, since: float) -> List[Tuple[int, str, Optional[int]]]:
-        """``(message_id, room name, category id)`` of claims since ``since`` whose room may still appear."""
-        with self._session() as connection:
-            return connection.execute(
-                "SELECT message_id, room_pending_name, room_pending_category FROM playing_posts"
-                " WHERE guild_id = ? AND voice_channel_id = -1 AND room_pending_name IS NOT NULL AND room_claimed_at >= ?",
-                (guild_id, since),
-            ).fetchall()
 
     def mark_playing_post_sent(self, message_id: int) -> None:
         with self._session() as connection:
@@ -387,7 +364,7 @@ class CommunityStore:
         marks = ",".join("?" * len(keep))
         with self._session() as connection:
             connection.execute(
-                "UPDATE playing_posts SET voice_channel_id = NULL, room_pending_name = NULL, room_pending_category = NULL"
+                "UPDATE playing_posts SET voice_channel_id = NULL, room_token = NULL"
                 " WHERE voice_channel_id = -1 AND (room_claimed_at IS NULL OR room_claimed_at < ?)"
                 " AND message_id NOT IN (SELECT post_message_id FROM temp_voice_rooms WHERE post_message_id IS NOT NULL)"
                 + (f" AND message_id NOT IN ({marks})" if keep else ""),
@@ -406,7 +383,7 @@ class CommunityStore:
         """Takes back ``token``'s claim, whose room could not be created (or was taken back)."""
         with self._session() as connection:
             connection.execute(
-                "UPDATE playing_posts SET voice_channel_id = NULL"
+                "UPDATE playing_posts SET voice_channel_id = NULL, room_token = NULL"
                 " WHERE message_id = ? AND voice_channel_id = -1 AND room_token IS ?",
                 (message_id, token),
             )
@@ -637,3 +614,9 @@ def _add_missing_columns(connection: sqlite3.Connection) -> None:
         existing = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
         if column not in existing:
             connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            if (table, column) == ("playing_posts", "room_used_at"):
+                # Posts that already opened a room (as far as an older file shows) stay used.
+                connection.execute(
+                    "UPDATE playing_posts SET room_used_at = posted_at WHERE voice_channel_id IS NOT NULL"
+                    " OR message_id IN (SELECT post_message_id FROM temp_voice_rooms WHERE post_message_id IS NOT NULL)"
+                )

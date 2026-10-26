@@ -493,13 +493,9 @@ class PlayingCog(commands.Cog):
             self.store.release_playing_post(message_id, token)
             return "playing_room_failed", {}
         except (asyncio.TimeoutError, asyncio.CancelledError) as error:
-            # Discord may have accepted it anyway: the claim is kept (until it is stale), and the
-            # room is recognised if it still appears (on_guild_channel_create).
+            # Discord may have accepted it anyway: the claim is kept until it is stale, so that
+            # no second room is opened for the post meanwhile.
             self.logger.warning(f"playing: creating a voice room in guild {guild.id} did not finish", exc_info=True)
-            try:
-                self.store.mark_room_uncertain(message_id, token, name, channel.category.id if channel.category else None)
-            except Exception:
-                self.logger.warning(f"playing: could not remember the room of post {message_id}", exc_info=True)
             if isinstance(error, asyncio.CancelledError):
                 raise
             return "playing_room_failed", {}
@@ -589,22 +585,6 @@ class PlayingCog(commands.Cog):
         """Best effort: with the row (and its post) on record, a restart still finds the room."""
         post = next((post for post, room in self._orphan_posts.items() if room == channel_id), None)
         self._record_room(guild_id, channel_id, post, created_at=0)
-
-    @commands.Cog.listener()
-    async def on_guild_channel_create(self, channel: Any) -> None:
-        """Records a room Discord created after its creation request had timed out or was cut off."""
-        if getattr(channel, "type", None) != discord.ChannelType.voice:
-            return
-        try:
-            pending = self.store.uncertain_rooms(channel.guild.id, self._now() - STALE_CLAIM_SECONDS)
-        except Exception:
-            self.logger.warning("playing: could not look up rooms still being opened", exc_info=True)
-            return
-        for message_id, name, category_id in pending:
-            if channel.name == name and getattr(channel, "category_id", None) == category_id:
-                self.logger.info(f"playing: voice room {channel.id} appeared late for post {message_id}, recording it")
-                self._record_room(channel.guild.id, channel.id, message_id)
-                return
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState) -> None:

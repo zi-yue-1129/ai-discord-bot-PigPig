@@ -1234,7 +1234,12 @@ async def test_two_posts_across_a_reload_open_no_more_rooms_than_allowed(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_a_room_discord_creates_after_the_request_was_cut_off_is_recorded(tmp_path: Path) -> None:
+async def test_a_timed_out_creation_keeps_its_claim_and_never_adopts_a_members_channel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import cogs.playing as playing_module
+
+    monkeypatch.setattr(playing_module, "CREATE_TIMEOUT_SECONDS", 0.01)
     cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
     message_id = await _posted(cog, guild, store)
 
@@ -1242,29 +1247,19 @@ async def test_a_room_discord_creates_after_the_request_was_cut_off_is_recorded(
         await asyncio.Event().wait()
 
     guild.create_voice_channel = hang
-    press = asyncio.create_task(cog.open_room(FakePress(guild, message_id)))
-    await asyncio.sleep(0.01)
-    for opening in list(cog._opening):
-        opening.cancel()  # the request is cut off; Discord accepted it anyway
-    with pytest.raises(asyncio.CancelledError):
-        await press
-
+    timed_out = FakePress(guild, message_id)
+    await cog.open_room(timed_out)
     waiting = FakePress(guild, message_id)
     await cog.open_room(waiting)
-    assert waiting.followups == ["playing_room_opening|"]
+    assert timed_out.followups == ["playing_room_failed|"] and waiting.followups == ["playing_room_opening|"]
 
-    late = FakeVoice(next(_IDS), guild)  # the gateway's CHANNEL_CREATE, after a reload
-    late.name, late.type, late.category_id = "Valorant", discord.ChannelType.voice, None
-    guild.channels[late.id] = late
-    reloaded = await _reloaded(cog, store, now=NOW + 30)
-    await reloaded.on_guild_channel_create(late)
+    members_room = FakeVoice(next(_IDS), guild)  # a member's own "Valorant" channel in the same place
+    members_room.name, members_room.type, members_room.category_id = "Valorant", discord.ChannelType.voice, None
+    guild.channels[members_room.id] = members_room
+    cog._now = lambda: NOW + 3600
+    await cog.check_all()
 
-    again = FakePress(guild, message_id)
-    await reloaded.open_room(again)
-    assert again.followups == [f"playing_room_exists|channel={late.mention}"] and store.is_temp_voice(late.id)
-    reloaded._now = lambda: NOW + 3600
-    await reloaded.cleanup_rooms()
-    assert late.deleted  # nobody joined: deleted like any other room
+    assert not members_room.deleted and not store.is_temp_voice(members_room.id)
 
 
 @pytest.mark.asyncio
@@ -1466,3 +1461,48 @@ async def test_a_post_stays_used_after_its_room_with_a_rejected_pointer_is_delet
 
     assert again.followups == ["playing_room_closed|"] and len(guild.created) == 1
     await reloaded.cog_unload()
+
+
+
+@pytest.mark.asyncio
+async def test_an_expired_claims_handler_cannot_confirm_after_another_post_took_the_slot(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
+    first_post = await _posted(cog, guild, store)
+    _playing(cog, guild, "Apex", 4, 5, 6)
+    await _check(cog, store)
+    with sqlite3.connect(store.path) as connection:
+        second_post = connection.execute("SELECT message_id FROM playing_posts WHERE game_key = 'apex'").fetchone()[0]
+    real_create = guild.create_voice_channel
+
+    async def create_while_the_claim_expires(name: str, **kwargs: Any) -> FakeVoice:
+        room = await real_create(name, **kwargs)
+        if len(guild.created) == 1:
+            # The first handler is slow; its claim expires and the other post opens the only room.
+            store.release_stale_claims(NOW + 1000)
+            assert store.claim_playing_post(second_post, 0, 1, NOW + 1000, "b")
+            key, _ = await cog._open(guild, guild.channel, store.playing_post(second_post), second_post, "b")
+            assert key == "playing_room_ready"
+        return room
+
+    guild.create_voice_channel = create_while_the_claim_expires
+    press = FakePress(guild, first_post)
+    await cog.open_room(press)
+
+    rooms = [room for room in guild.channels.values() if isinstance(room, FakeVoice)]
+    assert press.followups == ["playing_room_closed|"] and len(rooms) == 1
+
+
+def test_an_older_database_keeps_posts_that_opened_a_room_used(tmp_path: Path) -> None:
+    path = tmp_path / "community.db"
+    store = CommunityStore(path)
+    for message_id, voice in ((1, -1), (2, 900), (3, None), (4, None)):
+        store.add_playing_post(GUILD_ID, 500, message_id, str(message_id), "g", NOW)
+        if voice is not None:
+            store.set_playing_voice(message_id, voice)
+    store.add_temp_voice(GUILD_ID, 901, NOW, 4)  # 4 opened a room only its row remembers
+    with sqlite3.connect(path) as connection:  # as before the used marker existed
+        connection.execute("ALTER TABLE playing_posts DROP COLUMN room_used_at")
+
+    reopened = CommunityStore(path)
+
+    assert [reopened.playing_post(m)["room_used_at"] is not None for m in (1, 2, 3, 4)] == [True, True, False, True]
