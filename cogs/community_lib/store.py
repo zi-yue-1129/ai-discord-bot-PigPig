@@ -376,20 +376,21 @@ class CommunityStore:
         with self._session() as connection:
             connection.execute("UPDATE playing_posts SET sent = 1 WHERE message_id = ?", (message_id,))
 
-    def release_stale_claims(self, before: float, keep: Iterable[int] = ()) -> None:
+    def release_stale_claims(self, before: float, keep: Iterable[int] = (), guild_ids: Optional[Iterable[int]] = None) -> None:
         """Frees claims made before ``before`` (or at an unknown time) that never got a room, except
-        the posts in ``keep``."""
+        the posts in ``keep``; with ``guild_ids``, only the claims of those servers."""
         keep = set(keep)
+        only = None if guild_ids is None else set(guild_ids)
         with self._session() as connection:
             stale = [
                 row[0]
                 for row in connection.execute(
-                    "SELECT message_id FROM playing_posts"
+                    "SELECT message_id, guild_id FROM playing_posts"
                     " WHERE voice_channel_id = -1 AND (room_claimed_at IS NULL OR room_claimed_at < ?)"
                     " AND message_id NOT IN (SELECT post_message_id FROM temp_voice_rooms WHERE post_message_id IS NOT NULL)",
                     (before,),
                 )
-                if row[0] not in keep
+                if row[0] not in keep and (only is None or row[1] in only)
             ]
             for chunk in _chunks(stale):
                 connection.execute(
@@ -440,10 +441,18 @@ class CommunityStore:
 
     def forget_playing_posts(self, before: float, keep: Iterable[int] = ()) -> None:
         """Drops posts older than ``before`` (they no longer count for anything), except the posts in
-        ``keep``: their room still has to be found or deleted."""
+        ``keep`` and those with a claim that is not closed: their room still has to be found or deleted."""
         keep = set(keep)
         with self._session() as connection:
-            old = [row[0] for row in connection.execute("SELECT message_id FROM playing_posts WHERE posted_at < ?", (before,)) if row[0] not in keep]
+            old = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT message_id FROM playing_posts WHERE posted_at < ?"
+                    " AND NOT (voice_channel_id = -1 AND room_token IS NOT NULL)",
+                    (before,),
+                )
+                if row[0] not in keep
+            ]
             for chunk in _chunks(old):
                 connection.execute(f"DELETE FROM playing_posts WHERE message_id IN ({','.join('?' * len(chunk))})", chunk)
 
