@@ -353,11 +353,11 @@ class CommunityStore:
             )
             return cursor.rowcount == 1
 
-    def open_claims(self, guild_id: int) -> List[Tuple[int, str]]:
-        """``(message_id, token)`` of the guild's claims whose room is not known yet."""
+    def open_claims(self, guild_id: int) -> List[Tuple[int, str, Optional[float]]]:
+        """``(message_id, token, claimed_at)`` of the guild's claims whose room is not known yet."""
         with self._session() as connection:
             return connection.execute(
-                "SELECT message_id, room_token FROM playing_posts"
+                "SELECT message_id, room_token, room_claimed_at FROM playing_posts"
                 " WHERE guild_id = ? AND voice_channel_id = -1 AND room_used_at IS NULL AND room_token IS NOT NULL",
                 (guild_id,),
             ).fetchall()

@@ -30,13 +30,17 @@ class FakeLang:
 
 
 class FakeVoice:
-    def __init__(self, room_id: int, guild: "FakeGuild", members: Optional[list] = None, name: str = "") -> None:
+    def __init__(
+        self, room_id: int, guild: "FakeGuild", members: Optional[list] = None, name: str = "", created_at: Optional[float] = None
+    ) -> None:
         self.id = room_id
         self.guild = guild
         self.members = members or []
         self.mention = f"<#{room_id}>"
         self.deleted = False
         self.name = name
+        # Discord stamps a channel with the time it was made; the tests' clock is NOW.
+        self.created_at = datetime.fromtimestamp(NOW + 1 if created_at is None else created_at, timezone.utc)
         self.type = discord.ChannelType.voice
         self.category_id = None
 
@@ -1304,7 +1308,7 @@ async def test_a_room_taken_back_uses_up_its_post_without_blocking_the_room_limi
         apex_post = connection.execute("SELECT message_id FROM playing_posts WHERE game_key = 'apex'").fetchone()[0]
     # Marking the post used failed too, so its claim holds the one room slot until it is stale.
     cog._now = lambda: NOW + 181
-    cog._forget_abandoned()
+    await cog._forget_abandoned()
     other = FakePress(guild, apex_post)
     await cog.open_room(other)
 
@@ -1463,7 +1467,7 @@ async def test_a_post_stays_used_after_its_room_with_a_rejected_pointer_is_delet
 
     reloaded = await _reloaded(cog, store, now=NOW + 3600)
     await reloaded.cleanup_rooms()  # nobody joined: deleted with its row
-    reloaded._forget_abandoned()  # the claim is stale by now
+    await reloaded._forget_abandoned()  # the claim is stale by now
     again = FakePress(guild, message_id)
     await reloaded.open_room(again)
 
@@ -1520,8 +1524,10 @@ def test_an_older_database_keeps_posts_that_opened_a_room_used(tmp_path: Path) -
 
 
 def _short_token(store: CommunityStore, message_id: int) -> str:
+    from cogs.playing import ROOM_TOKEN_CHARS
+
     with sqlite3.connect(store.path) as connection:
-        return connection.execute("SELECT room_token FROM playing_posts WHERE message_id = ?", (message_id,)).fetchone()[0][:6]
+        return connection.execute("SELECT room_token FROM playing_posts WHERE message_id = ?", (message_id,)).fetchone()[0][:ROOM_TOKEN_CHARS]
 
 
 def _hanging_after_creating(guild: FakeGuild, gate: Optional[asyncio.Event] = None) -> None:
@@ -1628,7 +1634,7 @@ async def test_a_members_channel_is_never_adopted_or_deleted_whatever_its_name(t
 
     guild.create_voice_channel = hang
     await cog.open_room(FakePress(guild, message_id))
-    names = ["Valorant", "Valorant · #ffffff", "Valorant · #zzzzzz", "Valorant #" + _short_token(store, message_id)]
+    names = ["Valorant", "Valorant · #" + "f" * 16, "Valorant · #" + "z" * 16, "Valorant #" + _short_token(store, message_id)]
     strangers = []
     for name in names:
         stranger = FakeVoice(next(_IDS), guild, name=name)
@@ -1646,9 +1652,9 @@ async def test_a_members_channel_is_never_adopted_or_deleted_whatever_its_name(t
 async def test_a_token_whose_claim_is_gone_adopts_nothing(tmp_path: Path) -> None:
     cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
     message_id = await _posted(cog, guild, store)
-    assert store.claim_playing_post(message_id, 0, 1, NOW, "abcdef123456")
-    store.release_playing_post(message_id, "abcdef123456")  # the claim was given up
-    stray = FakeVoice(next(_IDS), guild, name="Valorant · #abcdef")
+    assert store.claim_playing_post(message_id, 0, 1, NOW, "abcdef0123456789abcdef")
+    store.release_playing_post(message_id, "abcdef0123456789abcdef")  # the claim was given up
+    stray = FakeVoice(next(_IDS), guild, name="Valorant · #abcdef0123456789")
     guild.channels[stray.id] = stray
 
     await cog.on_guild_channel_create(stray)
@@ -1678,6 +1684,184 @@ async def test_a_room_adopted_while_its_request_is_still_pending_is_not_taken_ba
 def test_a_rooms_name_carries_its_claims_token_within_discords_limit() -> None:
     from cogs.playing import room_label
 
-    label = room_label("x" * 500, "0123456789abcdef")
-    assert label.endswith(" · #012345") and len(label) <= 100
-    assert room_label("Valorant", "0123456789abcdef") == "Valorant · #012345"
+    label = room_label("x" * 500, "0123456789abcdef0123456789abcdef")
+    assert label.endswith(" · #0123456789abcdef") and len(label) <= 100
+    assert room_label("Valorant", "0123456789abcdef0123456789abcdef") == "Valorant · #0123456789abcdef"
+
+
+# ------------------------------------------- review of #375: what a name alone cannot prove
+
+
+def _never_answering(guild: FakeGuild) -> None:
+    """Discord never answers the creation request (and made no room, as far as the cog can see)."""
+
+    async def hang(name: str, **kwargs: Any) -> FakeVoice:
+        await asyncio.Event().wait()
+
+    guild.create_voice_channel = hang
+
+
+async def _claimed_and_given_up(cog: PlayingCog, guild: FakeGuild, store: CommunityStore, monkeypatch: pytest.MonkeyPatch) -> int:
+    """A post whose creation request gave up: its claim stays open. Returns the post's message id."""
+    import cogs.playing as playing_module
+
+    monkeypatch.setattr(playing_module, "CREATE_TIMEOUT_SECONDS", 0.01)
+    message_id = await _posted(cog, guild, store)
+    _never_answering(guild)
+    await cog.open_room(FakePress(guild, message_id))
+    return message_id
+
+
+@pytest.mark.asyncio
+async def test_a_channel_made_before_the_claim_is_never_adopted_even_when_it_carries_the_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
+    message_id = await _claimed_and_given_up(cog, guild, store, monkeypatch)
+    # A member's old channel, renamed to carry the claim's token.
+    renamed = FakeVoice(next(_IDS), guild, name=f"Chill · #{_short_token(store, message_id)}", created_at=NOW - 3600)
+    guild.channels[renamed.id] = renamed
+
+    await cog.on_guild_channel_create(renamed)
+    cog._now = lambda: NOW + 3600
+    await cog.check_all()
+
+    assert not renamed.deleted and not store.is_temp_voice(renamed.id)
+    assert store.playing_post(message_id)["voice_channel_id"] is None  # the claim ran out unanswered
+
+
+@pytest.mark.asyncio
+async def test_a_room_whose_event_recorded_only_its_pointer_is_not_taken_back_when_the_answer_comes(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
+    message_id = await _posted(cog, guild, store)
+    gate = asyncio.Event()
+    _hanging_after_creating(guild, gate)
+    press = FakePress(guild, message_id)
+    opening = asyncio.create_task(cog.open_room(press))
+    await asyncio.sleep(0.01)
+    room = guild.voice_channels[0]
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("CREATE TRIGGER no_rooms BEFORE INSERT ON temp_voice_rooms BEGIN SELECT RAISE(ABORT, 'locked'); END")
+    await cog.on_guild_channel_create(room)  # the post points to the room, its own row was refused
+    gate.set()
+    await opening
+
+    assert press.followups == [f"playing_room_ready|channel={room.mention}"]
+    assert not room.deleted and store.playing_post(message_id)["voice_channel_id"] == room.id
+
+
+@pytest.mark.asyncio
+async def test_a_request_that_gives_up_after_the_event_adopted_the_room_still_answers_with_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import cogs.playing as playing_module
+
+    monkeypatch.setattr(playing_module, "CREATE_TIMEOUT_SECONDS", 0.1)
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
+    message_id = await _posted(cog, guild, store)
+    _hanging_after_creating(guild)  # the room exists, the answer never comes
+    press = FakePress(guild, message_id)
+    opening = asyncio.create_task(cog.open_room(press))
+    await asyncio.sleep(0.02)
+    room = guild.voice_channels[0]
+    await cog.on_guild_channel_create(room)  # adopted before the request gives up
+    await opening
+
+    assert press.followups == [f"playing_room_ready|channel={room.mention}"]
+    assert not room.deleted and store.is_temp_voice(room.id)
+
+
+@pytest.mark.asyncio
+async def test_a_claim_whose_room_could_not_be_confirmed_is_kept_until_the_room_can_be_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
+    message_id = await _claimed_and_given_up(cog, guild, store, monkeypatch)
+    late = FakeVoice(next(_IDS), guild, name=f"Valorant · #{_short_token(store, message_id)}")
+    guild.channels[late.id] = late
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("CREATE TRIGGER no_confirm BEFORE UPDATE OF room_used_at ON playing_posts BEGIN SELECT RAISE(ABORT, 'locked'); END")
+
+    cog._now = lambda: NOW + 181  # stale, but its room is known to exist and could not be recorded
+    await cog.check_all()
+    assert store.playing_post(message_id)["voice_channel_id"] == -1
+
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("DROP TRIGGER no_confirm")
+    cog._now = lambda: NOW + 200
+    await cog.check_all()
+    assert store.is_temp_voice(late.id) and store.playing_post(message_id)["voice_channel_id"] == late.id
+
+
+@pytest.mark.asyncio
+async def test_unloading_waits_for_an_adoption_that_is_taking_a_room_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
+    message_id = await _claimed_and_given_up(cog, guild, store, monkeypatch)
+    late = FakeVoice(next(_IDS), guild, name=f"Valorant · #{_short_token(store, message_id)}")
+    guild.channels[late.id] = late
+    gate = asyncio.Event()
+
+    async def refuse_after_the_gate(reason: str = "") -> None:
+        await gate.wait()
+        raise discord.Forbidden(SimpleNamespace(status=403, reason="no"), "no")
+
+    late.delete = refuse_after_the_gate
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("CREATE TRIGGER no_rooms BEFORE INSERT ON temp_voice_rooms BEGIN SELECT RAISE(ABORT, 'locked'); END")
+        connection.execute(
+            "CREATE TRIGGER no_pointer BEFORE UPDATE OF voice_channel_id ON playing_posts WHEN NEW.voice_channel_id > 0"
+            " BEGIN SELECT RAISE(ABORT, 'locked'); END"
+        )
+    listener = asyncio.create_task(cog.on_guild_channel_create(late))
+    await asyncio.sleep(0.01)
+    unloading = asyncio.create_task(cog.cog_unload())
+    await asyncio.sleep(0.01)
+    assert not unloading.done()  # a room is being taken back: the next copy must be able to find it
+
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("DROP TRIGGER no_rooms")
+        connection.execute("DROP TRIGGER no_pointer")
+    gate.set()
+    await asyncio.gather(listener, unloading)
+
+    assert store.is_temp_voice(late.id)
+
+
+@pytest.mark.asyncio
+async def test_claims_that_share_a_token_prefix_adopt_no_room_for_either(tmp_path: Path) -> None:
+    from cogs.playing import ROOM_TOKEN_CHARS
+
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=2)
+    first_post = await _posted(cog, guild, store)
+    _playing(cog, guild, "Apex", 4, 5, 6)
+    await _check(cog, store)
+    with sqlite3.connect(store.path) as connection:
+        second_post = connection.execute("SELECT message_id FROM playing_posts WHERE game_key = 'apex'").fetchone()[0]
+    prefix = "a" * ROOM_TOKEN_CHARS
+    assert store.claim_playing_post(first_post, 0, 2, NOW, prefix + "1")
+    assert store.claim_playing_post(second_post, 0, 2, NOW, prefix + "2")
+    room = FakeVoice(next(_IDS), guild, name=f"Valorant · #{prefix}")
+    guild.channels[room.id] = room
+
+    await cog.on_guild_channel_create(room)
+
+    assert not room.deleted and not store.is_temp_voice(room.id)
+    assert store.playing_post(first_post)["room_used_at"] is None and store.playing_post(second_post)["room_used_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_the_name_of_a_room_that_was_opened_and_closed_adopts_nothing_later(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
+    message_id = await _posted(cog, guild, store)
+    await cog.open_room(FakePress(guild, message_id))
+    room = guild.voice_channels[0]
+    await cog._delete_room(room)  # it was used and closed
+    lookalike = FakeVoice(next(_IDS), guild, name=room.name)
+    guild.channels[lookalike.id] = lookalike
+
+    await cog.on_guild_channel_create(lookalike)
+    cog._now = lambda: NOW + 3600
+    await cog.check_all()
+
+    assert not lookalike.deleted and not store.is_temp_voice(lookalike.id)
+    assert store.playing_post(message_id)["voice_channel_id"] == room.id  # still the room it opened
