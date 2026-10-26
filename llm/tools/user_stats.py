@@ -227,23 +227,37 @@ def _is_hidden(runtime: Any, guild_id: int, user_id: str, db_path: Optional[str]
         db_path: The community database to read when the leaderboard cog is not loaded
             (defaults to ``COMMUNITY_DB_PATH``).
     """
-    bot = getattr(runtime, "bot", None)
-    cog = bot.get_cog("LeaderboardCog") if bot is not None else None
-    store = getattr(cog, "store", None)
     try:
-        if store is None:
-            # The leaderboard cog is not loaded: read its opt-out list directly.
-            from cogs.community_lib.store import CommunityStore
-
-            if db_path is None:
-                from cogs.community import COMMUNITY_DB_PATH as db_path
-            store = CommunityStore(db_path)
+        store = _optout_store(runtime, db_path)
         return bool(store.is_opted_out(int(guild_id), int(user_id)))
     except Exception:
         # Any failure (database locked or missing, bad id) means we cannot tell whether the member
         # opted out; refusing the lookup is the safe answer, so the tool carries on with that.
         _logger.error("get_user_stats: could not read the opt-out list; treating the member as hidden", exc_info=True)
         return True
+
+
+def _optout_store(runtime: Any, db_path: Optional[str]) -> Any:
+    """The store holding ``/leaderboard optout``: the leaderboard cog's, or the database file itself.
+
+    Raises:
+        FileNotFoundError: The cog is not loaded and the file does not exist. Opening it would create an
+            empty list that says nobody is hidden, so callers treat this like any failure to read it.
+    """
+    bot = getattr(runtime, "bot", None)
+    cog = bot.get_cog("LeaderboardCog") if bot is not None else None
+    store = getattr(cog, "store", None)
+    if store is not None:
+        return store
+    import os
+
+    from cogs.community_lib.store import CommunityStore
+
+    if db_path is None:
+        from cogs.community import COMMUNITY_DB_PATH as db_path
+    if not os.path.isfile(db_path):
+        raise FileNotFoundError(db_path)
+    return CommunityStore(db_path)
 
 
 def hidden_member_ids(runtime: Any, guild_id: int, db_path: Optional[str] = None) -> Optional[Set[int]]:
@@ -255,17 +269,8 @@ def hidden_member_ids(runtime: Any, guild_id: int, db_path: Optional[str] = None
         db_path: The community database to read when the leaderboard cog is not loaded
             (defaults to ``COMMUNITY_DB_PATH``).
     """
-    bot = getattr(runtime, "bot", None)
-    cog = bot.get_cog("LeaderboardCog") if bot is not None else None
-    store = getattr(cog, "store", None)
     try:
-        if store is None:
-            # The leaderboard cog is not loaded: read its opt-out list directly.
-            from cogs.community_lib.store import CommunityStore
-
-            if db_path is None:
-                from cogs.community import COMMUNITY_DB_PATH as db_path
-            store = CommunityStore(db_path)
+        store = _optout_store(runtime, db_path)
         return {int(user_id) for user_id in store.optouts(int(guild_id))}
     except Exception:
         # Any failure (database locked or missing, bad id) means we cannot tell who opted out;

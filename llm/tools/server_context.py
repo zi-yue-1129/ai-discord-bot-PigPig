@@ -111,10 +111,15 @@ class ServerContextTools:
                 lines.append(f"- NSFW: {target_channel.nsfw}")
                 if target_channel.slowmode_delay:
                     lines.append(f"- Slowmode: {target_channel.slowmode_delay}s")
-                if hasattr(target_channel, "members"):
+                # Hidden members (/leaderboard optout) are not counted, or the count would give away
+                # their status; when the opt-out list cannot be read, the count is left out.
+                from llm.tools.user_stats import hidden_member_ids
+
+                hidden = hidden_member_ids(runtime, guild.id)
+                if hasattr(target_channel, "members") and hidden is not None:
                     online = sum(
                         1 for m in target_channel.members
-                        if not m.bot and m.status != discord.Status.offline
+                        if not m.bot and m.status != discord.Status.offline and m.id not in hidden
                     )
                     lines.append(f"- Online members with access: ~{online}")
 

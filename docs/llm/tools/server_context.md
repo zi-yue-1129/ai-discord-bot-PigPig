@@ -30,7 +30,7 @@ def __init__(self, runtime: "OrchestratorRequest"):
 - **Description**: Queries detailed info about a specific channel.
 - **Args**:
   - `channel_name`: Optional name of a channel to inspect. Defaults to current channel.
-- **Returns**: Channel category, topic, NSFW status, slowmode settings, and online member count.
+- **Returns**: Channel category, topic, NSFW status, slowmode settings, and online member count. Members hidden with `/leaderboard optout` are not counted; when the opt-out list cannot be read, the count is left out.
 - **Purpose**: Understands specific rules or themes of a channel.
 
 #### `get_user_discord_info(user_id: Optional[str])`
@@ -39,12 +39,13 @@ def __init__(self, runtime: "OrchestratorRequest"):
   - `user_id`: Discord ID or @mention. Defaults to message sender.
 - **Returns**: Join date, account age, nickname, roles, status (Online/Idle/DND), and detailed activities (Spotify, Games, Custom Status with duration).
 - **Purpose**: Personalized interaction based on what the user is currently doing.
+- **Hidden members**: For a member who chose `/leaderboard optout`, only the profile (join date, account age, nickname, roles) is returned; status and every activity are replaced by a note telling the AI not to share or guess them. This also applies when they ask about themselves, since the reply is posted in the channel. When the opt-out list cannot be read, everyone is treated as hidden.
 
 ## Implementation Details
 
 - **Activity Tracking**: Uses a sophisticated duration helper to show how long a user has been playing a game or listening to Spotify.
 - **Mentions Parsing**: Correctly handles `<@123>` and `<@!123>` mention formats for user lookups.
-- **Privacy Awareness**: Only shows online member counts and public profile data available to the bot's permission level.
+- **Privacy Awareness**: Only shows online member counts and public profile data available to the bot's permission level, and never the status or activity of a member hidden with `/leaderboard optout`. The opt-out list comes from the leaderboard cog, or from `data/community.db` when the cog is not loaded; a missing or unreadable file counts as "cannot be read" (fail closed).
 - **Target Mode**: Routed to the **Info Agent** (`target_agent_mode = "info"`).
 
 ## Usage Examples

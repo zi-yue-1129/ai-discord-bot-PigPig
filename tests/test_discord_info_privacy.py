@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any, Optional, Set
 
 import discord
+import pytest
 
 from llm.tools.server_context import ServerContextTools
 from llm.tools.user_activity import UserActivityTools
@@ -66,6 +67,11 @@ def _info(runtime: Any) -> Any:
     return tools["get_user_discord_info"].func
 
 
+def _channel_context(runtime: Any) -> Any:
+    tools = {tool.name: tool for tool in ServerContextTools(runtime).get_tools()}
+    return tools["get_channel_context"].func
+
+
 def _participants(runtime: Any) -> Any:
     return UserActivityTools(runtime).get_tools()[0].func
 
@@ -108,3 +114,74 @@ def test_the_online_list_fails_closed() -> None:
     reply = _participants(_runtime(FakeOptouts(set(), broken=True)))()
 
     assert "user10" not in reply and "user11" not in reply
+
+
+class _TextChannel:
+    """Stands in for discord.TextChannel, which cannot be built without a gateway state."""
+
+    def __init__(self, members: list) -> None:
+        self.id = 500
+        self.name = "general"
+        self.category = None
+        self.topic = None
+        self.nsfw = False
+        self.slowmode_delay = 0
+        self.members = members
+
+
+def _online_count(runtime: Any, monkeypatch: pytest.MonkeyPatch) -> Optional[str]:
+    monkeypatch.setattr(discord, "TextChannel", _TextChannel)
+    runtime.message.channel = _TextChannel(runtime.message.channel.members)
+    reply = _channel_context(runtime)()
+    found = [line for line in reply.splitlines() if "Online members" in line]
+    return found[0] if found else None
+
+
+def test_the_online_count_does_not_change_with_a_hidden_members_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = _runtime()
+    hidden = runtime.message.guild.get_member(HIDDEN_ID)
+
+    hidden.status = discord.Status.online
+    while_online = _online_count(runtime, monkeypatch)
+    hidden.status = discord.Status.offline
+    while_offline = _online_count(runtime, monkeypatch)
+
+    assert while_online == while_offline == "- Online members with access: ~1"
+
+
+def test_the_online_count_is_left_out_when_the_opt_outs_cannot_be_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _online_count(_runtime(FakeOptouts(set(), broken=True)), monkeypatch) is None
+
+
+def _without_cog() -> Any:
+    return SimpleNamespace(bot=SimpleNamespace(get_cog=lambda name: None))
+
+
+def test_a_missing_community_database_counts_as_unreadable(tmp_path: Any) -> None:
+    from llm.tools.user_stats import _is_hidden, hidden_member_ids
+
+    path = tmp_path / "community.db"
+
+    assert hidden_member_ids(_without_cog(), GUILD_ID, db_path=str(path)) is None
+    assert _is_hidden(_without_cog(), GUILD_ID, str(AUTHOR_ID), db_path=str(path)) is True
+    assert not path.exists()  # not created empty, which would say nobody is hidden
+
+
+def test_a_corrupt_community_database_counts_as_unreadable(tmp_path: Any) -> None:
+    from llm.tools.user_stats import _is_hidden, hidden_member_ids
+
+    path = tmp_path / "community.db"
+    path.write_bytes(b"this is not an sqlite database" * 200)
+
+    assert hidden_member_ids(_without_cog(), GUILD_ID, db_path=str(path)) is None
+    assert _is_hidden(_without_cog(), GUILD_ID, str(AUTHOR_ID), db_path=str(path)) is True
+
+
+def test_the_stored_opt_outs_are_read_without_the_leaderboard_cog(tmp_path: Any) -> None:
+    from cogs.community_lib.store import CommunityStore
+    from llm.tools.user_stats import hidden_member_ids
+
+    path = str(tmp_path / "community.db")
+    CommunityStore(path).set_optout(GUILD_ID, HIDDEN_ID, True)
+
+    assert hidden_member_ids(_without_cog(), GUILD_ID, db_path=path) == {HIDDEN_ID}
