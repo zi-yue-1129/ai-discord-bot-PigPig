@@ -172,7 +172,7 @@ async def read_recap(community: Any, guild: Any, start: datetime, end: datetime,
     view.talkers = _visible(guild, per_user, hidden, TOP_TALKERS)
     if view.talkers:
         view.titles["talker"] = view.talkers[0]
-    for channel_id, count in await collector.message_counts_by_channel(gid, since, until, exclude_users=hidden):
+    for channel_id, count in await collector.message_counts_by_channel(gid, since, until, exclude_user_ids=hidden):
         channel = public.get(str(channel_id))
         if channel is not None and count:
             view.channels.append((channel, int(count)))

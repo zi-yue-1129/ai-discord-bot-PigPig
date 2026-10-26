@@ -225,7 +225,11 @@ async def test_the_read_tool_reports_an_unknown_user_instead_of_the_asker() -> N
         return "data"
 
     cog = SimpleNamespace(user_manager=users, _read_user_data=read)
-    bot = SimpleNamespace(get_cog=lambda name: cog, get_user=lambda user_id: SimpleNamespace(id=user_id, name="n"))
+    # Someone else's memory is only read once the opt-out list can be read (it is empty here): without a
+    # readable list the tool refuses, which is covered in test_memory_privacy.py.
+    leaderboard = SimpleNamespace(store=SimpleNamespace(read_optouts=lambda guild_id: set()))
+    cogs = {"LeaderboardCog": leaderboard}
+    bot = SimpleNamespace(get_cog=lambda name: cogs.get(name, cog), get_user=lambda user_id: SimpleNamespace(id=user_id, name="n"))
     message = SimpleNamespace(author=SimpleNamespace(id=int(ASKER)), guild=SimpleNamespace(id=1))
     runtime = SimpleNamespace(bot=bot, message=message, logger=_Logger())
     (tool,) = [t for t in UserMemoryTools(runtime).get_tools() if t.name == "read_user_memory"]

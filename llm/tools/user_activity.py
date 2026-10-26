@@ -37,10 +37,18 @@ class UserActivityTools:
             
             # Voice Channel Logic
             if isinstance(channel, discord.VoiceChannel):
-                members = channel.members
+                # Hidden members (/leaderboard optout) are not listed; when the opt-out list cannot be
+                # read, nobody is.
+                from llm.tools.user_stats import hidden_member_ids
+
+                guild = getattr(channel, "guild", None)
+                hidden = hidden_member_ids(runtime, guild.id) if guild is not None else set()
+                if hidden is None:
+                    return "Who is in the voice channel cannot be shown right now."
+                members = [m for m in channel.members if m.id not in hidden]
                 if not members:
                     return "The voice channel is currently empty."
-                
+
                 member_list = [f"- {m.display_name}" for m in members]
                 return f"## Users in Voice Channel '{channel.name}'\n" + "\n".join(member_list)
             

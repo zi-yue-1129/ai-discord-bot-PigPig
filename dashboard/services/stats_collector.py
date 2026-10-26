@@ -5,9 +5,10 @@ Records message events, LLM call events, and command usage into
 dashboard statistics endpoints.
 """
 
+import json
 import os
 import time
-from typing import Any, Collection, Optional, Sequence
+from typing import Any, Iterable, Optional, Sequence
 from datetime import datetime, timedelta
 
 import aiosqlite
@@ -253,21 +254,21 @@ class StatsCollector:
             return [(row[0], row[1]) for row in await cursor.fetchall()]
 
     async def message_counts_by_channel(
-        self, guild_id: str, since: float, until: float, exclude_users: Optional[Collection[Any]] = None
+        self, guild_id: str, since: float, until: float, exclude_user_ids: Iterable[str] = ()
     ) -> list[tuple[str, int]]:
         """Counts a guild's messages per channel between ``since`` (inclusive) and ``until`` (exclusive), most first.
 
         Args:
-            exclude_users: Leave out the messages of these user ids.
+            exclude_user_ids: Members whose messages are not counted (passed as one JSON list, so the
+                number of members is not limited by SQLite's variable limit).
         """
-        query = "SELECT channel_id, COUNT(*) AS cnt FROM message_events WHERE guild_id = ? AND timestamp >= ? AND timestamp < ?"
-        params: list = [guild_id, since, until]
-        if exclude_users:
-            ids = [str(user_id) for user_id in exclude_users]
-            query += f" AND user_id NOT IN ({', '.join('?' * len(ids))})"
-            params += ids
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute(query + " GROUP BY channel_id ORDER BY cnt DESC, channel_id", params)
+            cursor = await db.execute(
+                "SELECT channel_id, COUNT(*) AS cnt FROM message_events WHERE guild_id = ? AND timestamp >= ? AND timestamp < ? "
+                "AND user_id NOT IN (SELECT value FROM json_each(?)) "
+                "GROUP BY channel_id ORDER BY cnt DESC, channel_id",
+                (guild_id, since, until, json.dumps([str(user_id) for user_id in exclude_user_ids])),
+            )
             return [(row[0], row[1]) for row in await cursor.fetchall()]
 
     async def night_counts_by_user(

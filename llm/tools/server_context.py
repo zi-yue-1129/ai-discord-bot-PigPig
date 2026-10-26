@@ -13,6 +13,7 @@ from langchain_core.tools.structured import StructuredTool
 
 from addons.logging import get_logger
 from addons.presence import is_game
+from addons.visibility import can_view
 
 if TYPE_CHECKING:
     from llm.schema import OrchestratorRequest
@@ -58,8 +59,10 @@ class ServerContextTools:
             suffix = f" ...and {remaining} more" if remaining else ""
             lines.append(f"- Roles ({len(roles)}): {', '.join(role_names)}{suffix}")
 
+            # Only channels the asker can see are listed: a private channel's name is not theirs to learn.
+            asker = getattr(message, "author", None)
             text_channels = sorted(
-                [ch for ch in guild.channels if isinstance(ch, discord.TextChannel)],
+                [ch for ch in guild.channels if isinstance(ch, discord.TextChannel) and can_view(ch, asker)],
                 key=lambda c: c.position,
             )
             ch_names = [f"#{ch.name}" for ch in text_channels[:25]]
@@ -67,7 +70,7 @@ class ServerContextTools:
             suffix = f" ...and {remaining} more" if remaining else ""
             lines.append(f"- Text Channels ({len(text_channels)}): {', '.join(ch_names)}{suffix}")
 
-            voice_channels = [ch for ch in guild.channels if isinstance(ch, discord.VoiceChannel)]
+            voice_channels = [ch for ch in guild.channels if isinstance(ch, discord.VoiceChannel) and can_view(ch, asker)]
             if voice_channels:
                 vc_names = [f"🔊{ch.name}" for ch in voice_channels[:15]]
                 lines.append(f"- Voice Channels ({len(voice_channels)}): {', '.join(vc_names)}")
@@ -91,8 +94,10 @@ class ServerContextTools:
 
             if channel_name:
                 search_name = channel_name.lstrip("#").lower()
+                asker = getattr(message, "author", None)
                 for ch in guild.channels:
-                    if ch.name.lower() == search_name:
+                    # A channel the asker cannot see is reported as missing: its topic and members are not theirs to learn.
+                    if ch.name.lower() == search_name and can_view(ch, asker):
                         target_channel = ch
                         break
                 if not target_channel:
@@ -124,12 +129,18 @@ class ServerContextTools:
                     lines.append(f"- Online members with access: ~{online}")
 
             elif isinstance(target_channel, discord.VoiceChannel):
-                lines.append(f"- Connected: {len(target_channel.members)} users")
+                # Hidden members (/leaderboard optout) are neither named nor counted; when the opt-out
+                # list cannot be read, neither the names nor the count are given.
+                from llm.tools.user_stats import hidden_member_ids
+
+                hidden = hidden_member_ids(runtime, guild.id)
+                shown = [m for m in target_channel.members if m.id not in hidden] if hidden is not None else None
+                if shown is not None:
+                    lines.append(f"- Connected: {len(shown)} users")
                 lines.append(f"- Bitrate: {target_channel.bitrate // 1000}kbps")
                 lines.append(f"- User limit: {target_channel.user_limit or 'Unlimited'}")
-                if target_channel.members:
-                    names = [m.display_name for m in target_channel.members[:20]]
-                    lines.append(f"- Users: {', '.join(names)}")
+                if shown:
+                    lines.append(f"- Users: {', '.join(m.display_name for m in shown[:20])}")
 
             return "\n".join(lines)
 

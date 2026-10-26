@@ -18,6 +18,7 @@ from llm.memory.procedural import ProceduralMemoryProvider
 from llm.memory.short_term import ShortTermMemoryProvider
 from llm.memory.episodic import EpisodicMemoryProvider
 from llm.memory.knowledge import KnowledgeMemoryProvider, KnowledgeMemory
+from llm.memory.privacy import hidden_in_guild_async, is_hidden_id
 from llm.memory.schema import ProceduralMemory
 from langchain_core.messages import BaseMessage
 from addons.logging import get_logger
@@ -34,12 +35,18 @@ class ContextManager:
         procedural_provider: ProceduralMemoryProvider,
         episodic_provider: Optional[EpisodicMemoryProvider] = None,
         knowledge_provider: Optional[KnowledgeMemoryProvider] = None,
+        bot: Any = None,
     ) -> None:
-        """Initialize with memory providers."""
+        """Initialize with memory providers.
+
+        ``bot`` is only used to find out which members hid themselves (``/leaderboard optout``): their
+        personal memory is not put in front of the others.
+        """
         self.short_term_provider = short_term_provider
         self.procedural_provider = procedural_provider
         self.episodic_provider = episodic_provider
         self.knowledge_provider = knowledge_provider
+        self.bot = bot
 
     async def get_context(self, message: discord.Message) -> Tuple[str, List[BaseMessage]]:
         """Return (procedural_context_str, short_term_msgs).
@@ -125,6 +132,11 @@ class ContextManager:
                 extracted_ids = []
 
             additional_ids = [uid for uid in extracted_ids if uid not in author_ids]
+            guild = getattr(message, "guild", None)
+            if additional_ids and guild is not None and self.bot is not None:
+                # Other people's personal memory is not used if they are hidden (or it is unknown who is).
+                hidden = await hidden_in_guild_async(self.bot, guild.id)
+                additional_ids = [] if hidden is None else [uid for uid in additional_ids if not is_hidden_id(uid, hidden)]
             if additional_ids:
                 additional_procedural = await _fetch_procedural(additional_ids)
             else:

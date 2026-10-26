@@ -63,6 +63,9 @@ async def test_channel_and_night_counts(tmp_path: Path) -> None:
     since, until = MONDAY.timestamp(), SUNDAY_EVENING.timestamp()
     assert await collector.message_counts_by_channel(str(GUILD_ID), since, until) == [("a", 2), ("b", 2)]
     assert await collector.night_counts_by_user(str(GUILD_ID), since, until, 8 * 3600) == [("2", 2), ("1", 1)]
+    # Without the messages of excluded members (the ones hidden with /leaderboard optout).
+    assert await collector.message_counts_by_channel(str(GUILD_ID), since, until, exclude_user_ids=["1"]) == [("b", 2)]
+    assert await collector.message_counts_by_channel(str(GUILD_ID), since, until, exclude_user_ids=[]) == [("a", 2), ("b", 2)]
 
 
 @pytest.fixture
@@ -202,7 +205,7 @@ class FakeCollector:
     async def message_counts_by_user(self, guild_id: str, since: float, until: float) -> list:
         return self.week if since >= MONDAY.timestamp() else self.last_week
 
-    async def message_counts_by_channel(self, guild_id: str, since: float, until: float) -> list:
+    async def message_counts_by_channel(self, guild_id: str, since: float, until: float, exclude_user_ids: Any = ()) -> list:
         return [("501", 40), ("missing", 5), ("500", 20)]
 
     async def night_counts_by_user(self, guild_id: str, since: float, until: float, offset: float) -> list:
@@ -287,8 +290,8 @@ async def test_the_recap_is_posted_once_with_titles_and_without_hidden_members(
     fields = {field.name: field.value for field in embed.fields}
     assert sent["allowed_mentions"].users is False
     assert embed.title == "weekly_title|guild=Pig Land"
-    assert embed.description == "weekly_intro|total=105"
-    assert fields["weekly_messages|"] == "**105** weekly_trend|change=+31%|previous=80"
+    assert embed.description == "weekly_intro|total=55"  # the hidden member's 50 messages are not counted
+    assert fields["weekly_messages|"] == "**55** weekly_trend|change=-31%|previous=80"
     assert fields["weekly_channels|"] == "<#501> · 40\n<#500> · 20"
     assert fields["weekly_talkers|"] == "<@11> · 30\n<@10> · 5"
     assert "best joke ever" in fields["weekly_quote|count=5"] and "<@11>" in fields["weekly_quote|count=5"]
@@ -458,3 +461,29 @@ def test_a_channel_that_denies_a_role_is_not_public(guild: FakeGuild) -> None:
 
     assert is_public(guild, guild.channels[501]) is False
     assert public_channel_ids(guild) == ["500"]
+
+
+@pytest.mark.asyncio
+async def test_hidden_members_messages_are_left_out_of_both_weeks_totals(cog: CommunityCog, guild: FakeGuild) -> None:
+    from cogs.community_lib.recap import RecapBuilder
+
+    cog.bot.stats_collector = FakeCollector([("13", 50), ("11", 30), ("not-a-member", 4)], [("13", 40), ("11", 10)])
+
+    recap = await RecapBuilder(cog.bot, cog.limits).build(guild, MONDAY, SUNDAY_EVENING, {13})
+
+    assert recap.total == 34 and recap.previous_total == 10  # a row that is no member id cannot be told apart: counted
+
+
+@pytest.mark.asyncio
+async def test_hidden_members_messages_are_left_out_of_the_channel_counts(cog: CommunityCog, guild: FakeGuild) -> None:
+    from cogs.community_lib.recap import RecapBuilder
+
+    class ByChannel(FakeCollector):
+        async def message_counts_by_channel(self, guild_id: str, since: float, until: float, exclude_user_ids: Any = ()) -> list:
+            return [("500", 20 if "13" in set(exclude_user_ids) else 70)]
+
+    cog.bot.stats_collector = ByChannel([("13", 50), ("11", 30)], [])
+
+    recap = await RecapBuilder(cog.bot, cog.limits).build(guild, MONDAY, SUNDAY_EVENING, {13})
+
+    assert [count for _channel, count in recap.channels] == [20]  # the 50 hidden messages would show as 70
