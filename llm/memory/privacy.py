@@ -8,17 +8,20 @@ hidden, no fragment is used at all.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any, Iterable, List, Mapping, Optional, Set
 
 
 def fragment_user_ids(metadata: Optional[Mapping[str, Any]]) -> Set[int]:
-    """The Discord ids a fragment's metadata names as taking part (``user_ids`` or ``author_id``).
+    """The Discord ids a fragment's metadata names as taking part (``author_ids``, which the memory
+    ingestion writes, ``user_ids`` or ``author_id``).
 
     Entries that are not numbers are ignored.
     """
     found: Set[int] = set()
-    for value in list((metadata or {}).get("user_ids") or []) + [(metadata or {}).get("author_id")]:
+    meta = metadata or {}
+    for value in list(meta.get("author_ids") or []) + list(meta.get("user_ids") or []) + [meta.get("author_id")]:
         try:
             found.add(int(value))
         except (TypeError, ValueError):
@@ -47,3 +50,8 @@ def hidden_in_guild(bot: Any, guild_id: int) -> Optional[Set[int]]:
     from llm.tools.user_stats import hidden_member_ids
 
     return hidden_member_ids(SimpleNamespace(bot=bot), guild_id)
+
+
+async def hidden_in_guild_async(bot: Any, guild_id: int) -> Optional[Set[int]]:
+    """``hidden_in_guild`` read on a worker thread, so a locked database cannot stall the event loop."""
+    return await asyncio.to_thread(hidden_in_guild, bot, guild_id)

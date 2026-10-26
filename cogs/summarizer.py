@@ -97,7 +97,7 @@ class SummarizerCog(commands.Cog):
         try:
             log.info(f"Starting message fetch for channel {interaction.channel.name if hasattr(interaction.channel, 'name') else 'unknown'}, limit: {limit}.")
             history = [msg async for msg in interaction.channel.history(limit=limit)]
-            hidden = hidden_authors(self.bot, interaction.guild_id)
+            hidden = await asyncio.to_thread(hidden_authors, self.bot, interaction.guild_id)
             dialogue_history_reversed = []
             source_mapping = {}
             current_char_count = 0

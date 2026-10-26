@@ -62,7 +62,7 @@ Once a week, at the configured day and hour, one embed sums up the week (Monday 
 
 Only channels everyone can read (`@everyone` can view the channel and read its history) count toward the busiest channels, hot words, top emojis and the quote of the week; private channels never show up in the recap. Threads count when they are public and in the bot's cache: an archived thread is left out (its words and quotes are dropped, never leaked).
 
-Members who opted out with `/leaderboard optout` are never named, quoted or given a title, and what they wrote is not counted in the totals. Weeks with fewer than `min_messages` messages are skipped. If the bot was down at the scheduled time, the recap is still posted within 24 hours, once (`job_runs`).
+Members who opted out with `/leaderboard optout` are never named, quoted or given a title, and what they wrote is not counted in the totals or in the per-channel counts. Weeks with fewer than `min_messages` messages are skipped. If the bot was down at the scheduled time, the recap is still posted within 24 hours, once (`job_runs`).
 
 ## What everyone is playing
 

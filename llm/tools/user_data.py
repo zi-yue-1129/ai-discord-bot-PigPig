@@ -34,7 +34,7 @@ from langchain_core.tools import tool
 
 from function import func
 from cogs.userdata import UserDataCog
-from llm.memory.privacy import hidden_in_guild
+from llm.memory.privacy import hidden_in_guild_async
 
 if TYPE_CHECKING:
     from llm.schema import OrchestratorRequest
@@ -167,7 +167,7 @@ class UserMemoryTools:
                 guild = getattr(message, "guild", None)
                 asker_id = getattr(getattr(message, "author", None), "id", None)
                 if guild is not None and asker_id != effective_id:
-                    hidden = hidden_in_guild(get_bot(), guild.id)
+                    hidden = await hidden_in_guild_async(get_bot(), guild.id)
                     if hidden is None:
                         return "This memory cannot be shown right now."
                     if effective_id in hidden:

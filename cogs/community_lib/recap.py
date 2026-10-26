@@ -161,7 +161,8 @@ class RecapBuilder:
             await collector.message_counts_by_user(gid, since - 7 * 86400, until - 7 * 86400), hidden
         )
         recap.talkers = _visible(guild, per_user, hidden, TOP_TALKERS)
-        for channel_id, count in await collector.message_counts_by_channel(gid, since, until):
+        # The per-channel counts leave hidden members out as well, or total and channels would differ by them.
+        for channel_id, count in await collector.message_counts_by_channel(gid, since, until, [str(user_id) for user_id in hidden]):
             channel = guild.get_channel(int(channel_id)) if str(channel_id).isdigit() else None
             if channel is not None and is_public(guild, channel):
                 recap.channels.append((channel, count))

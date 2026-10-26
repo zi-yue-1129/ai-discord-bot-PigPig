@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 from typing import Any, List, Optional, Set
 
 import pytest
 
-from llm.memory.privacy import fragment_user_ids, hidden_in_guild, without_hidden_participants
+from llm.memory.privacy import fragment_user_ids, hidden_in_guild, hidden_in_guild_async, without_hidden_participants
 from llm.memory.episodic import EpisodicMemoryProvider
 from llm.tools.episodic_memory import EpisodicMemoryTools
 
@@ -21,8 +22,10 @@ def _fragment(content: str, **metadata: Any) -> Any:
 
 
 def _bot(hidden: Set[int], broken: bool = False, fragments: Optional[List[Any]] = None, cogs: Optional[dict] = None) -> Any:
+    state = {"broken": broken}
+
     def optouts(guild_id: int) -> Set[int]:
-        if broken:
+        if state["broken"]:
             raise RuntimeError("database is locked")
         return set(hidden)
 
@@ -34,12 +37,14 @@ def _bot(hidden: Set[int], broken: bool = False, fragments: Optional[List[Any]] 
             return list(fragments or [])
 
     known = {"LeaderboardCog": SimpleNamespace(store=SimpleNamespace(read_optouts=optouts)), **(cogs or {})}
-    return SimpleNamespace(get_cog=known.get, vector_manager=SimpleNamespace(store=Store()))
+    return SimpleNamespace(get_cog=known.get, vector_manager=SimpleNamespace(store=Store()), optout_state=state)
 
 
 def test_the_participants_of_a_fragment_are_read_from_every_metadata_shape() -> None:
     assert fragment_user_ids({"user_ids": [10, "11", "x"]}) == {10, 11}
     assert fragment_user_ids({"author_id": "12"}) == {12}
+    # What the memory ingestion writes (cogs/memory/services/vectorization_service.py): string ids.
+    assert fragment_user_ids({"author_ids": ["11", "12"]}) == {11, 12}
     assert fragment_user_ids({"author": "someone"}) == set()
     assert fragment_user_ids(None) == set()
 
@@ -161,3 +166,81 @@ async def test_a_visible_members_memory_is_read_as_before() -> None:
 
     assert await tool.ainvoke({"user_id": 12}) == "memory of 12"
     assert reads == ["12"]
+
+
+# ------------------------------------------------- what the ingestion writes, caching and the event loop
+
+
+@pytest.mark.asyncio
+async def test_a_fragment_written_by_the_ingestion_is_dropped_for_a_hidden_participant() -> None:
+    bot = _bot({HIDDEN}, fragments=[_fragment("trip with the hidden one", author_ids=[str(HIDDEN)]), _fragment("trip by the visible one", author_ids=[str(VISIBLE)])])
+    runtime = SimpleNamespace(bot=bot, message=_message(bot), logger=None)
+    (tool,) = [t for t in EpisodicMemoryTools(runtime).get_tools() if t.name == "search_episodic_memory"]
+
+    injected = await EpisodicMemoryProvider(bot).get(_message(bot))
+    searched = await tool.ainvoke({"vector_query": "trip"})
+
+    assert "visible one" in injected and "hidden one" not in injected
+    assert "visible one" in searched and "hidden one" not in searched
+
+
+@pytest.mark.asyncio
+async def test_a_cached_result_is_not_served_after_a_participant_opts_out() -> None:
+    hidden: Set[int] = set()
+    bot = _bot(hidden, fragments=[_fragment("trip with the one who leaves", user_ids=[HIDDEN])])
+    provider = EpisodicMemoryProvider(bot)
+    assert "one who leaves" in await provider.get(_message(bot))  # now cached
+
+    hidden.add(HIDDEN)  # /leaderboard optout
+
+    assert await provider.get(_message(bot)) is None
+
+
+@pytest.mark.asyncio
+async def test_a_cached_result_is_not_served_while_the_opt_out_list_cannot_be_read() -> None:
+    bot = _bot(set(), fragments=[_fragment("trip by the visible one", user_ids=[VISIBLE])])
+    provider = EpisodicMemoryProvider(bot)
+    assert await provider.get(_message(bot)) is not None  # now cached
+
+    bot.optout_state["broken"] = True
+
+    assert await provider.get(_message(bot)) is None
+
+
+@pytest.mark.asyncio
+async def test_a_cached_result_still_serves_members_who_stay_visible() -> None:
+    bot = _bot({HIDDEN}, fragments=[_fragment("trip by the visible one", user_ids=[VISIBLE])])
+    provider = EpisodicMemoryProvider(bot)
+    first = await provider.get(_message(bot))
+    bot.vector_manager.store.search_memories_by_vector = None  # a cache hit must not search again
+
+    assert await provider.get(_message(bot)) == first and first is not None
+
+
+@pytest.mark.asyncio
+async def test_a_hidden_asker_is_not_told_their_own_conversations_either() -> None:
+    bot = _bot({HIDDEN}, fragments=[_fragment("trip with the hidden one", user_ids=[HIDDEN])])
+    message = _message(bot)
+    message.author = SimpleNamespace(id=HIDDEN)
+    runtime = SimpleNamespace(bot=bot, message=message, logger=None)
+    (tool,) = [t for t in EpisodicMemoryTools(runtime).get_tools() if t.name == "search_episodic_memory"]
+
+    assert await EpisodicMemoryProvider(bot).get(message) is None
+    assert "hidden one" not in await tool.ainvoke({"vector_query": "trip"})
+
+
+@pytest.mark.asyncio
+async def test_the_opt_out_list_is_read_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    reader_threads: List[int] = []
+
+    def reader(runtime: Any, guild_id: int, db_path: Optional[str] = None) -> Set[int]:
+        reader_threads.append(threading.get_ident())
+        return set()
+
+    monkeypatch.setattr("llm.tools.user_stats.hidden_member_ids", reader)
+    bot = _bot(set(), fragments=[_fragment("trip by the visible one", user_ids=[VISIBLE])])
+
+    assert await hidden_in_guild_async(bot, GUILD) == set()
+    assert await EpisodicMemoryProvider(bot).get(_message(bot)) is not None
+
+    assert len(reader_threads) == 2 and threading.get_ident() not in reader_threads

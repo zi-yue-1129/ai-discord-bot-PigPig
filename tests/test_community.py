@@ -817,6 +817,30 @@ async def test_upcoming_birthdays_leave_out_hidden_members_but_not_the_one_askin
 
 
 @pytest.mark.asyncio
+async def test_upcoming_birthdays_name_nobody_while_the_opt_out_list_is_unreadable(
+    cog: CommunityCog, guild: FakeGuild, store: CommunityStore
+) -> None:
+    import sqlite3
+
+    guild.add(10)
+    store.set_birthday(GUILD_ID, 10, 10, 27)
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("DROP TABLE optouts")
+    cog._local_now = lambda settings: datetime(2026, 10, 26, 12, tzinfo=TAIPEI)
+    sent: list = []
+
+    async def send_message(text: str, ephemeral: bool = False) -> None:
+        sent.append(text)
+
+    interaction = SimpleNamespace(guild=guild, user=SimpleNamespace(id=12), response=SimpleNamespace(send_message=send_message))
+
+    with pytest.raises(sqlite3.OperationalError, match="no such table: optouts"):
+        await CommunityCog.birthday_upcoming.callback(cog, interaction)
+
+    assert sent == []
+
+
+@pytest.mark.asyncio
 async def test_a_hidden_members_birthday_is_neither_announced_nor_given_a_role(
     cog: CommunityCog, guild: FakeGuild, store: CommunityStore
 ) -> None:

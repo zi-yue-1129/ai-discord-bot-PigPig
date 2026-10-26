@@ -240,10 +240,14 @@ async def test_episodic_cancellation_propagates(monkeypatch):
 
 async def _fetched_ids(monkeypatch, hidden):
     """The ids whose personal memory is fetched when ``hidden`` members of guild 42 opted out (None:
-    the list cannot be read). ``hidden_in_guild`` itself is covered in test_memory_privacy.py: the
+    the list cannot be read). ``hidden_in_guild_async`` itself is covered in test_memory_privacy.py: the
     langchain stubs of this module cannot import the tool module it reads the list with."""
     monkeypatch.setattr(context_manager, "func", types.SimpleNamespace(report_error=_noop_report_error))
-    monkeypatch.setattr(context_manager, "hidden_in_guild", lambda bot, guild_id: hidden)
+
+    async def read_hidden(bot, guild_id):
+        return hidden
+
+    monkeypatch.setattr(context_manager, "hidden_in_guild_async", read_hidden)
     stm = [_BaseMessage(content="UserID:789 said hello"), _BaseMessage(content="UserID:790 said hi")]
     procedural_provider = StubProceduralProvider()
     manager = ContextManager(StubShortTermProvider(messages=stm), procedural_provider, episodic_provider=None, bot=object())
