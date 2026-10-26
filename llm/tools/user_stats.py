@@ -175,6 +175,11 @@ class UserStatsTools:
                 "top_emojis_prefix": t("image", "top_emojis", emojis="").rstrip(),
             }
 
+            # Everything that awaits is read before the image goes out, so a member who hides themselves
+            # meanwhile is refused below with no image already posted. (Only the send itself, which can
+            # wait on Discord's rate limit, is left between the last check and the post.)
+            extras = await _profile_extras(runtime, message.guild, effective_id)
+
             # Generate and send the PNG image
             try:
                 loop = asyncio.get_running_loop()
@@ -207,8 +212,7 @@ class UserStatsTools:
                     pass
                 _logger.error("get_user_stats image failed: %s", e)
 
-            extras = await _profile_extras(runtime, message.guild, effective_id)
-            # The member may have hidden themselves while the image and the rank were worked out.
+            # The member may have hidden themselves while the image was drawn or sent.
             if _is_hidden(runtime, message.guild.id, effective_id):
                 return "This member chose to hide their stats (/leaderboard optout). Do not share or guess them."
             # Always return text summary regardless of image success/failure

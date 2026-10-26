@@ -362,13 +362,13 @@ class CommunityTools:
             facts = recap_text(shown, lambda title_id: community.title_name(guild.id, title_id))
             return f"{label} ({start.date().isoformat()} to {end.date().isoformat()}):\n{facts}"
 
-        async def get_upcoming_birthdays(days: int = 30) -> str:
+        async def get_upcoming_birthdays(days: Optional[int] = None) -> str:
             """Lists the birthdays members saved on this server that fall in the next days.
 
             Call this when someone asks whose birthday is coming up.
 
             Args:
-                days: How many days ahead to look, 1 to 30 (today included).
+                days: How many days ahead to look, 1 to 30 (today included); leave it out for 30.
 
             Returns:
                 One line per birthday, soonest first, as month/day and display name.

@@ -792,6 +792,42 @@ async def test_no_stats_image_is_sent_for_a_member_who_hides_while_it_is_drawn(
     assert sent == [] and "hide" in reply
 
 
+@pytest.mark.asyncio
+async def test_no_stats_image_is_left_behind_for_a_member_who_hides_while_the_rank_is_read(
+    world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tool = _stats_tool(world, monkeypatch)
+    sent: list = []
+
+    async def send(**kwargs: Any) -> None:
+        sent.append(kwargs)
+
+    world.here.send = send
+    leaderboard = world.cogs["LeaderboardCog"]
+    original = leaderboard.profile_extras
+
+    async def hide_meanwhile(*args: Any, **kwargs: Any) -> list:
+        world.store.set_optout(GUILD_ID, 12, True)
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(leaderboard, "profile_extras", hide_meanwhile)
+
+    reply = await tool(user_id="12")
+
+    assert sent == [] and "hide" in reply
+
+
+@pytest.mark.asyncio
+async def test_the_birthday_tool_accepts_no_days_through_its_schema(world: SimpleNamespace) -> None:
+    """A model may pass null for an optional argument: that means the default 30 days."""
+    world.store.update_settings(GUILD_ID, birthday_enabled=True)
+    world.store.set_birthday(GUILD_ID, 12, 11, 20)  # 26 days ahead of 10/25
+
+    text = await _tools(world)["get_upcoming_birthdays"].ainvoke({"days": None})
+
+    assert "11/20" in text
+
+
 # ------------------------------------------------------------------ limits and edge cases
 @pytest.mark.asyncio
 async def test_an_opt_out_list_that_breaks_after_the_tools_were_built_fails_closed(
