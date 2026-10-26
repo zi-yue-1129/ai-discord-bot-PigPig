@@ -1997,6 +1997,110 @@ async def test_a_second_channel_with_the_token_of_a_post_that_has_its_room_adopt
 
 
 @pytest.mark.asyncio
+async def test_the_claim_of_a_closed_room_adopts_no_lookalike(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=2)
+    message_id = await _claimed_and_given_up(cog, guild, store, monkeypatch)
+    real = _late_room(guild, store, message_id)
+    _reject(store, "no_pointer")
+    await cog.on_guild_channel_create(real)  # its row is recorded, the post's pointer was refused once
+    _allow(store, "no_pointer")
+    assert await cog._delete_room(real)  # the room is closed
+    lookalike = FakeVoice(next(_IDS), guild, name=real.name)
+    guild.channels[lookalike.id] = lookalike
+
+    await cog.on_guild_channel_create(lookalike)
+    cog._now = lambda: NOW + 3600
+    await cog.cleanup_rooms()
+
+    assert not store.is_temp_voice(lookalike.id) and not lookalike.deleted
+
+
+@pytest.mark.asyncio
+async def test_the_claim_of_a_room_closed_after_a_reload_adopts_no_lookalike(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=2)
+    message_id = await _claimed_and_given_up(cog, guild, store, monkeypatch)
+    real = _late_room(guild, store, message_id)
+    _reject(store, "no_pointer")
+    await cog.on_guild_channel_create(real)
+    _allow(store, "no_pointer")
+    reloaded = await _reloaded(cog, store, now=NOW + 60)  # what the first copy knew in memory is gone
+    assert await reloaded._delete_room(real)
+    lookalike = FakeVoice(next(_IDS), guild, name=real.name)
+    guild.channels[lookalike.id] = lookalike
+
+    await reloaded.on_guild_channel_create(lookalike)
+
+    assert not store.is_temp_voice(lookalike.id) and not lookalike.deleted
+
+
+def test_only_used_claims_lose_their_token_when_a_room_is_closed(tmp_path: Path) -> None:
+    store = CommunityStore(tmp_path / "community.db")
+    store.forget_playing_posts(0)  # the tables are made on first use
+    with sqlite3.connect(store.path) as connection:
+        for message_id, used_at in ((1, None), (2, NOW)):  # a claim being made, a claim whose room exists
+            connection.execute(
+                "INSERT INTO playing_posts (message_id, guild_id, channel_id, game_key, game, posted_at, voice_channel_id,"
+                " room_claimed_at, room_token, room_used_at) VALUES (?, 42, 5, 'g', 'G', 10, -1, 10, 'token', ?)",
+                (message_id, used_at),
+            )
+
+    store.forget_claim_tokens([1, 2])
+
+    with sqlite3.connect(store.path) as connection:
+        tokens = dict(connection.execute("SELECT message_id, room_token FROM playing_posts"))
+    assert tokens == {1: "token", 2: None}
+
+
+@pytest.mark.asyncio
+async def test_a_stale_claim_is_kept_while_a_server_is_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
+    message_id = await _claimed_and_given_up(cog, guild, store, monkeypatch)
+    late = _late_room(guild, store, message_id)
+    cached = dict(guild.channels)
+    guild.channels.clear()  # the server is unavailable after a restart: nothing is cached for it
+    guild.unavailable = True
+
+    await _reloaded(cog, store, now=NOW + 400)  # the claim is stale by now
+
+    assert [claim[0] for claim in store.open_claims(GUILD_ID)] == [message_id]
+    guild.channels.update(cached)
+    guild.unavailable = False
+    again = await _reloaded(cog, store, now=NOW + 410)
+    assert again is not None and store.is_temp_voice(late.id)
+
+
+@pytest.mark.asyncio
+async def test_a_room_deleted_by_an_administrator_is_forgotten_by_the_cleanup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
+    message_id = await _claimed_and_given_up(cog, guild, store, monkeypatch)
+    late = _late_room(guild, store, message_id)
+    await cog.on_guild_channel_create(late)
+    assert cog._adopted
+    guild.channels.pop(late.id)  # an administrator deleted it
+
+    await cog.cleanup_rooms()
+
+    assert cog._adopted == {}
+
+
+def test_old_posts_are_forgotten_whatever_the_number_of_posts_to_keep(tmp_path: Path) -> None:
+    store = CommunityStore(tmp_path / "community.db")
+    store.forget_playing_posts(0)  # the tables are made on first use
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            "INSERT INTO playing_posts (message_id, guild_id, channel_id, game_key, game, posted_at) VALUES (1, 42, 5, 'g', 'G', 10)"
+        )
+        connection.execute(
+            "INSERT INTO playing_posts (message_id, guild_id, channel_id, game_key, game, posted_at) VALUES (2, 42, 5, 'g', 'G', 10)"
+        )
+
+    store.forget_playing_posts(100, keep=range(2, 310_000))  # more posts to keep than SQLite takes as parameters
+
+    with sqlite3.connect(store.path) as connection:
+        assert [row[0] for row in connection.execute("SELECT message_id FROM playing_posts")] == [2]
+
+
+@pytest.mark.asyncio
 async def test_an_adoption_goes_on_when_the_event_listener_is_cancelled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
     message_id = await _claimed_and_given_up(cog, guild, store, monkeypatch)
