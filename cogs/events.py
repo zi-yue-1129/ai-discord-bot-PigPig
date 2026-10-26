@@ -21,7 +21,7 @@ from discord.ext import commands
 from addons.logging import get_logger
 from function import func
 
-from addons.visibility import audience_can_read, can_read
+from addons.visibility import audience_can_read, can_read, current_member
 
 from .events_lib.store import CANCELLED, GOING, MAYBE, OPEN, Event, EventStore, Roster
 from .language_manager import LanguageManager
@@ -342,11 +342,11 @@ class EventsCog(commands.Cog):
         await interaction.response.send_message(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
     @staticmethod
-    def _can_see(interaction: discord.Interaction, event: Event) -> bool:
-        """Whether the member may read the event's channel (see ``addons.visibility``)."""
+    def _can_see(interaction: discord.Interaction, event: Event, member: Any = None) -> bool:
+        """Whether the member (by default the interaction's) may read the event's channel (see ``addons.visibility``)."""
         guild = interaction.guild
         channel = guild.get_channel_or_thread(event.channel_id) if guild is not None else None
-        return can_read(channel, interaction.user)
+        return can_read(channel, interaction.user if member is None else member)
 
     @event.command(name="cancel", description="Cancel an event you created")
     @app_commands.describe(event_id="The event number (shown under the event)")
@@ -364,7 +364,16 @@ class EventsCog(commands.Cog):
         # Acknowledge at once: waiting for the lock and the message edit must not outlast Discord's 3 seconds.
         await interaction.response.defer(ephemeral=True)
         async with self._lock(event.id):
-            self.store.cancel(event.id)
+            # Checked again before anything changes: another cancel may have run while this one
+            # waited, and the member's access may have changed (the interaction's member is a snapshot).
+            member = await current_member(interaction.guild, interaction.user.id)
+            event = self.store.get(event.id)
+            if event is None or not self._can_see(interaction, event, member):
+                await interaction.followup.send(self._t(guild_id, "not_found"), ephemeral=True)
+                return
+            if not self.store.cancel(event.id):
+                await interaction.followup.send(self._t(guild_id, "already_cancelled"), ephemeral=True)
+                return
             event = self.store.get(event.id)
             await self._refresh_message(event)
         await interaction.followup.send(self._t(guild_id, "cancelled", title=event.title), ephemeral=True)
@@ -414,8 +423,15 @@ class EventsCog(commands.Cog):
             if channel is None:
                 return
             key = "reminder" if event.starts_at > now else "reminder_now"
-            prefix = self._t(event.guild_id, key, title=self._shown_title(event, channel), when=f"<t:{int(event.starts_at)}:R>")
-            for users in mention_groups(prefix, going):
+            when = f"<t:{int(event.starts_at)}:R>"
+            # Whether the title may be shown is decided again for every message, since the channel's
+            # permissions can change between them; the groups leave room for the longer of both texts.
+            longest = max(
+                (self._t(event.guild_id, key, title=title, when=when) for title in (event.title, self._shown_title(event, None))),
+                key=len,
+            )
+            for users in mention_groups(longest, going):
+                prefix = self._t(event.guild_id, key, title=self._shown_title(event, channel), when=when)
                 mentions = discord.AllowedMentions(everyone=False, roles=False, users=[discord.Object(u) for u in users])
                 # Recorded before sending and taken back on failure: a crash in between can at worst
                 # miss these mentions, never repeat them.

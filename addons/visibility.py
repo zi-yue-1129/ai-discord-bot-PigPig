@@ -79,3 +79,20 @@ def audience_can_read(channel: Any) -> bool:
         if any(getattr(deny, name, False) for name in _READ):
             return False
     return True
+
+
+async def current_member(guild: Any, user_id: int) -> Any:
+    """The member as they are now (an interaction's member is a snapshot from when it started).
+
+    The member cache follows role changes; a member missing from it is fetched. Returns None when
+    the member cannot be found, which the checks above treat as not readable.
+    """
+    if guild is None:
+        return None
+    member = guild.get_member(user_id)
+    if member is not None:
+        return member
+    try:
+        return await guild.fetch_member(user_id)
+    except discord.HTTPException:
+        return None

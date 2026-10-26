@@ -27,6 +27,7 @@
         "list_line": "#{id}「{title}」{when}・{going} 人參加・[前往]({link})",
         "not_found": "找不到這個活動。",
         "not_yours": "只有發起人或有「管理活動」權限的人可以取消。",
+        "already_cancelled": "這個活動已經取消了。",
         "cancelled": "已取消「{title}」。",
         "reminder": "⏰ 「{title}」{when}開始！",
         "reminder_now": "⏰ 「{title}」已經開始了！",

@@ -8,7 +8,7 @@ from discord.ext import commands
 from discord import app_commands
 from addons.logging import get_logger
 from addons.rate_limiter import format_wait
-from addons.visibility import audience_can_read, can_read
+from addons.visibility import audience_can_read, can_read, current_member
 from typing import Any, Dict, List, Optional
 
 from llm.game_writer import QuotaExhausted
@@ -236,8 +236,10 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
         private = not audience_can_read(interaction.channel)
         await interaction.response.defer(ephemeral=private)
         text = await self._recap_text(interaction.channel, instance, interaction.user.id)
-        # Checked again after the (slow) generation: permissions may have changed meanwhile.
-        if not can_read(interaction.channel, interaction.user):
+        # Checked again after the (slow) generation: permissions may have changed meanwhile, and the
+        # interaction's member is a snapshot from before, so the member is looked up again.
+        member = await current_member(interaction.guild, interaction.user.id)
+        if not can_read(interaction.channel, member):
             await interaction.followup.send(self._t(guild_id, "story", "addons", "recap_no_history"), ephemeral=True)
             return
         if not private and not audience_can_read(interaction.channel):

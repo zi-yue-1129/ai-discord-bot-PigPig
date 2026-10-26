@@ -27,6 +27,7 @@
         "list_line": "#{id}「{title}」{when}・参加 {going} 人・[移動]({link})",
         "not_found": "そのイベントが見つかりません。",
         "not_yours": "中止できるのは主催者か「イベントの管理」権限を持つ人だけです。",
+        "already_cancelled": "このイベントはすでに中止されています。",
         "cancelled": "「{title}」を中止しました。",
         "reminder": "⏰ 「{title}」は{when}に始まります！",
         "reminder_now": "⏰ 「{title}」が始まりました！",

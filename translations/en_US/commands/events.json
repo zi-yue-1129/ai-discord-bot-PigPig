@@ -27,6 +27,7 @@
         "list_line": "#{id} \"{title}\" {when} · {going} going · [open]({link})",
         "not_found": "I couldn't find that event.",
         "not_yours": "Only the host or someone who can manage events can cancel it.",
+        "already_cancelled": "This event was already cancelled.",
         "cancelled": "Cancelled \"{title}\".",
         "reminder": "⏰ \"{title}\" starts {when}!",
         "reminder_now": "⏰ \"{title}\" has started!",

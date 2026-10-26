@@ -60,13 +60,29 @@ def test_two_options_still_spin() -> None:
     assert "🎯 **no**" in wheel.render(["yes", "no"], 1, final=True)
 
 
+class FakeGuild:
+    """Finds channels, and members as they are now (by default the interaction's member)."""
+
+    def __init__(self, get_channel_or_thread: Any, *members: Any) -> None:
+        self.get_channel_or_thread = get_channel_or_thread
+        self.members = {member.id: member for member in members}
+        self.fetched: List[int] = []
+
+    def get_member(self, user_id: int) -> Any:
+        return self.members.get(user_id)
+
+    async def fetch_member(self, user_id: int) -> Any:
+        self.fetched.append(user_id)
+        raise discord.NotFound(SimpleNamespace(status=404, reason="gone"), "gone")
+
+
 class FakeInteraction:
     def __init__(self, user_id: int = 1, channel_id: int = 500, message: Any = None, permissions: Any = None) -> None:
         self.user = SimpleNamespace(id=user_id, display_name=f"user{user_id}", mention=f"<@{user_id}>")
         self.guild_id = GUILD_ID
         self.channel_id = channel_id
         self.channel = FakeChannel(channel_id)
-        self.guild = SimpleNamespace(get_channel_or_thread=lambda cid: self.channel if cid == self.channel.id else None)
+        self.guild = FakeGuild(lambda cid: self.channel if cid == self.channel.id else None, self.user)
         self.message = message
         self.permissions = permissions or SimpleNamespace(manage_events=False)
         self.id = 99
@@ -126,6 +142,8 @@ class FakeChannel:
 
     def permissions_for(self, who: Any) -> Any:
         who_id = getattr(who, "id", None)
+        if getattr(who, "lost_access", False):  # a member whose role was taken away
+            return SimpleNamespace(view_channel=False, read_message_history=False, manage_threads=False)
         if who_id == 0:  # @everyone
             return SimpleNamespace(view_channel=self.viewer_ids is None, read_message_history=self.viewer_ids is None, manage_threads=False)
         sees = self.viewer_ids is None or who_id in self.viewer_ids
@@ -660,7 +678,7 @@ async def test_the_event_list_hides_events_in_channels_the_member_cannot_see(sto
         )
 
     interaction = FakeInteraction(user_id=3)
-    interaction.guild = SimpleNamespace(get_channel_or_thread=channel)
+    interaction.guild = FakeGuild(channel, interaction.user)
     await EventsCog.list_events.callback(cog, interaction)
 
     text = interaction.sent[0][0]
@@ -695,7 +713,7 @@ async def test_the_event_list_hides_events_in_private_threads(store: EventStore)
         members=[], owner_id=1,
     )
     interaction = FakeInteraction(user_id=3)
-    interaction.guild = SimpleNamespace(get_channel_or_thread=lambda channel_id: thread)
+    interaction.guild = FakeGuild(lambda channel_id: thread, interaction.user)
     await EventsCog.list_events.callback(cog, interaction)
 
     assert interaction.sent[0][0] == "none_upcoming|"
@@ -868,13 +886,13 @@ async def test_an_event_manager_who_cannot_see_the_thread_cannot_cancel_or_learn
     thread = _private_thread()
 
     manager = FakeInteraction(user_id=9, permissions=SimpleNamespace(manage_events=True))
-    manager.guild = SimpleNamespace(get_channel_or_thread=lambda cid: thread)
+    manager.guild = FakeGuild(lambda cid: thread, manager.user)
     await EventsCog.cancel.callback(cog, manager, hidden_id)
 
     assert manager.sent[0][0] == "not_found|" and store.get(hidden_id).status == OPEN
 
     host = FakeInteraction(user_id=1)
-    host.guild = SimpleNamespace(get_channel_or_thread=lambda cid: thread)
+    host.guild = FakeGuild(lambda cid: thread, host.user)
     await EventsCog.cancel.callback(cog, host, hidden_id)
     assert store.get(hidden_id).status == CANCELLED
 
@@ -1153,3 +1171,94 @@ async def test_cancel_is_acknowledged_before_waiting_for_the_event(store: EventS
 
     assert store.get(event.id).status == CANCELLED
     assert host.followups[0]["content"].startswith("cancelled|")
+
+
+@pytest.mark.asyncio
+async def test_a_role_taken_away_during_the_recap_is_noticed_although_the_interaction_is_older(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    changes: list = []
+
+    async def slow_write(*args: Any) -> str:
+        changes.pop(0)()
+        return "recap"
+
+    monkeypatch.setitem(StoryManagerCog._recap_text.__globals__, "write_recap", slow_write)
+    cog = _story_cog(_instance(), orchestrator=object())
+
+    # The member cache now has the member without the role; the interaction still shows them with it.
+    interaction = FakeInteraction(user_id=5)
+    changes.append(lambda: interaction.guild.members.__setitem__(5, SimpleNamespace(id=5, lost_access=True)))
+    await StoryManagerCog.recap.callback(cog, interaction)
+    assert [followup["content"] for followup in interaction.followups] == ["recap_no_history|"]
+
+    # A member who left meanwhile (not cached, cannot be fetched) counts as unable to read.
+    gone = FakeInteraction(user_id=5)
+    changes.append(gone.guild.members.clear)
+    await StoryManagerCog.recap.callback(cog, gone)
+    assert gone.guild.fetched == [5]
+    assert [followup["content"] for followup in gone.followups] == ["recap_no_history|"]
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_waiting_for_the_event_checks_access_again(store: EventStore) -> None:
+    channel = FakeChannel()
+    cog = _events_cog(store, channel)
+    event = _event(store)
+    host = FakeInteraction(user_id=1)
+    host.channel = channel
+
+    async with cog._lock(event.id):
+        task = asyncio.create_task(EventsCog.cancel.callback(cog, host, event.id))
+        await asyncio.sleep(0)
+        channel.viewer_ids = {2, 3}  # the host loses the channel meanwhile
+    await task
+
+    assert store.get(event.id).status == OPEN
+    assert [followup["content"] for followup in host.followups] == ["not_found|"]
+
+
+@pytest.mark.asyncio
+async def test_two_cancels_at_once_cancel_once(store: EventStore) -> None:
+    cog = _events_cog(store, FakeChannel())
+    event = _event(store)
+    first = FakeInteraction(user_id=1)
+    second = FakeInteraction(user_id=9, permissions=SimpleNamespace(manage_events=True))
+    second.channel = first.channel
+
+    async with cog._lock(event.id):
+        tasks = [asyncio.create_task(EventsCog.cancel.callback(cog, who, event.id)) for who in (first, second)]
+        await asyncio.sleep(0)
+    await asyncio.gather(*tasks)
+
+    replies = sorted(who.followups[0]["content"].split("|")[0] for who in (first, second))
+    assert replies == ["already_cancelled", "cancelled"]
+    assert store.get(event.id).status == CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_each_reminder_message_checks_again_whether_the_title_may_be_shown(store: EventStore) -> None:
+    channel = FakeChannel()
+    cog = _events_cog(store, channel)
+    event = _event(store)
+    users = [10**17 + number for number in range(150)]
+    for user_id in users:
+        store.sign_up(event.id, user_id, GOING, NOW)
+    send = channel.send
+
+    async def send_then_restrict(content: Any = None, **kwargs: Any) -> Any:
+        sent = await send(content, **kwargs)
+        channel.history_readers = {1}  # a role loses the history after the first message
+        return sent
+
+    channel.send = send_then_restrict
+    await cog._remind(store.get(event.id), NOW + 3000)
+
+    assert len(channel.sent) >= 2
+    assert "Valorant" in channel.sent[0][0]
+    for content, _ in channel.sent[1:]:
+        assert "Valorant" not in content and f"untitled_event|id={event.id}" in content
+        assert len(content) <= 2000
+    mentioned = [user.id for _, kwargs in channel.sent for user in kwargs["allowed_mentions"].users]
+    assert mentioned == users
+    assert store.get(event.id).status == REMINDED
