@@ -33,6 +33,23 @@ CARD_FIELD_NAME_CHARS = 50
 CARD_FIELD_CHARS = 200
 _LANGUAGE_NAMES = {"zh_TW": "Traditional Chinese", "zh_CN": "Simplified Chinese", "ja_JP": "Japanese", "en_US": "English"}
 
+
+class _CardSink:
+    """Stands in for the channel the local image model expects.
+
+    The local model announces itself with a "processing" message in the channel it is given and
+    starts from the last picture posted there. A character card must do neither (the card may be
+    private, and a member's picture is not its base), so it gets this sink: sending goes nowhere
+    and there is no last message.
+    """
+
+    last_message: Optional[Any] = None
+
+    async def send(self, *args: Any, **kwargs: Any) -> None:
+        """Drops the notice the local model would have posted."""
+        return None
+
+
 class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
     """
     故事模組主要 Cog
@@ -370,7 +387,9 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
         # shared image history (other members' requests), nor does that history reach the card.
         history_key = f"story_card:{interaction.id}"
         try:
-            result = await images._generate_image_logic(card_prompt(found), str(guild_id), history_key)
+            result = await images._generate_image_logic(
+                card_prompt(found), str(guild_id), history_key, channel=_CardSink()
+            )
             attachment = next((item for item in result.get("attachments", []) if item.get("data_base64")), None)
         finally:
             history = getattr(images, "conversation_history", None)

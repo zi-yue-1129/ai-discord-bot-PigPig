@@ -630,7 +630,7 @@ class FakeImages:
     def __init__(self) -> None:
         self.prompts: List[str] = []
 
-    async def _generate_image_logic(self, prompt: str, guild_id: str, channel_id: int) -> dict:
+    async def _generate_image_logic(self, prompt: str, guild_id: str, channel_id: int, channel: Any = None) -> dict:
         self.prompts.append(prompt)
         return {"attachments": [{"data_base64": base64.b64encode(b"png").decode()}]}
 
@@ -846,7 +846,7 @@ async def test_a_card_never_shares_the_channel_image_history() -> None:
             self.conversation_history = {500: [{"role": "user", "content": "earlier public request"}]}
             self.seen: list = []
 
-        async def _generate_image_logic(self, prompt: str, guild_id: str, channel_id: Any) -> dict:
+        async def _generate_image_logic(self, prompt: str, guild_id: str, channel_id: Any, channel: Any = None) -> dict:
             self.seen.append(list(self._get_conversation_history(channel_id)))
             self._update_conversation_history(channel_id, "user", prompt)
             return {"attachments": [{"data_base64": base64.b64encode(b"png").decode()}]}
@@ -1695,7 +1695,7 @@ async def test_a_card_that_could_not_be_drawn_is_not_charged() -> None:
     from addons.rate_limiter import LimitRule, RateLimiter
 
     class NoImage(FakeImages):
-        async def _generate_image_logic(self, prompt: str, guild_id: str, channel_id: int) -> dict:
+        async def _generate_image_logic(self, prompt: str, guild_id: str, channel_id: int, channel: Any = None) -> dict:
             return {"attachments": []}
 
     limiter = RateLimiter({"image": LimitRule(max_requests=1, per_seconds=3600)})
@@ -1797,3 +1797,56 @@ async def test_a_card_whose_reply_cannot_be_acknowledged_is_not_charged() -> Non
     with pytest.raises(discord.HTTPException):
         await StoryManagerCog.card.callback(cog, interaction, "c1")
     assert limiter.hit("image", 7) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_card_falls_back_to_the_local_model_without_touching_the_channel() -> None:
+    import logging
+
+    from PIL import Image
+
+    from cogs.gen_img import ImageGenerationCog
+
+    image_cog = ImageGenerationCog.__new__(ImageGenerationCog)
+    image_cog.lang_manager = FakeLang()
+    image_cog.logger = logging.getLogger("test_card_fallback")
+    image_cog.conversation_history = {}
+    base_pixels: list = []
+
+    async def gemini_draws_nothing(prompt: str, input_images: Any, history: Any) -> tuple:
+        return None, None
+
+    def local_pipe(prompt: str, image: Any, **kwargs: Any) -> list:
+        base_pixels.append(image.getpixel((0, 0)))
+        return [Image.new("RGB", (8, 8), color="blue")]
+
+    class NoDownloads:
+        def get(self, *args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("the card must not read an image posted in the channel")
+
+    image_cog.generate_with_gemini = gemini_draws_nothing
+    image_cog.pipe = local_pipe
+    image_cog.session = NoDownloads()
+    cog = _story_cog(characters={"c1": _character()}, cogs={"ImageGenerationCog": image_cog}, rate_limiter=None)
+    interaction = FakeInteraction(user_id=7)
+    interaction.channel.last_message = SimpleNamespace(
+        attachments=[SimpleNamespace(filename="someone-elses.png", url="https://cdn.example/x.png")]
+    )
+
+    await StoryManagerCog.card.callback(cog, interaction, "c1")
+
+    assert interaction.followups[0]["embed"].title == "艾莉絲"  # drawn by the local model
+    assert interaction.channel.sent == []  # no "processing" notice in the channel
+    assert base_pixels == [(255, 255, 255)]  # a blank base, not a member's picture
+    assert image_cog.conversation_history == {}  # the card's own history was dropped
+
+
+@pytest.mark.asyncio
+async def test_a_press_on_a_button_of_a_lost_event_removes_the_dead_buttons(store: EventStore) -> None:
+    cog = _events_cog(store, FakeChannel())
+    interaction = FakeInteraction(user_id=3, message=SimpleNamespace(id=987654))
+
+    await cog.answer(interaction, GOING)
+
+    assert interaction.followups[0]["content"] == "event_gone|"
+    assert interaction.edits == [{"view": None}]

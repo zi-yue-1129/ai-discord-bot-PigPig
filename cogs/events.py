@@ -198,6 +198,13 @@ class EventsCog(commands.Cog):
         await interaction.response.defer()
         if event is None:
             await interaction.followup.send(self._t(guild_id, "event_gone"), ephemeral=True)
+            # No event belongs to this message (e.g. an announcement that could not be taken back
+            # when its creation failed): its buttons can never work, so the first press removes them.
+            if message_id is not None:
+                try:
+                    await interaction.edit_original_response(view=None)
+                except discord.HTTPException:
+                    self.logger.warning(f"events: could not remove the buttons of message {message_id}", exc_info=True)
             return
         user_id = interaction.user.id
         async with self._lock(event.id):
