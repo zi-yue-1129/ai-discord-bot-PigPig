@@ -236,16 +236,17 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
         private = not audience_can_read(interaction.channel)
         await interaction.response.defer(ephemeral=private)
         text = await self._recap_text(interaction.channel, instance, interaction.user.id)
-        # Checked again after the (slow) generation: permissions may have changed meanwhile, and the
-        # interaction's member is a snapshot from before, so the member is looked up again.
-        member = await current_member(interaction.guild, interaction.user.id)
-        if not can_read(interaction.channel, member):
-            await interaction.followup.send(self._t(guild_id, "story", "addons", "recap_no_history"), ephemeral=True)
-            return
         if not private and not audience_can_read(interaction.channel):
             # The public placeholder is replaced by a note; the recap itself goes only to the requester.
             await interaction.followup.send(self._t(guild_id, "story", "addons", "recap_sent_privately"))
             private = True
+        # Checked again after the (slow) generation and the note, right before the reply: permissions
+        # may have changed meanwhile, and the interaction's member is a snapshot, so the member is
+        # looked up again.
+        member = await current_member(interaction.guild, interaction.user.id)
+        if not can_read(interaction.channel, member):
+            await interaction.followup.send(self._t(guild_id, "story", "addons", "recap_no_history"), ephemeral=True)
+            return
         if not text:
             await interaction.followup.send(self._t(guild_id, "story", "addons", "recap_empty"), ephemeral=private)
             return

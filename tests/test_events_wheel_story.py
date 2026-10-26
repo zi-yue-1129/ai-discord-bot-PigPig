@@ -126,6 +126,7 @@ class FakeChannel:
         self.history_messages: List[Any] = []
         self.history_readers: Optional[set] = None  # None: everyone who sees it may read the history
         self.viewer_ids: Optional[set] = None  # None: every member sees the channel
+        self.managers: set = set()  # members with Manage Events
         self.type = discord.ChannelType.text
         # Each member has a role of their own, so permissions are worked out per member.
         self.guild = SimpleNamespace(
@@ -148,7 +149,9 @@ class FakeChannel:
             return SimpleNamespace(view_channel=self.viewer_ids is None, read_message_history=self.viewer_ids is None, manage_threads=False)
         sees = self.viewer_ids is None or who_id in self.viewer_ids
         reads = sees and (self.history_readers is None or who_id in self.history_readers)
-        return SimpleNamespace(view_channel=sees, read_message_history=reads, manage_threads=False)
+        return SimpleNamespace(
+            view_channel=sees, read_message_history=reads, manage_threads=False, manage_events=who_id in self.managers
+        )
 
     async def send(self, content: Any = None, **kwargs: Any) -> Any:
         self.attempts += 1
@@ -384,6 +387,7 @@ async def test_only_the_host_or_an_event_manager_can_cancel(store: EventStore) -
     assert stranger.sent[0][0] == "not_yours|" and store.get(event.id).status == OPEN
 
     manager = FakeInteraction(user_id=9, permissions=SimpleNamespace(manage_events=True))
+    manager.channel.managers = {9}
     await EventsCog.cancel.callback(cog, manager, event.id)
     assert store.get(event.id).status == CANCELLED
 
@@ -1225,6 +1229,7 @@ async def test_two_cancels_at_once_cancel_once(store: EventStore) -> None:
     first = FakeInteraction(user_id=1)
     second = FakeInteraction(user_id=9, permissions=SimpleNamespace(manage_events=True))
     second.channel = first.channel
+    first.channel.managers = {9}
 
     async with cog._lock(event.id):
         tasks = [asyncio.create_task(EventsCog.cancel.callback(cog, who, event.id)) for who in (first, second)]
@@ -1262,3 +1267,95 @@ async def test_each_reminder_message_checks_again_whether_the_title_may_be_shown
     mentioned = [user.id for _, kwargs in channel.sent for user in kwargs["allowed_mentions"].users]
     assert mentioned == users
     assert store.get(event.id).status == REMINDED
+
+
+@pytest.mark.asyncio
+async def test_the_recap_is_checked_again_after_the_note_that_it_went_private(monkeypatch: pytest.MonkeyPatch) -> None:
+    holder: list = []
+
+    async def slow_write(*args: Any) -> str:
+        holder[0].channel.history_readers = {1, 2, 3, 4, 5}  # the audience shrinks: the note will be sent
+        return "recap"
+
+    monkeypatch.setitem(StoryManagerCog._recap_text.__globals__, "write_recap", slow_write)
+    cog = _story_cog(_instance(), orchestrator=object())
+    interaction = FakeInteraction(user_id=5)
+    holder.append(interaction)
+    note = interaction._followup
+
+    async def note_then_lose_role(content: Any = None, **kwargs: Any) -> None:
+        await note(content, **kwargs)
+        # The requester's role is taken away while the note is being sent.
+        interaction.guild.members[5] = SimpleNamespace(id=5, lost_access=True)
+
+    interaction.followup.send = note_then_lose_role
+    await StoryManagerCog.recap.callback(cog, interaction)
+
+    assert [followup["content"] for followup in interaction.followups] == ["recap_sent_privately|", "recap_no_history|"]
+    assert all("embed" not in followup for followup in interaction.followups)
+
+
+class FailingLookupGuild(FakeGuild):
+    def __init__(self, get_channel_or_thread: Any, error: Exception) -> None:
+        super().__init__(get_channel_or_thread)
+        self.error = error
+
+    async def fetch_member(self, user_id: int) -> Any:
+        self.fetched.append(user_id)
+        raise self.error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [404, 500])
+async def test_a_cancel_by_a_member_who_cannot_be_looked_up_is_refused(store: EventStore, status: int) -> None:
+    cog = _events_cog(store, FakeChannel())
+    event = _event(store)
+    host = FakeInteraction(user_id=1)
+    response = SimpleNamespace(status=status, reason="boom")
+    error = discord.NotFound(response, "gone") if status == 404 else discord.HTTPException(response, "boom")
+    # The host left while the cancel was acknowledged: not in the cache, and the lookup fails.
+    host.guild = FailingLookupGuild(host.guild.get_channel_or_thread, error)
+
+    await EventsCog.cancel.callback(cog, host, event.id)
+
+    assert host.guild.fetched == [1]
+    assert store.get(event.id).status == OPEN
+    assert [followup["content"] for followup in host.followups] == ["not_found|"]
+
+
+@pytest.mark.asyncio
+async def test_a_manager_who_loses_manage_events_while_waiting_cannot_cancel(store: EventStore) -> None:
+    cog = _events_cog(store, FakeChannel())
+    event = _event(store)  # hosted by member 1
+    manager = FakeInteraction(user_id=9, permissions=SimpleNamespace(manage_events=True))
+    manager.channel.managers = {9}
+
+    async with cog._lock(event.id):
+        task = asyncio.create_task(EventsCog.cancel.callback(cog, manager, event.id))
+        await asyncio.sleep(0)
+        manager.channel.managers = set()  # the management role is taken away; the channel stays readable
+    await task
+
+    assert store.get(event.id).status == OPEN
+    assert [followup["content"] for followup in manager.followups] == ["not_yours|"]
+
+
+@pytest.mark.asyncio
+async def test_the_cancel_confirmation_leaves_the_title_out_when_access_ends_during_the_edit(store: EventStore) -> None:
+    channel = FakeChannel()
+    cog = _events_cog(store, channel)
+    event = _event(store)
+    host = FakeInteraction(user_id=1)
+    host.channel = channel
+    refresh = cog._refresh_message
+
+    async def refresh_then_revoke(event: Any) -> None:
+        await refresh(event)
+        channel.viewer_ids = {2, 3}  # the host loses the channel during the edit
+
+    cog._refresh_message = refresh_then_revoke
+    await EventsCog.cancel.callback(cog, host, event.id)
+
+    assert store.get(event.id).status == CANCELLED
+    reply = host.followups[0]["content"]
+    assert reply.startswith("cancelled|") and "Valorant" not in reply and f"untitled_event|id={event.id}" in reply

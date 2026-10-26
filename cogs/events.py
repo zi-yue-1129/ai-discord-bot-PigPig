@@ -241,6 +241,10 @@ class EventsCog(commands.Cog):
         who see the channel may not read its history (the title is in an older message)."""
         if audience_can_read(channel):
             return event.title
+        return self._untitled(event)
+
+    def _untitled(self, event: Event) -> str:
+        """The event named by its number and a link, for places where its title may not show."""
         link = f"https://discord.com/channels/{event.guild_id}/{event.channel_id}/{event.message_id}"
         return self._t(event.guild_id, "untitled_event", id=event.id, link=link)
 
@@ -342,11 +346,31 @@ class EventsCog(commands.Cog):
         await interaction.response.send_message(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
     @staticmethod
-    def _can_see(interaction: discord.Interaction, event: Event, member: Any = None) -> bool:
-        """Whether the member (by default the interaction's) may read the event's channel (see ``addons.visibility``)."""
+    def _event_channel(interaction: discord.Interaction, event: Event) -> Any:
         guild = interaction.guild
-        channel = guild.get_channel_or_thread(event.channel_id) if guild is not None else None
-        return can_read(channel, interaction.user if member is None else member)
+        return guild.get_channel_or_thread(event.channel_id) if guild is not None else None
+
+    @classmethod
+    def _can_see(cls, interaction: discord.Interaction, event: Event) -> bool:
+        """Whether the interaction's member may read the event's channel (see ``addons.visibility``)."""
+        return can_read(cls._event_channel(interaction, event), interaction.user)
+
+    async def _may_cancel_now(self, interaction: discord.Interaction, event: Event) -> Optional[str]:
+        """Checks the member as they are now (the interaction's member is a snapshot): None when they
+        may still cancel, otherwise the reply. A member who cannot be found may not."""
+        member = await current_member(interaction.guild, interaction.user.id)
+        channel = self._event_channel(interaction, event)
+        if member is None or not can_read(channel, member):
+            return "not_found"
+        if event.creator_id != member.id:
+            permissions = getattr(channel, "permissions_for", None)
+            try:
+                manages = bool(permissions and getattr(permissions(member), "manage_events", False))
+            except (AttributeError, TypeError, discord.ClientException):
+                manages = False
+            if not manages:
+                return "not_yours"
+        return None
 
     @event.command(name="cancel", description="Cancel an event you created")
     @app_commands.describe(event_id="The event number (shown under the event)")
@@ -365,18 +389,21 @@ class EventsCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         async with self._lock(event.id):
             # Checked again before anything changes: another cancel may have run while this one
-            # waited, and the member's access may have changed (the interaction's member is a snapshot).
-            member = await current_member(interaction.guild, interaction.user.id)
+            # waited, and the member's access or roles may have changed.
             event = self.store.get(event.id)
-            if event is None or not self._can_see(interaction, event, member):
-                await interaction.followup.send(self._t(guild_id, "not_found"), ephemeral=True)
+            refusal = "not_found" if event is None else await self._may_cancel_now(interaction, event)
+            if refusal is not None:
+                await interaction.followup.send(self._t(guild_id, refusal), ephemeral=True)
                 return
             if not self.store.cancel(event.id):
                 await interaction.followup.send(self._t(guild_id, "already_cancelled"), ephemeral=True)
                 return
             event = self.store.get(event.id)
             await self._refresh_message(event)
-        await interaction.followup.send(self._t(guild_id, "cancelled", title=event.title), ephemeral=True)
+        # The edit took a while: the title is shown only if the member may still read the channel.
+        member = await current_member(interaction.guild, interaction.user.id)
+        title = event.title if can_read(self._event_channel(interaction, event), member) else self._untitled(event)
+        await interaction.followup.send(self._t(guild_id, "cancelled", title=title), ephemeral=True)
 
     # ------------------------------------------------------------- reminders
     async def _run_scheduler(self) -> None:
