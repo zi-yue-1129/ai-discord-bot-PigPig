@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from typing import Any, Dict, FrozenSet, Optional, Tuple
+from typing import Any, Dict, FrozenSet, Optional, Set, Tuple
 
 import discord
 
@@ -95,25 +95,30 @@ class EpisodicMemoryProvider:
             if event:
                 event.set()
 
-    async def _cached(self, cache_key: Tuple[str, str], guild: Any) -> Optional[Tuple[Optional[str]]]:
+    async def _read_hidden(self, guild: Any) -> Optional[Set[int]]:
+        """The members of ``guild`` who hid themselves (``/leaderboard optout``); nobody in a DM.
+
+        None when the list cannot be read. It is read on a worker thread, so every caller must make its
+        cache and ownership decisions after this await, never across it.
+        """
+        if guild is None:
+            return set()
+        return await hidden_in_guild_async(self.bot, guild.id)
+
+    def _lookup(self, cache_key: Tuple[str, str], hidden: Set[int]) -> Optional[Tuple[Optional[str]]]:
         """The usable cached result for ``cache_key`` as a 1-tuple, or None when there is none.
 
-        A result is checked against the opt-out list each time it is served: someone in it may have hidden
-        themselves since (``/leaderboard optout``). Then the entry is dropped and the search runs again;
-        while the list cannot be read nothing is served.
+        Synchronous on purpose (no await between reading the entry and using it, so an invalidation
+        cannot slip in). A result is checked against the opt-out list each time it is served: someone in
+        it may have hidden themselves since; then the entry is dropped and the search runs again.
         """
         entry = self._cache.get(cache_key)
         if entry is None or entry[1] <= time.monotonic():
             return None
         text, _expire_at, participants = entry
-        if guild is not None and participants:
-            hidden = await hidden_in_guild_async(self.bot, guild.id)
-            if hidden is None:
-                return (None,)
-            if hidden & participants:
-                if self._cache.get(cache_key) is entry:
-                    self._cache.pop(cache_key, None)
-                return None
+        if hidden & participants:
+            self._cache.pop(cache_key, None)
+            return None
         return (text,)
 
     async def get(self, message: discord.Message) -> Optional[str]:
@@ -145,18 +150,26 @@ class EpisodicMemoryProvider:
 
         guild = getattr(message, "guild", None)
 
-        # Thundering herd protection logic
-        while cache_key in self._pending_queries:
-            await self._pending_queries[cache_key].wait()
-            cached = await self._cached(cache_key, guild)
+        # Without the opt-out list nothing is injected, cached or not.
+        hidden = await self._read_hidden(guild)
+        if hidden is None:
+            return None
+
+        # Thundering herd protection logic. From the lookup to taking ownership below there is no await,
+        # so two requests cannot both decide to search, and an invalidation cannot slip in between.
+        while True:
+            cached = self._lookup(cache_key, hidden)
             if cached is not None:
                 return cached[0]
+            if cache_key not in self._pending_queries:
+                break
+            await self._pending_queries[cache_key].wait()
             # If wait finished but cache wasn't updated (e.g. error in primary task),
             # loop again in case another task picked up the query.
+            hidden = await self._read_hidden(guild)
+            if hidden is None:
+                return None
 
-        cached = await self._cached(cache_key, guild)
-        if cached is not None:
-            return cached[0]
         now = time.monotonic()
 
         event = asyncio.Event()
@@ -174,16 +187,20 @@ class EpisodicMemoryProvider:
                 await func.report_error(e, "EpisodicMemoryProvider.get: vector search failed")
                 return None
 
+            # What a hidden member (/leaderboard optout) said is not retold, whoever asks; the cached
+            # result is already filtered. The list is read again here: someone may have opted out during
+            # the search. Without it nothing is injected (and nothing cached).
+            hidden = await self._read_hidden(guild) if fragments else set()
+
             # The event is this search's ownership token. Invalidation removes
             # it, and a newer search may already own the same key. Never return
-            # or cache a result from the invalidated generation.
+            # or cache a result from the invalidated generation. Checked after
+            # the last await, so nothing can invalidate between check and use.
             if self._pending_queries.get(cache_key) is not event:
                 return None
-
-            # What a hidden member (/leaderboard optout) said is not retold, whoever asks; the cached
-            # result is already filtered. Without the opt-out list nothing is injected.
-            if fragments and guild is not None:
-                fragments = without_hidden_participants(fragments, await hidden_in_guild_async(self.bot, guild.id))
+            if hidden is None:
+                return None
+            fragments = without_hidden_participants(fragments, hidden)
 
             if not fragments:
                 formatted_result = None

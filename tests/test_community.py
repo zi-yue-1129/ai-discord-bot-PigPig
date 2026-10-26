@@ -817,6 +817,28 @@ async def test_upcoming_birthdays_leave_out_hidden_members_but_not_the_one_askin
 
 
 @pytest.mark.asyncio
+async def test_the_jobs_read_the_opt_out_list_off_the_event_loop(
+    cog: CommunityCog, guild: FakeGuild, store: CommunityStore
+) -> None:
+    import threading
+
+    read_in: list = []
+    real = store.read_optouts
+
+    def recording(guild_id: int) -> set:
+        read_in.append(threading.get_ident())
+        return real(guild_id)
+
+    store.read_optouts = recording
+    local = datetime(2026, 10, 25, 9, 0, tzinfo=TAIPEI)
+
+    await cog._birthday_members(guild, local)
+    await cog.celebrate_anniversaries(guild, store.get_settings(GUILD_ID), local)
+
+    assert len(read_in) == 2 and threading.get_ident() not in read_in
+
+
+@pytest.mark.asyncio
 async def test_upcoming_birthdays_name_nobody_while_the_opt_out_list_is_unreadable(
     cog: CommunityCog, guild: FakeGuild, store: CommunityStore
 ) -> None:

@@ -144,6 +144,22 @@ def _summarizer(hidden: Any = frozenset(), broken: bool = False) -> SimpleNamesp
 
 
 @pytest.mark.asyncio
+async def test_the_opt_out_list_is_read_off_the_event_loop() -> None:
+    read_in: List[int] = []
+    cog = _summarizer()
+
+    def optouts(guild_id: int) -> Any:
+        read_in.append(threading.get_ident())
+        return set()
+
+    cog.bot.get_cog = {"LeaderboardCog": SimpleNamespace(store=SimpleNamespace(read_optouts=optouts))}.get
+
+    await SummarizerCog.summarize.callback(cog, _SummaryInteraction(_SummaryChannel([])), limit=5)
+
+    assert len(read_in) == 1 and read_in[0] != threading.get_ident()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("asked, searched", [(10**6, summarizer.MAX_SUMMARY_MESSAGES), (-5, 1), (100, 100)])
 async def test_the_number_of_messages_searched_is_bounded(asked: int, searched: int) -> None:
     channel = _SummaryChannel([])

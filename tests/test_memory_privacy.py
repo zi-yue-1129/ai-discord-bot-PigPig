@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from types import SimpleNamespace
 from typing import Any, List, Optional, Set
@@ -246,4 +247,69 @@ async def test_the_opt_out_list_is_read_off_the_event_loop(monkeypatch: pytest.M
     assert await hidden_in_guild_async(bot, GUILD) == set()
     assert await EpisodicMemoryProvider(bot).get(_message(bot)) is not None
 
-    assert len(reader_threads) == 2 and threading.get_ident() not in reader_threads
+    # One read for the helper; the provider reads before its cache lookup and again after its search
+    # (someone may have opted out meanwhile).
+    assert len(reader_threads) == 3 and threading.get_ident() not in reader_threads
+
+
+# ------------------------------------------------- the opt-out read must not open a gap for invalidation or ownership
+
+
+@pytest.mark.asyncio
+async def test_an_invalidation_during_the_opt_out_read_discards_the_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    gate = asyncio.Event()
+    reads = 0
+
+    async def read(bot: Any, guild_id: int) -> Set[int]:
+        nonlocal reads
+        reads += 1
+        if reads == 2:  # the read after the search
+            await gate.wait()
+        return set()
+
+    monkeypatch.setattr("llm.memory.episodic.hidden_in_guild_async", read)
+    bot = _bot(set(), fragments=[_fragment("trip by the visible one", user_ids=[VISIBLE])])
+    provider = EpisodicMemoryProvider(bot)
+
+    pending = asyncio.ensure_future(provider.get(_message(bot)))
+    for _ in range(100):  # bounded: the second read must come before the answer
+        if reads >= 2 or pending.done():
+            break
+        await asyncio.sleep(0)
+    await provider.invalidate("7")  # ingestion wrote something new in this channel
+    gate.set()
+
+    assert await asyncio.wait_for(pending, timeout=5) is None
+    assert provider._cache == {}
+
+
+@pytest.mark.asyncio
+async def test_two_requests_after_an_opt_out_search_once_and_both_get_the_answer() -> None:
+    hidden: Set[int] = set()
+    bot = _bot(hidden, fragments=[_fragment("trip with the one who leaves", user_ids=[HIDDEN])])
+    provider = EpisodicMemoryProvider(bot)
+    assert await provider.get(_message(bot)) is not None  # cached
+    hidden.add(HIDDEN)
+    searches: List[str] = []
+
+    async def search(**kwargs: Any) -> list:
+        searches.append(kwargs["query_text"])
+        await asyncio.sleep(0.01)
+        return [_fragment("trip by the visible one", user_ids=[VISIBLE])]
+
+    bot.vector_manager.store.search_memories_by_vector = search
+
+    first, second = await asyncio.gather(provider.get(_message(bot)), provider.get(_message(bot)))
+
+    assert len(searches) == 1 and first == second and "visible one" in first
+
+
+@pytest.mark.asyncio
+async def test_a_cached_fragment_without_known_participants_is_not_served_while_the_list_cannot_be_read() -> None:
+    bot = _bot(set(), fragments=[_fragment("trip somewhere")])
+    provider = EpisodicMemoryProvider(bot)
+    assert await provider.get(_message(bot)) is not None  # cached
+
+    bot.optout_state["broken"] = True
+
+    assert await provider.get(_message(bot)) is None
