@@ -113,7 +113,7 @@ class UserStatsTools:
             Sends a PNG stats image (word cloud + activity chart) to the channel,
             and returns a brief text summary for use in conversation.
             Call this whenever a user asks about their stats, activity, message count,
-            word cloud, or usage history.
+            word cloud, usage history, server rank, titles or badges.
 
             Args:
                 user_id: Optional Discord user ID. Defaults to message sender.
@@ -205,13 +205,32 @@ class UserStatsTools:
                     pass
                 _logger.error("get_user_stats image failed: %s", e)
 
+            extras = await _profile_extras(runtime, message.guild, effective_id)
+            # The member may have hidden themselves while the image and the rank were worked out.
+            if _is_hidden(runtime, message.guild.id, effective_id):
+                return "This member chose to hide their stats (/leaderboard optout). Do not share or guess them."
             # Always return text summary regardless of image success/failure
-            return _format_text_card(display_name, public_view(message.guild, all_time, terms, also_visible), t)
+            card = _format_text_card(display_name, public_view(message.guild, all_time, terms, also_visible), t)
+            return "\n".join([card, *extras])
 
         _info_meta = {"target_agent_mode": "info"}
         return [
             StructuredTool.from_function(coroutine=get_user_stats, metadata=_info_meta),
         ]
+
+
+async def _profile_extras(runtime: Any, guild: Any, user_id: str) -> List[str]:
+    """The member's all-time rank, rotating titles and badges (as on /profile); empty when unavailable."""
+    bot = getattr(runtime, "bot", None)
+    cog = bot.get_cog("LeaderboardCog") if bot is not None else None
+    member = guild.get_member(int(user_id)) if cog is not None else None
+    if member is None:
+        return []
+    try:
+        return await cog.profile_extras(guild, member)
+    except Exception:
+        _logger.error("get_user_stats: could not read the member's rank, titles and badges", exc_info=True)
+        return []
 
 
 class _ChannelsChanged(Exception):

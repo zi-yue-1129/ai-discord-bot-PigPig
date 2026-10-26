@@ -40,6 +40,7 @@ Provides a comprehensive overview of a user's engagement, including message freq
 
 **Features:**
 - **Text Card**: A localized summary showing total messages, peak activity periods, current message streak, and top channels.
+- **Profile lines**: When the leaderboard cog is loaded, the card ends with the member's all-time rank, rotating titles and achievement badges, the same lines as `/profile`. A member who hides themselves while the answer is prepared gets the "hidden" refusal instead.
 - **Graphical Dashboard (PNG)**:
   - **Word Cloud**: Visualizes the most frequently used words (with CJK font support).
   - **Activity Chart**: A 24-hour bar chart showing the user's most active times.
