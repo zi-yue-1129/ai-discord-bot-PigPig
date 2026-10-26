@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 import discord
 
 from addons.logging import get_logger
+from addons.visibility import audience_can_read
 from cogs.memory.db.stats_storage import MAX_WORD_CHARS, week_start
 
 from .limits import CommunityLimits
@@ -85,18 +86,12 @@ def _visible(guild: Any, rows: Sequence[Tuple[Any, int]], hidden: Set[int], limi
 
 
 def is_public(guild: Any, channel: Any) -> bool:
-    """Whether every member (the @everyone role) can see ``channel`` and read its history.
+    """Whether every member can see ``channel`` and read its history (see ``audience_can_read``).
 
-    A private thread is never public: its permissions are inherited from its (maybe public)
-    parent, but only the people added to it can read it.
+    ``@everyone`` must be allowed, and no role or member overwrite may deny it; private threads
+    and anything that cannot be established count as not public.
     """
-    if getattr(channel, "type", None) == discord.ChannelType.private_thread:
-        return False
-    try:
-        permissions = channel.permissions_for(guild.default_role)
-    except (AttributeError, TypeError, discord.ClientException):
-        return False  # e.g. a thread whose parent channel is not cached: left out, never leaked
-    return bool(permissions.view_channel and permissions.read_message_history)
+    return audience_can_read(channel)
 
 
 def public_channel_ids(guild: Any) -> List[str]:

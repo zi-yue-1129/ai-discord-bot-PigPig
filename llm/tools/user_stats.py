@@ -234,23 +234,18 @@ def _is_hidden(runtime: Any, guild_id: int, user_id: str, db_path: Optional[str]
         return True
 
 
-def _is_public(guild: Any, channel: Any) -> bool:
-    """Whether every member (the @everyone role) can see ``channel`` and read its history."""
-    try:
-        permissions = channel.permissions_for(guild.default_role)
-    except (AttributeError, TypeError, discord.ClientException):
-        return False
-    return bool(permissions.view_channel and permissions.read_message_history)
-
-
 def public_stats(guild: Any, stats: Dict[str, Any], also_visible: Optional[int] = None) -> Dict[str, Any]:
     """The part of a member's all-time stats that may be shown to anyone in the server.
 
-    The all-time word and emoji counts (and so the word cloud) do not record which channel
-    they came from, so they are left out; channels are only listed when everyone can read them,
-    or when it is ``also_visible`` (the channel the answer is posted in).
+    Channels are only listed when everyone can read them (``recap.is_public``), or when it is
+    ``also_visible`` (the channel the answer is posted in). The all-time word and emoji counts
+    (and so the word cloud) are left out: they record neither the channel nor whether it was
+    public when the words were written, so even a channel that is public today cannot vouch
+    for them.
     """
-    public = {str(c.id) for c in getattr(guild, "channels", []) if _is_public(guild, c)}
+    from cogs.community_lib.recap import public_channel_ids
+
+    public = set(public_channel_ids(guild))
     if also_visible is not None:
         public.add(str(also_visible))
     channels = stats.get("top_channels") or {}
