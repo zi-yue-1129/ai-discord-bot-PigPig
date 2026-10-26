@@ -124,3 +124,36 @@ async def test_a_malformed_user_id_is_refused() -> None:
 
     assert "not a Discord user ID" in reply and storage.asked == []
 
+
+def test_all_time_words_stay_hidden_even_when_every_channel_is_public() -> None:
+    from llm.tools.user_stats import public_stats
+
+    guild = SimpleNamespace(default_role="@everyone", channels=[_channel(500, True)], threads=[])
+    guild.channels[0].guild = guild
+    stats = {"total_messages": 10, "top_channels": {"500": 10}, "top_words": {"pizza": 3}, "top_emojis": {"😂": 2}}
+
+    shown = public_stats(guild, stats, also_visible=500)
+
+    # They record neither the channel nor whether it was public when written.
+    assert shown["top_words"] == {} and shown["top_emojis"] == {}
+    assert shown["top_channels"] == {"500": 10}
+
+
+def test_public_channels_follow_the_real_discord_permission_rules() -> None:
+    import discord
+
+    from cogs.community_lib.recap import is_public, public_channel_ids
+    from test_visibility import _guild, _member, _overwrite, _private_thread, _role
+
+    open_guild = _guild()
+    assert public_channel_ids(open_guild) == ["10"]
+
+    denied = _guild(
+        roles=[_role(2, discord.Permissions.none(), 1)],
+        members=[_member(5, [2]), _member(6)],
+        overwrites=[_overwrite(2, 0, deny=discord.Permissions(view_channel=True))],
+    )
+    assert public_channel_ids(denied) == []
+
+    thread = _private_thread(open_guild, owner=5, members=[5])
+    assert is_public(open_guild, thread) is False
