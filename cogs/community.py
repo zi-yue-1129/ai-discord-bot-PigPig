@@ -128,7 +128,9 @@ class BirthdayProposalView(discord.ui.View):
             store.block_birthday_proposals(self.guild_id, self.target_id, False, create=False)
             return store.get_settings(self.guild_id, create=False).birthday_enabled
 
-        enabled = await self.cog._off_loop(work)
+        # One answer at a time per member, so an older Save can never undo a newer Decline.
+        async with self.cog._member_lock(self.guild_id, self.target_id):
+            enabled = await self.cog._off_loop(work)
         if enabled is None:
             await interaction.edit_original_response(content=self.cog._t(self.guild_id, "birthday_unavailable"), view=None)
             return
@@ -153,7 +155,9 @@ class BirthdayProposalView(discord.ui.View):
                 self.cog.store.block_birthday_proposals(self.guild_id, self.target_id, True, create=False)
             return True
 
-        if await self.cog._off_loop(work) is None:
+        async with self.cog._member_lock(self.guild_id, self.target_id):
+            answered = await self.cog._off_loop(work)
+        if answered is None:
             await interaction.edit_original_response(content=self.cog._t(self.guild_id, "birthday_unavailable"), view=None)
             return
         if self.asker_id == self.target_id:
@@ -210,6 +214,7 @@ class CommunityCog(commands.Cog):
         self._removal_asks: Dict[Tuple[int, int], ConfirmView] = {}
         # (guild_id, asker_id) -> when they last had the AI propose a birthday for someone else.
         self._proposal_times: Dict[Tuple[int, int], List[float]] = {}
+        self._member_locks: Dict[Tuple[int, int], asyncio.Lock] = {}
 
     async def cog_load(self) -> None:
         self.lang_manager = LanguageManager.get_instance(self.bot)
@@ -928,11 +933,11 @@ class CommunityCog(commands.Cog):
         try:
             hidden = self.store.read_optouts(guild_id)
             self.store.read_birthday(guild_id, target.id)
+            # Never a connection that could create the file: the database may vanish between reads.
+            blocked = asker.id != target.id and self.store.birthday_proposals_blocked(guild_id, target.id, create=False)
         except sqlite3.Error:
             return "unavailable"
-        if asker.id != target.id and (
-            target.id in hidden or self.store.birthday_proposals_blocked(guild_id, target.id)
-        ):
+        if asker.id != target.id and (target.id in hidden or blocked):
             return "blocked"
         if asker.id != target.id and not self._may_propose(guild_id, asker.id):
             # Each proposal pings someone: replacing an open one must not allow pinging more often.
@@ -994,6 +999,10 @@ class CommunityCog(commands.Cog):
             return False
         self._proposal_times[key] = recent + [now]
         return True
+
+    def _member_lock(self, guild_id: int, member_id: int) -> asyncio.Lock:
+        """Orders the answers to birthday proposals for one member (taken in the order presses arrive)."""
+        return self._member_locks.setdefault((guild_id, member_id), asyncio.Lock())
 
     async def _off_loop(self, work: Callable[[], Any]) -> Any:
         """Runs a database step on a worker thread; None when the database is missing or fails."""

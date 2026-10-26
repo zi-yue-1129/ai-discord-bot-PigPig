@@ -584,9 +584,9 @@ class CommunityStore:
             else:
                 connection.execute("DELETE FROM birthday_declines WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
 
-    def birthday_proposals_blocked(self, guild_id: int, user_id: int) -> bool:
+    def birthday_proposals_blocked(self, guild_id: int, user_id: int, create: bool = True) -> bool:
         """Whether a member declined a proposed birthday and has not asked for one since."""
-        with self._session() as connection:
+        with self._session(create) as connection:
             row = connection.execute(
                 "SELECT 1 FROM birthday_declines WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
             ).fetchone()

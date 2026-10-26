@@ -1260,6 +1260,39 @@ async def test_a_database_lost_after_the_check_is_not_created_again(birthdays: S
     # The check (and the writes after it) run on a worker thread, not the event loop's.
     assert threads == [False]
 
+# ------------------------------------------------------------------ review round 8
+@pytest.mark.asyncio
+async def test_the_decline_check_never_creates_a_database_lost_between_reads(birthdays: SimpleNamespace) -> None:
+    world = birthdays
+    store = world.cog.store
+    read_birthday = store.read_birthday
+
+    def read_then_lost(guild_id: int, user_id: int) -> Any:
+        answer = read_birthday(guild_id, user_id)
+        store.path.unlink()
+        return answer
+
+    store.read_birthday = read_then_lost
+    assert await world.propose(month=1, day=1, user_id="2") == "This is not available right now."
+    assert not store.path.exists() and world.here.messages == []
+
+
+@pytest.mark.asyncio
+async def test_answers_for_one_member_wait_for_each_other(birthdays: SimpleNamespace) -> None:
+    import asyncio
+
+    world = birthdays
+    await world.propose(month=1, day=1, user_id="2")
+    posted = world.here.messages[-1]
+    lock = world.cog._member_lock(GUILD_ID, 2)
+    await lock.acquire()  # an older answer for member 2 is still being saved
+    press = asyncio.create_task(_press(posted.kwargs["view"], posted, 2, "decline"))
+    await asyncio.sleep(0.05)
+    assert not world.cog.store.birthday_proposals_blocked(GUILD_ID, 2)
+    lock.release()
+    await press
+    assert world.cog.store.birthday_proposals_blocked(GUILD_ID, 2)
+
 # ------------------------------------------------------------------ direct messages
 def test_event_and_fun_tools_are_not_offered_in_direct_messages(world: SimpleNamespace) -> None:
     world.runtime.message = SimpleNamespace(guild=None, author=world.guild.get_member(HOST_ID), channel=world.here)
