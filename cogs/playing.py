@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+import unicodedata
 from typing import Any, Dict, List, Optional
 
 import discord
@@ -40,8 +41,11 @@ ROOM_NAME_LIMIT = 90
 # A post's button works at least this long, also with a cooldown of 0.
 MIN_BUTTON_SECONDS = 600
 # What Discord may show as a link: schemes, "www.", and a domain followed by a path (invites like
-# "discord.gg/x" included). A bare name like "agar.io" stays plain text and is kept.
+# "discord.gg/x" included).
 _LINK = re.compile(r"(?i)(?:\b(?:https?://|www\.)\S+|\b[\w-]+(?:\.[\w-]+)+/\S*)")
+# A bare domain like "agar.io": kept in game names, with its dots made unlinkable.
+_DOMAIN = re.compile(r"(?i)\b[\w-]+(?:\.[\w-]+)*\.[a-z][\w-]*\b")
+_SAFE_DOT = "\u2024"  # ONE DOT LEADER: looks like a dot, never part of a link
 _MENTION = re.compile(r"<(?:@[!&]?|#|/[^:>]+:)\d+>")
 _USER_MENTION = re.compile(r"<@!?(\d+)>")
 
@@ -53,22 +57,31 @@ _TASK = (
 )
 
 
+def _plain(text: str) -> str:
+    """``text`` with look-alikes folded (full-width "＠" to "@") and invisible characters removed."""
+    text = unicodedata.normalize("NFKC", text)
+    return "".join(char for char in text if char.isspace() or unicodedata.category(char) not in ("Cf", "Cc"))
+
+
 def shown_game_name(name: str) -> str:
     """A game's name as it may appear in a post: one line, no links, no mentions, no formatting.
 
     Game names come from presences, which anyone can set to anything.
     """
-    name = _LINK.sub("", name)
+    name = _LINK.sub("", _plain(name))
+    name = _DOMAIN.sub(lambda match: match.group().replace(".", _SAFE_DOT), name)
     name = _MENTION.sub("", name).replace("](", "] (")  # no masked link "[x](...)" either
     name = " ".join(name.replace("@", "@\u200b").split())
     return discord.utils.escape_markdown(name)[:ROOM_NAME_LIMIT].strip() or "?"
 
 
-def safe_post_text(text: str, mentions: List[str]) -> bool:
+def safe_post_text(text: str, mentions: List[str], game: str) -> bool:
     """Whether a written post may go out as it is: it names every player, mentions nobody else,
-    and has no links (the model may be talked into them by a game's name)."""
+    and has no links or domains (the model may be talked into them by a game's name). ``game`` is
+    the shown game name, which is safe where it appears as given."""
     if any(mention not in text for mention in mentions):
         return False
+    text = _plain(text.replace(game, " "))
     named = {int(user_id) for user_id in _USER_MENTION.findall(" ".join(mentions))}
     for match in _MENTION.finditer(text):
         user = _USER_MENTION.fullmatch(match.group())
@@ -76,7 +89,7 @@ def safe_post_text(text: str, mentions: List[str]) -> bool:
             return False
     if "@everyone" in text or "@here" in text:
         return False
-    return not _LINK.search(text) and "](" not in text
+    return not _LINK.search(text) and not _DOMAIN.search(text) and "](" not in text
 
 
 class PlayingView(discord.ui.View):
@@ -118,6 +131,8 @@ class PlayingCog(commands.Cog):
         self._room_locks: Dict[int, asyncio.Lock] = {}
         # Rooms that could neither be recorded nor deleted again: channel id -> guild id, retried by the cleanup.
         self._orphans: Dict[int, int] = {}
+        # Post message id -> the room it opened, kept as soon as the room exists (the database may fail).
+        self._post_rooms: Dict[int, int] = {}
 
     async def cog_load(self) -> None:
         self.lang_manager = LanguageManager.get_instance(self.bot)
@@ -197,7 +212,9 @@ class PlayingCog(commands.Cog):
             if guild is not None:
                 await self.check_guild(guild, settings)
         await self.cleanup_rooms()
-        self.store.forget_playing_posts(now - POST_RETENTION_SECONDS)
+        # Kept at least as long as they count for the cooldown and the button.
+        self.store.forget_playing_posts(now - max(POST_RETENTION_SECONDS, self._button_seconds()))
+        self._post_rooms = {post: room for post, room in self._post_rooms.items() if self.store.playing_post(post) is not None}
 
     # ------------------------------------------------------------ posting
     def _channel_for(self, guild: discord.Guild, settings: GuildSettings) -> Any:
@@ -290,7 +307,7 @@ class PlayingCog(commands.Cog):
                 await func.report_error(error, "playing: composing a post")
         # Checked again after writing it: from here to the send nothing is awaited.
         eligible = self._still_eligible(guild, channel, group, players)
-        if len(eligible) < minimum:
+        if len(eligible) < minimum or not self._feature_on(guild.id):
             return None
         if [member.id for member in eligible[:cap]] != [member.id for member in named]:
             # The written text may name someone who can no longer be named.
@@ -298,7 +315,7 @@ class PlayingCog(commands.Cog):
             mentions = [member.mention for member in named]
         if text:
             text = text[:MESSAGE_LIMIT]
-            if not safe_post_text(text, mentions):
+            if not safe_post_text(text, mentions, game):
                 self.logger.warning(f"playing: the written post for guild {guild.id} was not usable, posting the fixed text")
                 text = None
         if not text:
@@ -332,14 +349,8 @@ class PlayingCog(commands.Cog):
             if expired or not self._feature_on(guild.id):
                 await interaction.followup.send(self._t(guild.id, "playing_expired"), ephemeral=True)
                 return
-            if post["voice_channel_id"]:
-                # One room per post: once it was opened (and maybe closed again), the post is used up.
-                existing = guild.get_channel(post["voice_channel_id"])
-                key, values = ("playing_room_exists", {"channel": existing.mention}) if existing else ("playing_room_closed", {})
-                await interaction.followup.send(self._t(guild.id, key, **values), ephemeral=True)
-                return
             channel = guild.get_channel(post["channel_id"])
-            # Only someone who may take part in the channel opens a room for it (checked as they are now).
+            # Only someone who may take part in the channel opens (or is shown) a room for it, checked as they are now.
             member = await current_member(guild, interaction.user.id)
             if channel is None:
                 await interaction.followup.send(self._t(guild.id, "playing_expired"), ephemeral=True)
@@ -351,8 +362,15 @@ class PlayingCog(commands.Cog):
             if not self._feature_on(guild.id):
                 await interaction.followup.send(self._t(guild.id, "playing_expired"), ephemeral=True)
                 return
-            rooms = [room for room in self.store.temp_voice_rooms(guild.id) if guild.get_channel(room[1]) is not None]
-            rooms += [channel_id for channel_id, guild_id in self._orphans.items() if guild_id == guild.id]
+            made = post["voice_channel_id"] or self._post_rooms.get(message.id)
+            if made:
+                # One room per post: once it was opened (and maybe closed again), the post is used up.
+                existing = guild.get_channel(made)
+                key, values = ("playing_room_exists", {"channel": existing.mention}) if existing else ("playing_room_closed", {})
+                await interaction.followup.send(self._t(guild.id, key, **values), ephemeral=True)
+                return
+            rooms = {room[1] for room in self.store.temp_voice_rooms(guild.id) if guild.get_channel(room[1]) is not None}
+            rooms |= {channel_id for channel_id, guild_id in self._orphans.items() if guild_id == guild.id}
             if not self._can_open_rooms(channel):
                 await interaction.followup.send(self._t(guild.id, "playing_room_failed"), ephemeral=True)
                 return
@@ -365,6 +383,7 @@ class PlayingCog(commands.Cog):
                 self.logger.warning(f"playing: could not open a voice room in guild {guild.id}", exc_info=True)
                 await interaction.followup.send(self._t(guild.id, "playing_room_failed"), ephemeral=True)
                 return
+            self._post_rooms[message.id] = room.id
             try:
                 self.store.add_temp_voice(guild.id, room.id, self._now())
                 self.store.set_playing_voice(message.id, room.id)

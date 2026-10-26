@@ -533,7 +533,7 @@ def test_game_names_lose_links_mentions_lines_and_formatting() -> None:
 
     shown = shown_game_name("**Free** https://example.invalid/promo <@5> <@&6> <#7>\n@everyone @here www.x.com agar.io")
     assert "http" not in shown and "www." not in shown and "<@" not in shown and "<#" not in shown and "\n" not in shown
-    assert "@everyone" not in shown and "@here" not in shown and "\\*\\*Free\\*\\*" in shown and "agar.io" in shown
+    assert "@everyone" not in shown and "@here" not in shown and "\\*\\*Free\\*\\*" in shown and "agar\u2024io" in shown
     assert shown_game_name("https://only.a/link") == "?"
 
 
@@ -667,6 +667,10 @@ async def test_a_threshold_above_the_mention_cap_still_posts_naming_the_first_pl
         "一起玩！ <@1> <@2> <@3> discord.gg/attack",
         "一起玩！ <@1> <@2> <@3> 還有 <@99> <@&5>",
         "一起玩！ <@1> <@2> <@3> @everyone",
+        "一起玩！ <@1> <@2> <@3> example.com",
+        "一起玩！ <@1> <@2> <@3> https\u200b://evil.example",
+        "一起玩！ <@1> <@2> <@3> ＠everyone",
+        "一起玩！ <@1> <@2> <@3> @\u200beveryone",
     ],
 )
 async def test_an_unusable_written_post_falls_back_to_the_fixed_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reply: str) -> None:
@@ -680,10 +684,10 @@ async def test_an_unusable_written_post_falls_back_to_the_fixed_text(tmp_path: P
 @pytest.mark.asyncio
 async def test_a_usable_written_post_from_the_real_writer_is_sent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cog, guild, store = _cog(tmp_path)
-    _real_writer(monkeypatch, cog, "<@1> <@2> <@3> 都在玩 agar.io，一起開語音吧！")
-    _playing(cog, guild, "Valorant", 1, 2, 3)
+    _real_writer(monkeypatch, cog, "<@1> <@2> <@3> 都在玩 agar\u2024io，一起開語音吧！")
+    _playing(cog, guild, "agar.io", 1, 2, 3)
 
-    assert await _check(cog, store) == "<@1> <@2> <@3> 都在玩 agar.io，一起開語音吧！"
+    assert await _check(cog, store) == "<@1> <@2> <@3> 都在玩 agar\u2024io，一起開語音吧！"
 
 
 def test_invites_and_masked_links_are_removed_from_game_names() -> None:
@@ -692,7 +696,7 @@ def test_invites_and_masked_links_are_removed_from_game_names() -> None:
     for name in ("Valorant discord.gg/attack", "Valorant discord.com/invite/attack", "Valorant [x](discord.gg/a)", "Valorant evil.example/x"):
         shown = shown_game_name(name)
         assert shown.startswith("Valorant") and "discord" not in shown and "evil" not in shown and "](" not in shown
-    assert shown_game_name("agar.io") == "agar.io"
+    assert shown_game_name("agar.io") == "agar\u2024io"  # kept, but not a domain any more
 
 
 @pytest.mark.asyncio
@@ -783,3 +787,141 @@ async def test_a_cooldown_of_zero_still_gives_buttons_that_expire(tmp_path: Path
     assert guild.channel.sent[0][2].timeout == MIN_BUTTON_SECONDS
     await cog.open_room(FakePress(guild, message_id))
     assert len(guild.created) == 1
+
+
+def test_bare_domains_and_look_alikes_are_neutralised_in_game_names() -> None:
+    from cogs.playing import shown_game_name
+
+    for name in ("Valorant example.com", "Valorant https\u200b://evil.example", "Valorant ＠everyone", "Valorant @\u200beveryone", "Valorant ｈｔｔｐｓ://evil.example"):
+        shown = shown_game_name(name)
+        assert shown.startswith("Valorant") and "example.com" not in shown and "evil" not in shown and "@everyone" not in shown, name
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("turned_off", ["setting", "daily_cap"])
+async def test_nothing_is_posted_when_the_feature_is_turned_off_while_the_post_is_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, turned_off: str
+) -> None:
+    import cogs.playing as playing_module
+
+    holder: list = []
+
+    async def compose(*args: Any) -> str:
+        cog, store = holder[0]
+        if turned_off == "setting":
+            store.update_settings(GUILD_ID, playing_enabled=False)
+        else:
+            cog.limits = CommunityLimits(playing_max_per_day=0)
+        return "一起玩！ <@1> <@2> <@3>"
+
+    monkeypatch.setattr(playing_module, "compose_announcement", compose)
+    cog, guild, store = _cog(tmp_path)
+    holder.append((cog, store))
+    cog.bot.orchestrator = object()
+    _playing(cog, guild, "Valorant", 1, 2, 3)
+
+    assert await _check(cog, store) is None and guild.channel.sent == [] and store.count_playing_posts(GUILD_ID, 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_post_whose_room_was_orphaned_opens_no_second_room_once_the_database_recovers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=3)
+    message_id = await _posted(cog, guild, store)
+    real_add = store.add_temp_voice
+
+    def broken(*args: Any) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    async def refuse(reason: str = "") -> None:
+        raise discord.Forbidden(SimpleNamespace(status=403, reason="no"), "no")
+
+    real_create = guild.create_voice_channel
+
+    async def create(name: str, **kwargs: Any) -> FakeVoice:
+        room = await real_create(name, **kwargs)
+        room.delete = refuse
+        return room
+
+    guild.create_voice_channel = create
+    monkeypatch.setattr(store, "add_temp_voice", broken)
+    await cog.open_room(FakePress(guild, message_id))
+    monkeypatch.setattr(store, "add_temp_voice", real_add)  # the database works again
+
+    again = FakePress(guild, message_id)
+    await cog.open_room(again)
+
+    assert len(guild.created) == 1 and again.followups[0].startswith("playing_room_exists|")
+
+
+@pytest.mark.asyncio
+async def test_a_recorded_orphan_counts_once_towards_the_room_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=2)
+    message_id = await _posted(cog, guild, store)
+    real_add = store.add_temp_voice
+    calls: list = []
+
+    def fails_once(*args: Any) -> None:
+        calls.append(args)
+        if len(calls) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        real_add(*args)
+
+    async def refuse(reason: str = "") -> None:
+        raise discord.Forbidden(SimpleNamespace(status=403, reason="no"), "no")
+
+    real_create = guild.create_voice_channel
+
+    async def create(name: str, **kwargs: Any) -> FakeVoice:
+        room = await real_create(name, **kwargs)
+        room.delete = refuse
+        return room
+
+    guild.create_voice_channel = create
+    monkeypatch.setattr(store, "add_temp_voice", fails_once)
+    await cog.open_room(FakePress(guild, message_id))
+    orphan = next(iter(cog._orphans))
+    assert [room[1] for room in store.temp_voice_rooms()] == [orphan]  # in both collections
+
+    _playing(cog, guild, "Apex", 4, 5, 6)
+    await _check(cog, store)
+    with sqlite3.connect(store.path) as connection:
+        apex_post = connection.execute("SELECT message_id FROM playing_posts WHERE game_key = 'apex'").fetchone()[0]
+    second = FakePress(guild, apex_post)
+    await cog.open_room(second)
+    assert second.followups[0].startswith("playing_room_ready|") and len(guild.created) == 2
+
+
+@pytest.mark.asyncio
+async def test_posts_are_kept_as_long_as_a_long_cooldown(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_cooldown_hours=72)
+    await _posted(cog, guild, store)
+
+    cog._now = lambda: NOW + 49 * 3600
+    await cog.check_all()
+
+    assert store.last_playing_post(GUILD_ID, "valorant") == NOW
+    assert await _check(cog, store) is None  # still in its cooldown
+
+
+def test_an_infinite_or_huge_cooldown_is_not_used() -> None:
+    assert CommunityLimits.from_config({"playing": {"cooldown_hours": float("inf")}}).playing_cooldown_hours == 3
+    assert CommunityLimits.from_config({"playing": {"cooldown_hours": float("nan")}}).playing_cooldown_hours == 3
+    assert CommunityLimits.from_config({"playing": {"cooldown_hours": 1e12}}).playing_cooldown_hours == 30 * 24
+
+
+@pytest.mark.asyncio
+async def test_denied_pressers_are_not_shown_an_existing_room(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False)
+    message_id = await _posted(cog, guild, store)
+    await cog.open_room(FakePress(guild, message_id))
+
+    timed_out = FakePress(guild, message_id, user_id=8)
+    guild.members[8].timed_out = True
+    bot = FakePress(guild, message_id, user_id=9)
+    guild.members[9].bot = True
+    for press in (timed_out, bot):
+        await cog.open_room(press)
+
+    assert [press.followups for press in (timed_out, bot)] == [["playing_room_denied|"]] * 2

@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
 
-def _number(raw: Mapping[str, Any], key: str, default: float, minimum: float = 0) -> float:
-    """Reads a number, falling back to ``default`` when it is missing or invalid."""
+def _number(
+    raw: Mapping[str, Any], key: str, default: float, minimum: float = 0, maximum: float = math.inf
+) -> float:
+    """Reads a number, falling back to ``default`` when it is missing or invalid (also infinite or
+    NaN); values above ``maximum`` are capped to it."""
     try:
         value = float(raw.get(key, default))
     except (TypeError, ValueError):
         return default
-    return value if value >= minimum else default
+    if not math.isfinite(value) or value < minimum:
+        return default
+    return min(value, maximum)
 
 
 @dataclass(frozen=True)
@@ -86,7 +92,7 @@ class CommunityLimits:
             missing_min_messages=int(_number(weekly, "missing_min_messages", defaults.missing_min_messages)),
             missing_max=int(_number(weekly, "missing_max", defaults.missing_max)),
             playing_min_minutes=_number(playing, "min_minutes", defaults.playing_min_minutes),
-            playing_cooldown_hours=_number(playing, "cooldown_hours", defaults.playing_cooldown_hours),
+            playing_cooldown_hours=_number(playing, "cooldown_hours", defaults.playing_cooldown_hours, maximum=30 * 24),
             playing_max_per_day=int(_number(playing, "max_per_day", defaults.playing_max_per_day)),
             playing_use_ai=bool(playing.get("use_ai", defaults.playing_use_ai)),
             playing_max_mentions=int(_number(playing, "max_mentions", defaults.playing_max_mentions, 2)),
