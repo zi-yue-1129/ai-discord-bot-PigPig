@@ -168,6 +168,14 @@ class StoryManager:
         results.append(text)
         del results[:-MAX_PENDING_DICE]
 
+    def discard_dice_result(self, channel_id: int, text: str) -> None:
+        """Takes back a result from :meth:`add_dice_result` that was never shown (if still pending)."""
+        results = self.dice_results.get(channel_id)
+        if results and text in results:
+            results.remove(text)
+            if not results:
+                del self.dice_results[channel_id]
+
     async def intervene(self, interaction: discord.Interaction):
         """
         Opens a modal for the user to provide an OOC intervention.

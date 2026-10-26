@@ -503,6 +503,9 @@ class FakeStoryManager:
     def add_dice_result(self, channel_id: int, text: str) -> None:
         self.dice.append((channel_id, text))
 
+    def discard_dice_result(self, channel_id: int, text: str) -> None:
+        self.dice.remove((channel_id, text))
+
 
 def _story_cog(instance: Any = None, characters: Optional[dict] = None, **bot_attrs: Any) -> StoryManagerCog:
     lang = FakeLang()
@@ -1359,3 +1362,68 @@ async def test_the_cancel_confirmation_leaves_the_title_out_when_access_ends_dur
     assert store.get(event.id).status == CANCELLED
     reply = host.followups[0]["content"]
     assert reply.startswith("cancelled|") and "Valorant" not in reply and f"untitled_event|id={event.id}" in reply
+
+
+@pytest.mark.asyncio
+async def test_the_audience_is_decided_after_the_requester_is_looked_up_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def write(*args: Any) -> str:
+        return "recap"
+
+    monkeypatch.setitem(StoryManagerCog._recap_text.__globals__, "write_recap", write)
+    cog = _story_cog(_instance(), orchestrator=object())
+    interaction = FakeInteraction(user_id=5)
+    channel = interaction.channel
+
+    class SlowLookupGuild(FakeGuild):
+        async def fetch_member(self, user_id: int) -> Any:
+            # While the requester (not cached) is fetched, the channel stops showing @everyone its history.
+            channel.history_readers = {5}
+            return SimpleNamespace(id=user_id)
+
+    interaction.guild = SlowLookupGuild(interaction.guild.get_channel_or_thread)
+    await StoryManagerCog.recap.callback(cog, interaction)
+
+    assert interaction.deferred == {"ephemeral": False}
+    public = [followup for followup in interaction.followups if not followup.get("ephemeral")]
+    assert [followup["content"] for followup in public] == ["recap_sent_privately|"]
+    assert interaction.followups[-1]["embed"].description == "recap" and interaction.followups[-1]["ephemeral"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_roll_is_queued_for_the_story_before_its_reply_shows_up() -> None:
+    cog = _story_cog(_instance())
+    interaction = FakeInteraction(user_id=5)
+    seen_when_sent: list = []
+    send = interaction._send_message
+
+    async def send_and_look(content: Any = None, **kwargs: Any) -> None:
+        # A story message handled while the reply is on its way must already find the roll.
+        seen_when_sent.append(list(cog.story_manager.dice))
+        await send(content, **kwargs)
+
+    interaction.response.send_message = send_and_look
+    await StoryManagerCog.roll.callback(cog, interaction, "1d20", None)
+    assert len(seen_when_sent[0]) == 1
+
+    failing = FakeInteraction(user_id=5)
+
+    async def fail(content: Any = None, **kwargs: Any) -> None:
+        raise discord.HTTPException(SimpleNamespace(status=500, reason="boom"), "boom")
+
+    failing.response.send_message = fail
+    with pytest.raises(discord.HTTPException):
+        await StoryManagerCog.roll.callback(cog, failing, "1d20", None)
+    assert len(cog.story_manager.dice) == 1  # the roll nobody saw is taken back
+
+
+def test_a_discarded_roll_leaves_the_other_pending_rolls() -> None:
+    from cogs.story.manager import StoryManager
+
+    manager = SimpleNamespace(dice_results={})
+    StoryManager.add_dice_result(manager, 500, "a rolled 1")
+    StoryManager.add_dice_result(manager, 500, "b rolled 2")
+    StoryManager.discard_dice_result(manager, 500, "a rolled 1")
+    assert manager.dice_results == {500: ["b rolled 2"]}
+    StoryManager.discard_dice_result(manager, 500, "b rolled 2")
+    StoryManager.discard_dice_result(manager, 500, "gone")
+    assert manager.dice_results == {}

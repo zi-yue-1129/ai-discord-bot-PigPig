@@ -172,12 +172,19 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
         in_story = self._active_story(guild_id, interaction.channel_id) is not None
         if in_story:
             text += "\n" + self._t(guild_id, "story", "addons", "roll_in_story")
-        await interaction.response.send_message(text, allowed_mentions=discord.AllowedMentions.none())
+        note = None
         if in_story:
             note = f"{interaction.user.display_name} rolled {result.describe()}"
             if reason:
                 note += f" for: {reason}"
+            # Queued before the reply goes out: a story message right after the roll shows up must see it.
             self.story_manager.add_dice_result(interaction.channel_id, note)
+        try:
+            await interaction.response.send_message(text, allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException:
+            if note is not None:
+                self.story_manager.discard_dice_result(interaction.channel_id, note)
+            raise
 
     # ----------------------------------------------------------------- recap
     async def _recap_text(self, channel: Any, instance: Any, user_id: Optional[int], before: Any = None) -> Optional[str]:
@@ -236,14 +243,16 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
         private = not audience_can_read(interaction.channel)
         await interaction.response.defer(ephemeral=private)
         text = await self._recap_text(interaction.channel, instance, interaction.user.id)
+        # Checked again after the (slow) generation: permissions may have changed meanwhile, and the
+        # interaction's member is a snapshot, so the member is looked up again.
+        member = await current_member(interaction.guild, interaction.user.id)
         if not private and not audience_can_read(interaction.channel):
             # The public placeholder is replaced by a note; the recap itself goes only to the requester.
             await interaction.followup.send(self._t(guild_id, "story", "addons", "recap_sent_privately"))
             private = True
-        # Checked again after the (slow) generation and the note, right before the reply: permissions
-        # may have changed meanwhile, and the interaction's member is a snapshot, so the member is
-        # looked up again.
-        member = await current_member(interaction.guild, interaction.user.id)
+            member = await current_member(interaction.guild, interaction.user.id)
+        # From here to the reply nothing is awaited, so both decisions still hold when it is sent:
+        # who may see it (``private``, decided after the last await) and whether the requester may.
         if not can_read(interaction.channel, member):
             await interaction.followup.send(self._t(guild_id, "story", "addons", "recap_no_history"), ephemeral=True)
             return
