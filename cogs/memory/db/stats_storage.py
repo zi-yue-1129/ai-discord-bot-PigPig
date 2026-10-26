@@ -434,18 +434,32 @@ class StatsStorage:
             ).fetchall()
             return [dict(row) for row in rows]
 
-    async def reactions_by_author(self, guild_id: str, since: float, until: float) -> List[tuple[str, int]]:
-        """Sums the reactions each author's messages sent in a time range received, most first."""
-        return await asyncio.to_thread(self._reactions_by_author_sync, guild_id, since, until)
+    async def reactions_by_author(
+        self, guild_id: str, since: float, until: float, channel_ids: Optional[Sequence[str]] = None
+    ) -> List[tuple[str, int]]:
+        """Sums the reactions each author's messages sent in a time range received, most first.
 
-    def _reactions_by_author_sync(self, guild_id: str, since: float, until: float) -> List[tuple[str, int]]:
+        Args:
+            channel_ids: Only count messages in these channels; None counts every channel.
+        """
+        return await asyncio.to_thread(self._reactions_by_author_sync, guild_id, since, until, channel_ids)
+
+    def _reactions_by_author_sync(
+        self, guild_id: str, since: float, until: float, channel_ids: Optional[Sequence[str]] = None
+    ) -> List[tuple[str, int]]:
+        query = (
+            "SELECT author_id, SUM(count) AS total FROM message_reactions "
+            "WHERE guild_id = ? AND created_at >= ? AND created_at < ? AND count > 0 AND author_id IS NOT NULL"
+        )
+        params: List[Any] = [guild_id, since, until]
+        if channel_ids is not None:
+            ids = [str(channel_id) for channel_id in channel_ids]
+            if not ids:
+                return []
+            query += f" AND channel_id IN ({', '.join('?' * len(ids))})"
+            params += ids
         with self.db.get_connection() as conn:
-            rows = conn.execute(
-                "SELECT author_id, SUM(count) AS total FROM message_reactions "
-                "WHERE guild_id = ? AND created_at >= ? AND created_at < ? AND count > 0 AND author_id IS NOT NULL "
-                "GROUP BY author_id ORDER BY total DESC, author_id",
-                (guild_id, since, until),
-            ).fetchall()
+            rows = conn.execute(query + " GROUP BY author_id ORDER BY total DESC, author_id", params).fetchall()
             return [(row["author_id"], row["total"]) for row in rows]
 
     async def get_regulars(self, guild_id: str, min_messages: int) -> List[Dict[str, Any]]:

@@ -26,13 +26,12 @@ if TYPE_CHECKING:
 
 _logger = get_logger(server_id="Bot", source="llm.tools.community_tools")
 
-# How long a built recap is reused: building one reads several tables and fetches messages.
-# Only its names (talkers, titles, quote, quiet regulars) are reused; every number is read again.
+# How long the recap's quote of the week is reused: finding it fetches messages from Discord.
 RECAP_CACHE_SECONDS = 600
 MAX_BIRTHDAYS = 15
 USER_TEXT_CHARS = 100
 UNAVAILABLE = "This is not available right now."
-# guild id, period -> (built at, local start, recap)
+# guild id, period -> (read at, local start, quote of the week)
 _recap_cache: Dict[Tuple[int, str], Tuple[float, datetime, Any]] = {}
 
 _MASS_MENTION = re.compile(r"@(everyone|here)", re.IGNORECASE)
@@ -101,17 +100,6 @@ def _total_without(rows: Sequence[Tuple[Any, int]], hidden: Set[int]) -> int:
     return total
 
 
-def _any_hidden(rows: Sequence[Tuple[Any, int]], hidden: Set[int]) -> bool:
-    """Whether a hidden member has a ``(user_id, count)`` row with a count (an unreadable id counts as hidden)."""
-    for user_id, count in rows:
-        try:
-            if count and int(user_id) in hidden:
-                return True
-        except (TypeError, ValueError):
-            return True
-    return False
-
-
 def _resolve_member(guild: Any, user_id: Optional[str], author: Any) -> Tuple[Optional[Any], Optional[str]]:
     """The member ``user_id`` names (the author when empty), or None and the reason to give."""
     if not user_id:
@@ -134,113 +122,143 @@ def _quote_channel(guild: Any, url: str) -> Any:
     return lookup(int(parts[-2]))
 
 
-def _still_shown(guild: Any, recap: Any, hidden: set) -> Any:
-    """A copy of ``recap``'s names without what may no longer be shown: hidden or departed members,
-    and a quote from a channel that stopped being shareable."""
-    from copy import copy
-
-    def visible(member: Any) -> bool:
-        return member is not None and member.id not in hidden and guild.get_member(member.id) is not None
-
-    shown = copy(recap)
-    shown.talkers = [(m, n) for m, n in recap.talkers if visible(m)]
-    shown.titles = {key: (m, n) for key, (m, n) in recap.titles.items() if visible(m)}
-    shown.missing = [(m, d) for m, d in recap.missing if visible(m)]
-    quote = recap.quote
-    if quote and not (visible(quote["member"]) and shareable(_quote_channel(guild, quote["url"]))):
-        quote = None
-    shown.quote = quote
-    return shown
-
-
 @dataclass
-class RecapNumbers:
-    """The recap's counts, read on every answer without the hidden members' messages and plays."""
+class RecapView:
+    """One week as the AI may tell it: counted only in shareable channels, without hidden members."""
 
     total: int = 0
     previous_total: int = 0
     channels: List[Tuple[Any, int]] = field(default_factory=list)
+    talkers: List[Tuple[Any, int]] = field(default_factory=list)
+    titles: Dict[str, Tuple[Any, int]] = field(default_factory=dict)
     emojis: List[Tuple[str, int]] = field(default_factory=list)
     words: List[Tuple[str, int]] = field(default_factory=list)
     song: Optional[Tuple[str, str, int]] = None
-    # The shareable channels the words and emojis were counted in.
-    term_channels: frozenset = frozenset()
+    quote: Optional[Dict[str, Any]] = None
+    # The shareable channels everything was counted in.
+    channel_ids: frozenset = frozenset()
 
 
-async def recap_numbers(bot: Any, guild: Any, start: datetime, end: datetime, hidden: Set[int]) -> Optional[RecapNumbers]:
-    """Counts the week without what hidden members wrote or requested; None without message stats.
+async def read_recap(community: Any, guild: Any, start: datetime, end: datetime, hidden: Set[int], cache_key: Any) -> Optional[RecapView]:
+    """Counts the week for the AI; None without message stats.
 
-    Words and emojis are only counted per channel, not per member, so they are left out when a
-    hidden member wrote in a shareable channel that week.
+    Messages, talkers and titles only count shareable channels (everyone can read them, not
+    NSFW), so nothing about private channels is told. Hidden members are left out of every
+    count. Words and emojis are only kept per channel, not per member, so they are only shown
+    when nobody on the server is hidden. The quote of the week (it fetches messages) is reused
+    for ``RECAP_CACHE_SECONDS``; everything else is read on every call. Regulars who went quiet
+    are left out: their last message may be in a private channel, so the list would tell.
     """
-    from cogs.community_lib.recap import MAX_WORD_CHARS, MIN_SONG_PLAYS, TOP_CHANNELS, TOP_EMOJIS, TOP_WORDS
+    from cogs.community_lib.recap import (
+        MAX_WORD_CHARS, MIN_SONG_PLAYS, TOP_CHANNELS, TOP_EMOJIS, TOP_TALKERS, TOP_WORDS, RecapBuilder, _visible,
+    )
     from cogs.memory.db.stats_storage import week_start
 
+    bot = community.bot
     collector = getattr(bot, "stats_collector", None)
     if collector is None:
         return None
     gid = str(guild.id)
     since, until = start.timestamp(), end.timestamp()
-    numbers = RecapNumbers()
-    numbers.total = _total_without(await collector.message_counts_by_user(gid, since, until), hidden)
-    numbers.previous_total = _total_without(
-        await collector.message_counts_by_user(gid, since - 7 * 86400, until - 7 * 86400), hidden
-    )
     public = shareable_channels(guild)
+    ids = list(public)
+    view = RecapView(channel_ids=frozenset(ids))
+
+    per_user = await collector.message_counts_by_user(gid, since, until, channel_ids=ids)
+    view.total = _total_without(per_user, hidden)
+    view.previous_total = _total_without(
+        await collector.message_counts_by_user(gid, since - 7 * 86400, until - 7 * 86400, channel_ids=ids), hidden
+    )
+    view.talkers = _visible(guild, per_user, hidden, TOP_TALKERS)
+    if view.talkers:
+        view.titles["talker"] = view.talkers[0]
     for channel_id, count in await collector.message_counts_by_channel(gid, since, until, exclude_users=hidden):
         channel = public.get(str(channel_id))
         if channel is not None and count:
-            numbers.channels.append((channel, int(count)))
-        if len(numbers.channels) >= TOP_CHANNELS:
+            view.channels.append((channel, int(count)))
+        if len(view.channels) >= TOP_CHANNELS:
             break
+    offset = (start.utcoffset() or timedelta()).total_seconds()
+    night = _visible(guild, await collector.night_counts_by_user(gid, since, until, offset, channel_ids=ids), hidden, 1)
+    if night:
+        view.titles["night_owl"] = night[0]
 
     cog = bot.get_cog("StatsCog") if hasattr(bot, "get_cog") else None
     storage = getattr(cog, "stats_storage", None)
-    if storage is not None and public:
-        writers = await collector.message_counts_by_user(gid, since, until, channel_ids=list(public))
-        if not _any_hidden(writers, hidden):
+    if storage is not None:
+        if ids and not hidden:
             week = week_start(start)
-            numbers.emojis = await storage.get_weekly_terms(gid, week, "emoji", TOP_EMOJIS, list(public))
-            words = await storage.get_weekly_terms(gid, week, "word", TOP_WORDS * 4, list(public))
-            numbers.words = [(w, n) for w, n in words if len(w) <= MAX_WORD_CHARS][:TOP_WORDS]
-            numbers.term_channels = frozenset(public)
+            view.emojis = await storage.get_weekly_terms(gid, week, "emoji", TOP_EMOJIS, ids)
+            words = await storage.get_weekly_terms(gid, week, "word", TOP_WORDS * 4, ids)
+            view.words = [(w, n) for w, n in words if len(w) <= MAX_WORD_CHARS][:TOP_WORDS]
+        funny = _visible(guild, await storage.reactions_by_author(gid, since, until, channel_ids=ids), hidden, 1)
+        if funny:
+            view.titles["funny"] = funny[0]
+        builder = RecapBuilder(bot, community.limits)
+        cached = _recap_cache.get(cache_key)
+        if cached and cached[1] == start and time.time() - cached[0] < RECAP_CACHE_SECONDS:
+            view.quote = cached[2]
+        else:
+            view.quote = await builder._quote(guild, storage, since, until, hidden)
+            _recap_cache[cache_key] = (time.time(), start, view.quote)
 
     music = bot.get_cog("YTMusic") if hasattr(bot, "get_cog") else None
     taste = getattr(music, "_taste_store", None)
     if taste is not None:
         for video_id, title, plays, skips in taste.top_played(guild.id, since, until, 5, exclude_requesters=hidden):
             if plays >= MIN_SONG_PLAYS and (skips or 0) * 2 < plays:
-                numbers.song = (video_id, title, plays)
+                view.song = (video_id, title, plays)
                 break
-    return numbers
+        dj = _visible(guild, taste.top_requesters(guild.id, since, until, 10), hidden, 1)
+        if dj:
+            view.titles["dj"] = dj[0]
+    return view
 
 
-def recap_text(shown: Any, numbers: RecapNumbers, title_name: Any) -> str:
+def _still_shown(guild: Any, view: RecapView, hidden: set) -> RecapView:
+    """``view`` without what may no longer be shown: hidden or departed members, and a quote from a
+    channel that stopped being shareable."""
+    from copy import copy
+
+    def visible(member: Any) -> bool:
+        return member is not None and member.id not in hidden and guild.get_member(member.id) is not None
+
+    shown = copy(view)
+    shown.talkers = [(m, n) for m, n in view.talkers if visible(m)]
+    shown.titles = {key: (m, n) for key, (m, n) in view.titles.items() if visible(m)}
+    quote = view.quote
+    if quote and not (visible(quote["member"]) and shareable(_quote_channel(guild, quote["url"]))):
+        quote = None
+    shown.quote = quote
+    return shown
+
+
+def recap_text(view: RecapView, title_name: Any) -> str:
     """The recap as plain facts for the model; everything members wrote goes through ``user_text``."""
     from cogs.community_lib.recap import TITLES
 
-    lines = [f"Messages this week: {numbers.total} (last week: {numbers.previous_total})"]
-    if numbers.channels:
+    lines = [
+        f"Messages this week in channels everyone can read: {view.total} (last week: {view.previous_total})"
+    ]
+    if view.channels:
         lines.append(
-            "Busiest channels: " + ", ".join(f"{user_text('#' + str(getattr(c, 'name', c)))} ({n})" for c, n in numbers.channels)
+            "Busiest channels: " + ", ".join(f"{user_text('#' + str(getattr(c, 'name', c)))} ({n})" for c, n in view.channels)
         )
-    if shown.talkers:
-        lines.append("Most talkative: " + ", ".join(f"{user_text(m.display_name)} ({n})" for m, n in shown.talkers))
-    if numbers.emojis:
-        lines.append("Top emojis: " + " ".join(user_text(e, 40) for e, _ in numbers.emojis))
-    if numbers.words:
-        lines.append("Hot words: " + ", ".join(user_text(w, 40) for w, _ in numbers.words))
-    if shown.quote:
+    if view.talkers:
+        lines.append("Most talkative: " + ", ".join(f"{user_text(m.display_name)} ({n})" for m, n in view.talkers))
+    if view.emojis:
+        lines.append("Top emojis: " + " ".join(user_text(e, 40) for e, _ in view.emojis))
+    if view.words:
+        lines.append("Hot words: " + ", ".join(user_text(w, 40) for w, _ in view.words))
+    if view.quote:
         lines.append(
-            f"Quote of the week by {user_text(shown.quote['member'].display_name)}: {user_text(shown.quote['content'], 200)}"
+            f"Quote of the week by {user_text(view.quote['member'].display_name)}: {user_text(view.quote['content'], 200)}"
         )
-    if numbers.song:
-        lines.append(f"Song of the week: {user_text(numbers.song[1] or numbers.song[0])} ({numbers.song[2]} plays)")
+    if view.song:
+        lines.append(f"Song of the week: {user_text(view.song[1] or view.song[0])} ({view.song[2]} plays)")
     for title_id, _ in TITLES:
-        if title_id in shown.titles:
-            lines.append(f"Title {title_name(title_id)}: {user_text(shown.titles[title_id][0].display_name)}")
-    if shown.missing:
-        lines.append("Missing regulars: " + ", ".join(f"{user_text(m.display_name)} ({d} days silent)" for m, d in shown.missing))
+        if title_id in view.titles:
+            lines.append(f"Title {title_name(title_id)}: {user_text(view.titles[title_id][0].display_name)}")
     return "\n".join(lines)
 
 
@@ -281,10 +299,13 @@ class CommunityTools:
             """
             kind = kind if kind in ("messages", "streak", "games") else "messages"
             period = period if period in ("week", "month", "all") else "week"
+            # Read before the ranking, which may create the community database (it reads the
+            # server's time zone), and again after it: members may have hidden themselves meanwhile.
+            if hidden_member_ids(runtime, guild.id) is None:
+                return UNAVAILABLE
             ranked = await leaderboard.rankings(guild, kind, period)
             if ranked is None:
                 return "The leaderboard is not available right now."
-            # Read after the ranking: members may have hidden themselves meanwhile.
             hidden = hidden_member_ids(runtime, guild.id)
             if hidden is None:
                 return UNAVAILABLE
@@ -317,7 +338,7 @@ class CommunityTools:
 
         async def get_server_recap(period: str = "this_week") -> str:
             """Summarises the server's week: message count, busiest public channels, top talkers,
-            hot words, quote and song of the week, the rotating titles and regulars who went quiet.
+            hot words, quote and song of the week and the rotating titles.
 
             Call this when someone asks how the server's week went, what was popular, or who holds
             a title such as the week's top talker.
@@ -328,9 +349,8 @@ class CommunityTools:
             Returns:
                 The facts, one per line; text members wrote is wrapped in <<< >>>.
             """
-            from cogs.community_lib.recap import RecapBuilder
-
             period = period if period in ("this_week", "last_week") else "this_week"
+            # Read before anything that may create the community database (get_settings does).
             hidden = hidden_member_ids(runtime, guild.id)
             if hidden is None:
                 return UNAVAILABLE
@@ -338,31 +358,20 @@ class CommunityTools:
             local = community._local_now(settings)
             monday = local.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=local.weekday())
             start, end = (monday, local) if period == "this_week" else (monday - timedelta(days=7), monday)
-            key = (guild.id, period)
-            cached = _recap_cache.get(key)
-            if cached and cached[1] == start and time.time() - cached[0] < RECAP_CACHE_SECONDS:
-                recap = cached[2]
-            else:
-                recap = await RecapBuilder(community.bot, community.limits).build(guild, start, end, hidden)
-                if recap is None:
-                    return "The server recap is not available right now."
-                _recap_cache[key] = (time.time(), start, recap)
-            numbers = await recap_numbers(community.bot, guild, start, end, hidden)
-            if numbers is None:
+            view = await read_recap(community, guild, start, end, hidden, (guild.id, period))
+            if view is None:
                 return "The server recap is not available right now."
             # Checked after the last await: who is hidden and which channels are shareable now.
             hidden_now = hidden_member_ids(runtime, guild.id)
             if hidden_now is None or hidden_now - hidden:
-                # Someone hid themselves while the numbers were counted: they may still be in them.
+                # Someone hid themselves while the week was counted: they may still be in it.
                 return UNAVAILABLE
-            public_now = shareable_channels(guild)
-            numbers.channels = [(c, n) for c, n in numbers.channels if str(c.id) in public_now]
-            if not numbers.term_channels <= frozenset(public_now):
-                # A channel stopped being shareable while its words were counted.
-                numbers.emojis, numbers.words = [], []
-            shown = _still_shown(guild, recap, hidden_now)
+            if not view.channel_ids <= frozenset(shareable_channels(guild)):
+                # A channel stopped being shareable while it was counted.
+                return UNAVAILABLE
+            shown = _still_shown(guild, view, hidden_now)
             label = "This week so far" if period == "this_week" else "Last week"
-            facts = recap_text(shown, numbers, lambda title_id: community.title_name(guild.id, title_id))
+            facts = recap_text(shown, lambda title_id: community.title_name(guild.id, title_id))
             return f"{label} ({start.date().isoformat()} to {end.date().isoformat()}):\n{facts}"
 
         async def get_upcoming_birthdays(days: int = 30) -> str:
@@ -379,11 +388,12 @@ class CommunityTools:
             from cogs.community_lib.dates import upcoming_birthdays
 
             days = max(1, min(int(days or 30), 30))
-            settings = community.store.get_settings(guild.id)
-            today = community._local_now(settings).date()
+            # Read before get_settings, which creates the community database when it is missing.
             hidden = hidden_member_ids(runtime, guild.id)
             if hidden is None:
                 return UNAVAILABLE
+            settings = community.store.get_settings(guild.id)
+            today = community._local_now(settings).date()
             lines = []
             for user_id, when in upcoming_birthdays(today, community.store.birthdays(guild.id), days):
                 member = guild.get_member(user_id)
@@ -427,7 +437,10 @@ class CommunityTools:
         if community is not None:
             tools.append(StructuredTool.from_function(coroutine=get_server_recap, metadata=community_group))
             try:
-                birthdays_on = community.store.get_settings(guild.id).birthday_enabled
+                # get_settings creates the community database when it is missing, which would turn
+                # an unreadable opt-out list into an empty one: only read it once the list is there.
+                readable = hidden_member_ids(runtime, guild.id) is not None
+                birthdays_on = readable and community.store.get_settings(guild.id).birthday_enabled
             except Exception:
                 _logger.error("community tools: could not read the server's settings", exc_info=True)
                 birthdays_on = False

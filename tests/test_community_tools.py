@@ -246,9 +246,11 @@ async def test_without_a_readable_opt_out_list_nobody_is_named(world: SimpleName
 
     monkeypatch.setattr(world.store, "read_optouts", broken)
 
-    for name, kwargs in (("get_leaderboard", {"period": "all"}), ("get_server_recap", {}), ("get_upcoming_birthdays", {"days": 7})):
+    for name, kwargs in (("get_leaderboard", {"period": "all"}), ("get_server_recap", {})):
         reply = await _call(world, name, **kwargs)
         assert reply == community_tools.UNAVAILABLE, name
+    # Birthdays are not even offered: their setting is only read once the list is readable.
+    assert "get_upcoming_birthdays" not in _tools(world)
 
 
 @pytest.mark.asyncio
@@ -326,10 +328,10 @@ async def recap_world(world: SimpleNamespace, tmp_path: Path) -> SimpleNamespace
     world.public = world.guild.channel(600)
     world.private = world.guild.channel(666, public=False)
 
-    async def say(user_id: int, channel: Any, text: str, times: int = 1) -> None:
+    async def say(user_id: int, channel: Any, text: str, times: int = 1, at: datetime = WEEK_DAY) -> None:
         for _ in range(times):
-            await collector.record_message(str(GUILD_ID), str(user_id), str(channel.id), WEEK_DAY.timestamp())
-            await storage.upsert_user_stats(str(user_id), str(GUILD_ID), text, str(channel.id), WEEK_DAY.isoformat())
+            await collector.record_message(str(GUILD_ID), str(user_id), str(channel.id), at.timestamp())
+            await storage.upsert_user_stats(str(user_id), str(GUILD_ID), text, str(channel.id), at.isoformat())
 
     world.say = say
     world.taste = taste
@@ -338,6 +340,9 @@ async def recap_world(world: SimpleNamespace, tmp_path: Path) -> SimpleNamespace
 
 def _line(text: str, prefix: str) -> str:
     return next((line for line in text.splitlines() if line.startswith(prefix)), "")
+
+
+TOTAL = "Messages this week in channels everyone can read"
 
 
 @pytest.mark.asyncio
@@ -354,43 +359,76 @@ async def test_the_recap_counts_nothing_a_hidden_member_did(recap_world: SimpleN
 
     text = await _call(w, "get_server_recap")
 
-    assert _line(text, "Messages this week") == "Messages this week: 3 (last week: 0)"
+    assert _line(text, TOTAL) == f"{TOTAL}: 3 (last week: 0)"
     assert _line(text, "Busiest channels") == "Busiest channels: <<<#channel600>>> (3)"
     assert "user11" not in text and "Hidden Song" not in text and "<<<Shared Song>>> (2 plays)" in text
-    # The week's words are only counted per channel: with a hidden member's messages in them they are left out.
+    # The week's words are only counted per channel: with anyone hidden they are left out.
     assert "secretword" not in text and "banana" not in text and "Hot words" not in text
 
 
 @pytest.mark.asyncio
-async def test_hot_words_come_from_shareable_channels_when_no_hidden_member_wrote_there(recap_world: SimpleNamespace) -> None:
+async def test_hot_words_are_left_out_while_anyone_is_hidden_even_without_a_logged_message(
+    recap_world: SimpleNamespace,
+) -> None:
+    """The word counts and the message log are written separately; a word may be counted while
+    its message never made it into the log (or arrives between two reads)."""
+    w = recap_world
+    await w.say(12, w.public, "banana", 3)
+    storage = w.cogs["StatsCog"].stats_storage
+    await storage.upsert_user_stats("11", str(GUILD_ID), "hiddenraceword", str(w.public.id), WEEK_DAY.isoformat())
+    w.store.set_optout(GUILD_ID, 11, True)
+
+    text = await _call(w, "get_server_recap")
+
+    assert "hiddenraceword" not in text and "Hot words" not in text and "Top emojis" not in text
+
+
+@pytest.mark.asyncio
+async def test_hot_words_come_only_from_shareable_channels_when_nobody_is_hidden(recap_world: SimpleNamespace) -> None:
     w = recap_world
     nsfw = w.guild.channel(700, nsfw=True)
     await w.say(12, w.public, "banana", 3)
     await w.say(13, w.private, "privateword", 5)
     await w.say(13, nsfw, "nsfwword", 5)
-    await w.say(11, w.private, "hiddenprivate", 2)  # hidden, but not where the words come from
-    w.store.set_optout(GUILD_ID, 11, True)
 
     text = await _call(w, "get_server_recap")
 
     assert _line(text, "Hot words") == "Hot words: <<<banana>>>"
-    assert _line(text, "Messages this week") == "Messages this week: 13 (last week: 0)"
-    # Neither the private nor the age-restricted channel is named.
     assert _line(text, "Busiest channels") == "Busiest channels: <<<#channel600>>> (3)"
 
 
 @pytest.mark.asyncio
-async def test_a_member_who_hides_while_the_recap_is_cached_leaves_the_numbers_too(recap_world: SimpleNamespace) -> None:
+async def test_private_and_nsfw_activity_is_not_counted_or_rewarded(recap_world: SimpleNamespace) -> None:
+    w = recap_world
+    nsfw = w.guild.channel(700, nsfw=True)
+    night = datetime(2026, 10, 21, 2, 30, tzinfo=TAIPEI)
+    await w.say(12, w.public, "hello", 3)
+    await w.say(13, w.private, "hello", 5, at=night)  # only talks where not everyone can read
+    await w.say(13, nsfw, "hello", 5, at=night)
+    storage = w.cogs["StatsCog"].stats_storage
+    await storage.record_reaction("m1", str(GUILD_ID), str(w.private.id), "13", WEEK_DAY.timestamp(), 9)
+
+    text = await _call(w, "get_server_recap")
+
+    assert _line(text, TOTAL) == f"{TOTAL}: 3 (last week: 0)"
+    assert _line(text, "Most talkative") == "Most talkative: <<<user12>>> (3)"
+    assert _line(text, "Title title_talker") == "Title title_talker: <<<user12>>>"
+    # Neither the night owl nor the funniest title comes from private or NSFW channels.
+    assert "user13" not in text
+
+
+@pytest.mark.asyncio
+async def test_a_member_who_hides_between_answers_leaves_the_numbers_too(recap_world: SimpleNamespace) -> None:
     w = recap_world
     await w.say(11, w.public, "hello", 5)
     await w.say(12, w.public, "hello", 2)
 
     first = await _call(w, "get_server_recap")
-    assert "Messages this week: 7" in first and "<<<user11>>>" in first
+    assert f"{TOTAL}: 7" in first and "<<<user11>>>" in first
     w.store.set_optout(GUILD_ID, 11, True)
     second = await _call(w, "get_server_recap")
 
-    assert "Messages this week: 2" in second and "user11" not in second
+    assert f"{TOTAL}: 2" in second and "user11" not in second
 
 
 @pytest.mark.asyncio
@@ -412,62 +450,90 @@ async def test_a_member_who_hides_while_the_numbers_are_counted_gets_no_answer_w
 
 
 @pytest.mark.asyncio
-async def test_a_channel_that_turns_private_while_words_are_counted_leaves_its_words_out(
+async def test_a_channel_that_turns_private_while_it_is_counted_gets_no_answer(
     recap_world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     w = recap_world
     await w.say(12, w.public, "newprivateword", 3)
-    collector = w.bot.stats_collector
-    original = collector.message_counts_by_user
+    storage = w.cogs["StatsCog"].stats_storage
+    original = storage.get_weekly_terms
 
     async def lock_while_counting(*args: Any, **kwargs: Any) -> list:
-        if kwargs.get("channel_ids"):
-            w.public.public = False  # an admin locks the channel after the words' channels were chosen
+        w.public.public = False  # an admin locks the channel after it was chosen
         return await original(*args, **kwargs)
 
-    monkeypatch.setattr(collector, "message_counts_by_user", lock_while_counting)
+    monkeypatch.setattr(storage, "get_weekly_terms", lock_while_counting)
 
-    text = await _call(w, "get_server_recap")
-
-    assert "newprivateword" not in text and "channel600" not in text
+    assert await _call(w, "get_server_recap") == community_tools.UNAVAILABLE
 
 
 @pytest.mark.asyncio
-async def test_the_recaps_names_are_built_once_and_rechecked_on_every_answer(
+async def test_the_quote_is_fetched_once_and_its_author_rechecked_on_every_answer(
     recap_world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     w = recap_world
-    await w.say(11, w.public, "hello", 5)
-    await w.say(13, w.public, "hello", 1)
-    builds: List[Any] = []
-    original = recap_module.RecapBuilder.build
+    await w.say(12, w.public, "hello", 1)
+    fetched: List[Any] = []
 
-    async def counted(self: Any, *args: Any) -> Any:
-        builds.append(args[1])
-        return await original(self, *args)
+    async def quote(self: Any, guild: Any, storage: Any, since: float, until: float, hidden: set) -> dict:
+        fetched.append(since)
+        return {"member": guild.get_member(11), "content": "a joke", "url": "https://discord.com/channels/42/600/7", "count": 4}
 
-    monkeypatch.setattr(recap_module.RecapBuilder, "build", counted)
+    monkeypatch.setattr(recap_module.RecapBuilder, "_quote", quote)
 
-    assert "<<<user11>>>" in await _call(w, "get_server_recap")
+    assert "<<<a joke>>>" in await _call(w, "get_server_recap")
     w.guild.members.pop(11)  # left the server
     second = await _call(w, "get_server_recap")
 
-    assert len(builds) == 1 and builds[0] == datetime(2026, 10, 19, tzinfo=TAIPEI)
-    assert "user11" not in second and "<<<user13>>>" in second
+    assert len(fetched) == 1 and "a joke" not in second
 
 
 @pytest.mark.asyncio
 async def test_last_weeks_recap_covers_monday_to_monday(world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
-    built: List[Any] = []
+    read: List[Any] = []
 
-    async def build(self: Any, guild: Any, start: datetime, end: datetime, hidden: set) -> Any:
-        built.append((start, end))
+    async def read_recap(community: Any, guild: Any, start: datetime, end: datetime, hidden: set, key: Any) -> Any:
+        read.append((start, end))
         return None
 
-    monkeypatch.setattr(recap_module.RecapBuilder, "build", build)
+    monkeypatch.setattr(community_tools, "read_recap", read_recap)
 
     assert "not available" in await _call(world, "get_server_recap", period="last_week")
-    assert built == [(datetime(2026, 10, 12, tzinfo=TAIPEI), datetime(2026, 10, 19, tzinfo=TAIPEI))]
+    assert read == [(datetime(2026, 10, 12, tzinfo=TAIPEI), datetime(2026, 10, 19, tzinfo=TAIPEI))]
+
+
+# ------------------------------------------------------------------ a missing community database
+@pytest.mark.asyncio
+async def test_a_missing_community_database_is_not_created_by_the_tools(tmp_path: Path) -> None:
+    """With the opt-out list gone, nobody may be named, and building or calling the tools must
+    not create an empty list in its place."""
+    path = tmp_path / "gone" / "community.db"
+    store = CommunityStore(path)
+    guild = FakeGuild()
+    for member_id in (AUTHOR_ID, 11):
+        guild.add(member_id)
+    storage = FakeStorage()
+    storage.rows["total"] = [("11", 9)]
+    cogs: Dict[str, Any] = {"StatsCog": SimpleNamespace(stats_storage=storage)}
+    bot = SimpleNamespace(stats_collector=FakeCollector([("11", 9)]), get_cog=cogs.get)
+    leaderboard = LeaderboardCog(bot, store=store)
+    leaderboard.lang_manager = FakeLang()
+    leaderboard.limits = CommunityLimits(default_timezone="Asia/Taipei")
+    cogs["LeaderboardCog"] = leaderboard
+    cogs["CommunityCog"] = SimpleNamespace(
+        bot=bot, store=store, limits=leaderboard.limits, _local_now=lambda settings: NOW, title_name=lambda g, t: t
+    )
+    here = guild.channel(500)
+    runtime = SimpleNamespace(bot=bot, message=SimpleNamespace(guild=guild, author=guild.get_member(AUTHOR_ID), channel=here))
+
+    tools = {tool.name: tool for tool in CommunityTools(runtime).get_tools()}
+    assert "get_upcoming_birthdays" not in tools
+    assert not path.exists()
+
+    for name, kwargs in (("get_leaderboard", {"period": "week"}), ("get_leaderboard", {"period": "all"}), ("get_server_recap", {})):
+        assert await tools[name].coroutine(**kwargs) == community_tools.UNAVAILABLE, (name, kwargs)
+    assert "user11" not in await tools["get_achievements"].coroutine(user_id="11")
+    assert not path.exists()
 
 
 # ------------------------------------------------------------------ birthdays

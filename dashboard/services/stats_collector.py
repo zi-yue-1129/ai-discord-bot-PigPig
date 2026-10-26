@@ -271,20 +271,33 @@ class StatsCollector:
             return [(row[0], row[1]) for row in await cursor.fetchall()]
 
     async def night_counts_by_user(
-        self, guild_id: str, since: float, until: float, utc_offset_seconds: float, last_hour: int = 4
+        self,
+        guild_id: str,
+        since: float,
+        until: float,
+        utc_offset_seconds: float,
+        last_hour: int = 4,
+        channel_ids: Optional[Sequence[str]] = None,
     ) -> list[tuple[str, int]]:
         """Counts each user's messages sent between 0:00 and ``last_hour``:59 local time, most first.
 
         Args:
             utc_offset_seconds: The local time zone's offset from UTC.
+            channel_ids: Only count these channels; None counts every channel.
         """
+        query = (
+            "SELECT user_id, COUNT(*) AS cnt FROM message_events WHERE guild_id = ? AND timestamp >= ? AND timestamp < ? "
+            "AND CAST(strftime('%H', timestamp + ?, 'unixepoch') AS INTEGER) <= ?"
+        )
+        params: list = [guild_id, since, until, utc_offset_seconds, last_hour]
+        if channel_ids is not None:
+            ids = [str(channel_id) for channel_id in channel_ids]
+            if not ids:
+                return []
+            query += f" AND channel_id IN ({', '.join('?' * len(ids))})"
+            params += ids
         async with aiosqlite.connect(self._db_path) as db:
-            cursor = await db.execute(
-                "SELECT user_id, COUNT(*) AS cnt FROM message_events WHERE guild_id = ? AND timestamp >= ? AND timestamp < ? "
-                "AND CAST(strftime('%H', timestamp + ?, 'unixepoch') AS INTEGER) <= ? "
-                "GROUP BY user_id ORDER BY cnt DESC, user_id",
-                (guild_id, since, until, utc_offset_seconds, last_hour),
-            )
+            cursor = await db.execute(query + " GROUP BY user_id ORDER BY cnt DESC, user_id", params)
             return [(row[0], row[1]) for row in await cursor.fetchall()]
 
     async def _get_accurate_total(self, guild_id: Optional[str] = None) -> int:
