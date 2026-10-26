@@ -9,7 +9,7 @@ from __future__ import annotations
 import io
 import asyncio
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Set, TYPE_CHECKING
 
 import discord
 from langchain_core.tools.structured import StructuredTool
@@ -244,6 +244,34 @@ def _is_hidden(runtime: Any, guild_id: int, user_id: str, db_path: Optional[str]
         # opted out; refusing the lookup is the safe answer, so the tool carries on with that.
         _logger.error("get_user_stats: could not read the opt-out list; treating the member as hidden", exc_info=True)
         return True
+
+
+def hidden_member_ids(runtime: Any, guild_id: int, db_path: Optional[str] = None) -> Optional[Set[int]]:
+    """The members of ``guild_id`` who hid themselves with ``/leaderboard optout``.
+
+    Returns None when the opt-out list cannot be read; callers must then treat everyone as hidden.
+
+    Args:
+        db_path: The community database to read when the leaderboard cog is not loaded
+            (defaults to ``COMMUNITY_DB_PATH``).
+    """
+    bot = getattr(runtime, "bot", None)
+    cog = bot.get_cog("LeaderboardCog") if bot is not None else None
+    store = getattr(cog, "store", None)
+    try:
+        if store is None:
+            # The leaderboard cog is not loaded: read its opt-out list directly.
+            from cogs.community_lib.store import CommunityStore
+
+            if db_path is None:
+                from cogs.community import COMMUNITY_DB_PATH as db_path
+            store = CommunityStore(db_path)
+        return {int(user_id) for user_id in store.optouts(int(guild_id))}
+    except Exception:
+        # Any failure (database locked or missing, bad id) means we cannot tell who opted out;
+        # hiding everyone is the safe answer, so the tools carry on with that.
+        _logger.error("could not read the opt-out list; treating every member as hidden", exc_info=True)
+        return None
 
 
 # How many of a member's public words feed the word cloud, and how many emojis are listed.

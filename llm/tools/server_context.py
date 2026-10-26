@@ -188,6 +188,17 @@ class ServerContextTools:
             if member.top_role and member.top_role.name != "@everyone":
                 lines.append(f"- Top Role Color: {member.top_role.color}")
 
+            # Hidden members (/leaderboard optout) keep what they are doing to themselves. The reply is
+            # posted in the channel, so this holds when they ask about themselves too.
+            from llm.tools.user_stats import _is_hidden
+
+            if _is_hidden(runtime, guild.id, str(member.id)):
+                lines.append(
+                    "- Status and activity: hidden (this member chose /leaderboard optout). "
+                    "Do not share or guess whether they are online or what they are playing or listening to."
+                )
+                return "\n".join(lines)
+
             status_map = {
                 discord.Status.online: "Online",
                 discord.Status.idle: "Idle",
