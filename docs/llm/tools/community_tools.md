@@ -14,7 +14,7 @@ The AI's answer is posted for everyone in the channel, so each tool returns only
 | `get_leaderboard` | community | LeaderboardCog is loaded | `kind`: messages, streak or games; `period`: week, month or all | The top 10, as `/leaderboard top`, and the asker's own place |
 | `get_achievements` | community | LeaderboardCog is loaded | `user_id` (defaults to the asker) | Unlocked achievements with dates, locked ones with what they need |
 | `hide_my_stats` | core | LeaderboardCog is loaded | none | Hides the asker only. Showing oneself again is only possible with `/leaderboard optout hide:False`, so text that tricks the model cannot undo someone's choice |
-| `get_server_recap` | community | CommunityCog is loaded | `period`: this_week or last_week | The weekly recap's facts (messages, shareable channels, talkers, words, quote, song, titles) |
+| `get_server_recap` | community | CommunityCog is loaded | `period`: this_week or last_week | The weekly recap's facts (messages, shareable channels, talkers, words, quote, titles; no music) |
 | `get_upcoming_birthdays` | community | CommunityCog is loaded and birthdays are on for the server | `days`: 1 to 30 | Saved birthdays, soonest first, without hidden members, bots or leavers |
 | `list_upcoming_events` | events | EventsCog is loaded | none | Up to 10 events: number, title, Discord start timestamp, sign-up counts (without hidden members and people who left), link |
 
@@ -23,7 +23,8 @@ The AI's answer is posted for everyone in the channel, so each tool returns only
 Everything in the AI's recap is counted only in shareable channels (everyone can read them and they are not NSFW) and without hidden members, and is read again on every answer:
 
 - Message totals (this week and last week), the most talkative members and the talker, night owl and funniest titles count only shareable channels. Activity in private or NSFW channels is neither counted nor rewarded.
-- Busiest channels leave out hidden members' messages; the song of the week and the DJ title leave out what hidden members requested.
+- Busiest channels leave out hidden members' messages.
+- Nothing about music (song of the week, DJ title): the play log does not record where a song was requested, so plays started from a private channel could not be told apart.
 - Words and emojis are only kept per channel, not per member, so they are shown only while nobody on the server is hidden.
 - The quote of the week is the only part that is reused (for 10 minutes per server and period, since finding it fetches messages); its author and channel are checked again on every answer.
 

@@ -133,7 +133,6 @@ class RecapView:
     titles: Dict[str, Tuple[Any, int]] = field(default_factory=dict)
     emojis: List[Tuple[str, int]] = field(default_factory=list)
     words: List[Tuple[str, int]] = field(default_factory=list)
-    song: Optional[Tuple[str, str, int]] = None
     quote: Optional[Dict[str, Any]] = None
     # The shareable channels everything was counted in.
     channel_ids: frozenset = frozenset()
@@ -146,11 +145,12 @@ async def read_recap(community: Any, guild: Any, start: datetime, end: datetime,
     NSFW), so nothing about private channels is told. Hidden members are left out of every
     count. Words and emojis are only kept per channel, not per member, so they are only shown
     when nobody on the server is hidden. The quote of the week (it fetches messages) is reused
-    for ``RECAP_CACHE_SECONDS``; everything else is read on every call. Regulars who went quiet
-    are left out: their last message may be in a private channel, so the list would tell.
+    for ``RECAP_CACHE_SECONDS``; everything else is read on every call. Left out: regulars who
+    went quiet (their last message may be in a private channel, so the list would tell), and the
+    song of the week and DJ title (the play log does not record where a song was requested).
     """
     from cogs.community_lib.recap import (
-        MAX_WORD_CHARS, MIN_SONG_PLAYS, TOP_CHANNELS, TOP_EMOJIS, TOP_TALKERS, TOP_WORDS, RecapBuilder, _visible,
+        MAX_WORD_CHARS, TOP_CHANNELS, TOP_EMOJIS, TOP_TALKERS, TOP_WORDS, RecapBuilder, _visible,
     )
     from cogs.memory.db.stats_storage import week_start
 
@@ -202,16 +202,6 @@ async def read_recap(community: Any, guild: Any, start: datetime, end: datetime,
             view.quote = await builder._quote(guild, storage, since, until, hidden)
             _recap_cache[cache_key] = (time.time(), start, view.quote)
 
-    music = bot.get_cog("YTMusic") if hasattr(bot, "get_cog") else None
-    taste = getattr(music, "_taste_store", None)
-    if taste is not None:
-        for video_id, title, plays, skips in taste.top_played(guild.id, since, until, 5, exclude_requesters=hidden):
-            if plays >= MIN_SONG_PLAYS and (skips or 0) * 2 < plays:
-                view.song = (video_id, title, plays)
-                break
-        dj = _visible(guild, taste.top_requesters(guild.id, since, until, 10), hidden, 1)
-        if dj:
-            view.titles["dj"] = dj[0]
     return view
 
 
@@ -254,8 +244,6 @@ def recap_text(view: RecapView, title_name: Any) -> str:
         lines.append(
             f"Quote of the week by {user_text(view.quote['member'].display_name)}: {user_text(view.quote['content'], 200)}"
         )
-    if view.song:
-        lines.append(f"Song of the week: {user_text(view.song[1] or view.song[0])} ({view.song[2]} plays)")
     for title_id, _ in TITLES:
         if title_id in view.titles:
             lines.append(f"Title {title_name(title_id)}: {user_text(view.titles[title_id][0].display_name)}")
@@ -338,7 +326,7 @@ class CommunityTools:
 
         async def get_server_recap(period: str = "this_week") -> str:
             """Summarises the server's week: message count, busiest public channels, top talkers,
-            hot words, quote and song of the week and the rotating titles.
+            hot words, quote of the week and the rotating titles (no music).
 
             Call this when someone asks how the server's week went, what was popular, or who holds
             a title such as the week's top talker.

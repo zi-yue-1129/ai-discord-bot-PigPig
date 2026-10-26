@@ -148,7 +148,9 @@ def world(tmp_path: Path) -> SimpleNamespace:
     cogs["CommunityCog"] = community
     message = SimpleNamespace(guild=guild, author=guild.get_member(AUTHOR_ID), channel=here)
     runtime = SimpleNamespace(bot=bot, message=message, logger=None)
-    return SimpleNamespace(guild=guild, store=store, storage=storage, cogs=cogs, runtime=runtime, here=here, bot=bot)
+    return SimpleNamespace(
+        guild=guild, store=store, storage=storage, cogs=cogs, runtime=runtime, here=here, bot=bot, tmp=tmp_path
+    )
 
 
 def _tools(world: SimpleNamespace, cls: Any = CommunityTools) -> Dict[str, Any]:
@@ -251,6 +253,22 @@ async def test_without_a_readable_opt_out_list_nobody_is_named(world: SimpleName
         assert reply == community_tools.UNAVAILABLE, name
     # Birthdays are not even offered: their setting is only read once the list is readable.
     assert "get_upcoming_birthdays" not in _tools(world)
+    # Events are still listed, without how many signed up.
+    world.guild.channel(600)
+    store = EventStore(world.tmp / "events.db")
+    event_id = store.add(GUILD_ID, 600, AUTHOR_ID, "raid", datetime.now(timezone.utc).timestamp() + 3600, 4, 15, 0)
+    store.set_message(event_id, 1600)
+    store.sign_up(event_id, 11, GOING, 0)
+    world.cogs["EventsCog"] = SimpleNamespace(store=store)
+    listed = await _call(world, "list_upcoming_events", EventTools)
+    assert "<<<raid>>>" in listed and "going" not in listed
+
+
+def test_no_community_or_event_tools_in_direct_messages(world: SimpleNamespace, tmp_path: Path) -> None:
+    world.cogs["EventsCog"] = SimpleNamespace(store=EventStore(tmp_path / "events.db"))
+    world.runtime.message.guild = None
+
+    assert _tools(world) == {} and _tools(world, EventTools) == {}
 
 
 @pytest.mark.asyncio
@@ -351,17 +369,18 @@ async def test_the_recap_counts_nothing_a_hidden_member_did(recap_world: SimpleN
     await w.say(12, w.public, "banana", 3)
     await w.say(11, w.public, "secretword", 3)  # hidden
     await w.say(11, w.private, "privateword", 4)  # hidden, in a private channel
-    for requester in (11, 11, 11):
-        w.taste.add_play_event(GUILD_ID, "hid", "Hidden Song", requester_id=requester, autoplay=False, played_at=WEEK_DAY.timestamp())
-    for requester in (12, 12):
-        w.taste.add_play_event(GUILD_ID, "vis", "Shared Song", requester_id=requester, autoplay=False, played_at=WEEK_DAY.timestamp())
+    last_week = WEEK_DAY - timedelta(days=7)
+    await w.say(12, w.public, "hello", 2, at=last_week)
+    await w.say(11, w.public, "hello", 6, at=last_week)  # hidden
+    await w.say(13, w.private, "hello", 8, at=last_week)  # private
     w.store.set_optout(GUILD_ID, 11, True)
 
     text = await _call(w, "get_server_recap")
 
-    assert _line(text, TOTAL) == f"{TOTAL}: 3 (last week: 0)"
+    # Last week is counted the same way: shareable channels only, without hidden members.
+    assert _line(text, TOTAL) == f"{TOTAL}: 3 (last week: 2)"
     assert _line(text, "Busiest channels") == "Busiest channels: <<<#channel600>>> (3)"
-    assert "user11" not in text and "Hidden Song" not in text and "<<<Shared Song>>> (2 plays)" in text
+    assert "user11" not in text
     # The week's words are only counted per channel: with anyone hidden they are left out.
     assert "secretword" not in text and "banana" not in text and "Hot words" not in text
 
@@ -415,6 +434,55 @@ async def test_private_and_nsfw_activity_is_not_counted_or_rewarded(recap_world:
     assert _line(text, "Title title_talker") == "Title title_talker: <<<user12>>>"
     # Neither the night owl nor the funniest title comes from private or NSFW channels.
     assert "user13" not in text
+
+
+@pytest.mark.asyncio
+async def test_the_recap_tells_nothing_about_music(recap_world: SimpleNamespace) -> None:
+    """The play log does not record where a song was requested, so songs played from a private
+    channel could not be told apart."""
+    w = recap_world
+    await w.say(12, w.public, "hello", 1)
+    for _ in range(2):
+        w.taste.add_play_event(GUILD_ID, "p", "Private listening title", requester_id=13, autoplay=False, played_at=WEEK_DAY.timestamp())
+
+    text = await _call(w, "get_server_recap")
+
+    assert "Private listening title" not in text and "user13" not in text and "Song of the week" not in text
+
+
+@pytest.mark.asyncio
+async def test_emojis_and_words_skip_threads_of_an_nsfw_channel(recap_world: SimpleNamespace) -> None:
+    w = recap_world
+    nsfw = w.guild.channel(700, nsfw=True)
+    thread = FakeChannel(w.guild, 800)
+    thread.type = discord.ChannelType.public_thread
+    thread.parent = nsfw  # the thread itself does not say it is NSFW; its parent does
+    w.guild.threads.append(thread)
+    await w.say(12, w.public, "banana 😀", 2)
+    await w.say(12, thread, "threadword 🔥 🔥 🔥", 5)
+
+    text = await _call(w, "get_server_recap")
+
+    assert _line(text, "Hot words") == "Hot words: <<<banana>>>"
+    assert "🔥" not in text and "threadword" not in text and "channel800" not in text
+    assert _line(text, TOTAL) == f"{TOTAL}: 2 (last week: 0)"
+
+
+@pytest.mark.asyncio
+async def test_a_hidden_top_talker_passes_the_titles_to_the_next_member(recap_world: SimpleNamespace) -> None:
+    w = recap_world
+    night = datetime(2026, 10, 21, 2, 30, tzinfo=TAIPEI)
+    await w.say(11, w.public, "hello", 9, at=night)  # hidden
+    await w.say(12, w.public, "hello", 3, at=night)
+    storage = w.cogs["StatsCog"].stats_storage
+    await storage.record_reaction("m1", str(GUILD_ID), str(w.public.id), "11", WEEK_DAY.timestamp(), 9)
+    await storage.record_reaction("m2", str(GUILD_ID), str(w.public.id), "12", WEEK_DAY.timestamp(), 2)
+    w.store.set_optout(GUILD_ID, 11, True)
+
+    text = await _call(w, "get_server_recap")
+
+    for title in ("talker", "night_owl", "funny"):
+        assert _line(text, f"Title title_{title}") == f"Title title_{title}: <<<user12>>>"
 
 
 @pytest.mark.asyncio
@@ -482,10 +550,17 @@ async def test_the_quote_is_fetched_once_and_its_author_rechecked_on_every_answe
     monkeypatch.setattr(recap_module.RecapBuilder, "_quote", quote)
 
     assert "<<<a joke>>>" in await _call(w, "get_server_recap")
-    w.guild.members.pop(11)  # left the server
-    second = await _call(w, "get_server_recap")
+    w.store.set_optout(GUILD_ID, 11, True)  # the author hides
+    assert "a joke" not in await _call(w, "get_server_recap")
+    w.store.set_optout(GUILD_ID, 11, False)
+    assert "<<<a joke>>>" in await _call(w, "get_server_recap")
+    w.public.nsfw = True  # the quote's channel becomes age-restricted
+    assert "a joke" not in await _call(w, "get_server_recap")
+    w.public.nsfw = False
+    w.guild.members.pop(11)  # the author leaves
+    assert "a joke" not in await _call(w, "get_server_recap")
 
-    assert len(fetched) == 1 and "a joke" not in second
+    assert len(fetched) == 1
 
 
 @pytest.mark.asyncio
