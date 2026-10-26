@@ -675,6 +675,9 @@ async def test_a_threshold_above_the_mention_cap_still_posts_naming_the_first_pl
         "<@1> <@2> <@3> visit valorant . com",
         "<@1> <@2> <@3> visit Valorant/free",
         "<@1> <@2> <@3> visit Valorant:\\evil",
+        "<@1> <@2> <@3> visit Valo\u200brant/free",  # the name written another way
+        "<@1> <@2> <@3> visit valorant/free",
+        "<@1> <@2> <@3> visit Valo\u200brant:\\evil",
     ],
 )
 async def test_an_unusable_written_post_falls_back_to_the_fixed_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reply: str) -> None:
@@ -1042,10 +1045,15 @@ async def test_a_post_stays_used_across_a_reload_when_every_write_about_its_room
         connection.execute("DROP TRIGGER no_rooms")
         connection.execute("DROP TRIGGER no_pointer")
 
-    again = FakePress(guild, message_id)
-    await _reloaded(cog, store).open_room(again)
+    await cog.cog_unload()  # puts the orphan on record now that the database works
 
-    assert len(guild.created) == 1 and again.followups == ["playing_room_closed|"]
+    reloaded = _reloaded(cog, store)
+    again = FakePress(guild, message_id)
+    await reloaded.open_room(again)
+
+    room = next(channel for channel in guild.channels.values() if isinstance(channel, FakeVoice))
+    assert len(guild.created) == 1 and again.followups == [f"playing_room_exists|channel={room.mention}"]
+    assert store.is_temp_voice(room.id) and store.playing_post(message_id)["voice_channel_id"] == room.id
 
 
 @pytest.mark.asyncio
@@ -1119,3 +1127,157 @@ def test_out_of_range_cooldowns_warn_and_use_the_default(monkeypatch: pytest.Mon
         # Through the module as it is now (another test may have reloaded it).
         assert limits_module.CommunityLimits.from_config({"playing": {"cooldown_hours": value}}).playing_cooldown_hours == expected
     assert len(warnings) == 5 and all("cooldown_hours" in warning for warning in warnings)
+
+
+@pytest.mark.asyncio
+async def test_nothing_is_posted_when_the_channel_is_changed_while_the_post_is_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import cogs.playing as playing_module
+
+    holder: list = []
+
+    async def compose(*args: Any) -> str:
+        guild, store = holder[0]
+        other = FakeChannel(guild, channel_id=501)
+        guild.channels[other.id] = other
+        store.update_settings(GUILD_ID, playing_channel_id=other.id)
+        return "一起玩！ <@1> <@2> <@3>"
+
+    monkeypatch.setattr(playing_module, "compose_announcement", compose)
+    cog, guild, store = _cog(tmp_path)
+    holder.append((guild, store))
+    cog.bot.orchestrator = object()
+    _playing(cog, guild, "Valorant", 1, 2, 3)
+
+    assert await _check(cog, store) is None and guild.channel.sent == [] and store.count_playing_posts(GUILD_ID, 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_send_that_times_out_is_not_counted(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False)
+    _playing(cog, guild, "Valorant", 1, 2, 3)
+
+    def time_out() -> None:
+        raise asyncio.TimeoutError()
+
+    guild.channel.on_send = time_out
+    assert await _check(cog, store) is None and store.count_playing_posts(GUILD_ID, 0) == 0
+    guild.channel.on_send = None
+    cog._now = lambda: NOW + 601
+    assert await _check(cog, store) is not None
+
+
+@pytest.mark.asyncio
+async def test_an_unsent_post_whose_record_cannot_be_removed_is_removed_once_the_database_works(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False)
+    _playing(cog, guild, "Valorant", 1, 2, 3)
+    guild.channel.fail = True
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("CREATE TRIGGER keep_posts BEFORE DELETE ON playing_posts BEGIN SELECT RAISE(ABORT, 'locked'); END")
+
+    assert await _check(cog, store) is None and len(cog._unsent) == 1
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("DROP TRIGGER keep_posts")
+    guild.channel.fail = False
+    cog._now = lambda: NOW + 601
+    await cog.check_all()
+
+    assert cog._unsent == [] and len(guild.channel.sent) == 1  # removed, then posted
+
+
+@pytest.mark.asyncio
+async def test_two_posts_across_a_reload_open_no_more_rooms_than_allowed(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
+    first_post = await _posted(cog, guild, store)
+    _playing(cog, guild, "Apex", 4, 5, 6)
+    await _check(cog, store)
+    with sqlite3.connect(store.path) as connection:
+        second_post = connection.execute("SELECT message_id FROM playing_posts WHERE game_key = 'apex'").fetchone()[0]
+    gate = asyncio.Event()
+    real_create = guild.create_voice_channel
+
+    async def slow_create(name: str, **kwargs: Any) -> FakeVoice:
+        await gate.wait()
+        return await real_create(name, **kwargs)
+
+    guild.create_voice_channel = slow_create
+    first = asyncio.create_task(cog.open_room(FakePress(guild, first_post)))
+    await asyncio.sleep(0.01)
+    await cog.cog_unload()
+    second = FakePress(guild, second_post)
+    await _reloaded(cog, store).open_room(second)
+    gate.set()
+    await first
+
+    assert len(guild.created) == 1 and second.followups == ["playing_room_limit|"]
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_room_creation_frees_the_post(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False)
+    message_id = await _posted(cog, guild, store)
+    real_create = guild.create_voice_channel
+
+    async def hang(name: str, **kwargs: Any) -> FakeVoice:
+        await asyncio.Event().wait()
+
+    guild.create_voice_channel = hang
+    task = asyncio.create_task(cog.open_room(FakePress(guild, message_id)))
+    await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert store.playing_post(message_id)["voice_channel_id"] is None
+
+    guild.create_voice_channel = real_create
+    press = FakePress(guild, message_id)
+    await cog.open_room(press)
+    assert press.followups[0].startswith("playing_room_ready|")
+
+
+@pytest.mark.asyncio
+async def test_a_claim_left_by_a_stopped_bot_is_freed_on_load(tmp_path: Path) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False)
+    message_id = await _posted(cog, guild, store)
+    assert store.claim_playing_post(message_id, 0, 3, NOW - 120)  # claimed, then the bot stopped
+
+    reloaded = _reloaded(cog, store)
+    reloaded.bot.add_view = lambda view: None
+    reloaded.bot.wait_until_ready = lambda: asyncio.Event().wait()
+    monkey_lang = SimpleNamespace(get_instance=lambda bot: FakeLang())
+    import cogs.playing as playing_module
+
+    original = playing_module.LanguageManager
+    playing_module.LanguageManager = monkey_lang
+    try:
+        await reloaded.cog_load()
+    finally:
+        playing_module.LanguageManager = original
+        await reloaded.cog_unload()
+    assert store.playing_post(message_id)["voice_channel_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_room_taken_back_uses_up_its_post_without_blocking_the_room_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cog, guild, store = _cog(tmp_path, playing_use_ai=False, playing_max_rooms=1)
+    message_id = await _posted(cog, guild, store)
+    real_add = store.add_temp_voice
+
+    def broken(*args: Any) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(store, "add_temp_voice", broken)
+    await cog.open_room(FakePress(guild, message_id))  # created, not recorded, deleted again
+    monkeypatch.setattr(store, "add_temp_voice", real_add)
+
+    again = FakePress(guild, message_id)
+    await cog.open_room(again)
+    _playing(cog, guild, "Apex", 4, 5, 6)
+    await _check(cog, store)
+    with sqlite3.connect(store.path) as connection:
+        apex_post = connection.execute("SELECT message_id FROM playing_posts WHERE game_key = 'apex'").fetchone()[0]
+    other = FakePress(guild, apex_post)
+    await cog.open_room(other)
+
+    assert again.followups == ["playing_room_closed|"] and other.followups[0].startswith("playing_room_ready|")

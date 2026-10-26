@@ -38,6 +38,8 @@ FAILURE_BACKOFF_SECONDS = 600
 # Posts older than this no longer count for anything and are dropped.
 POST_RETENTION_SECONDS = 2 * 86400
 ROOM_NAME_LIMIT = 90
+# A post's voice_channel_id: -1 while its room is being opened, this once it was opened and taken back.
+USED_NO_ROOM = -2
 # A post's button works at least this long, also with a cooldown of 0.
 MIN_BUTTON_SECONDS = 600
 # What Discord may show as a link: schemes, "www.", and a domain followed by a path (invites like
@@ -48,8 +50,10 @@ _DOMAIN = re.compile(r"(?i)\b[\w-]+(?:\.[\w-]+)*\.[a-z][\w-]*\b")
 _SAFE_DOT = "\u2024"  # ONE DOT LEADER: looks like a dot, never part of a link
 # A domain written with spaces around the dot ("x . com"), for the usual endings only (prose has dots too).
 _SPACED_DOMAIN = re.compile(r"(?i)\b[\w-]+\s*\.\s*(?:com|net|org|gg|io|me|co|xyz|app|dev|tv|ly|link|site|info|ru|cn|tw|jp)\b")
+# Stands in for the game's name while a written post is checked (a private-use character: no word, no domain).
+_GAME = "\ue000"
 # The game's name with something attached that could make it a link or a path ("GAME.com", "GAME/x", "GAME:\\x").
-_ATTACHED = re.compile(r"GAME\s*[./:\\]|[./:\\]\s*GAME")
+_ATTACHED = re.compile("\ue000\\s*[./:\\\\]|[./:\\\\]\\s*\ue000")
 _MENTION = re.compile(r"<(?:@[!&]?|#|/[^:>]+:)\d+>")
 _USER_MENTION = re.compile(r"<@!?(\d+)>")
 
@@ -85,8 +89,11 @@ def safe_post_text(text: str, mentions: List[str], game: str) -> bool:
     the shown game name, which is safe where it appears as given."""
     if any(mention not in text for mention in mentions):
         return False
-    # The name is replaced, not removed, so that it cannot hide a domain it forms with the text around it.
-    text = _plain(text.replace(game, "GAME"))
+    # The name is replaced, not removed, so that it cannot hide a domain it forms with the text
+    # around it. As given it is safe; written any other way (another case, invisible characters)
+    # it still counts for what is attached to it.
+    text = _plain(text.replace(game, _GAME))
+    attached = text.casefold().replace(_plain(game).casefold(), _GAME)
     named = {int(user_id) for user_id in _USER_MENTION.findall(" ".join(mentions))}
     for match in _MENTION.finditer(text):
         user = _USER_MENTION.fullmatch(match.group())
@@ -94,7 +101,7 @@ def safe_post_text(text: str, mentions: List[str], game: str) -> bool:
             return False
     if "@everyone" in text or "@here" in text:
         return False
-    if _ATTACHED.search(text) or _SPACED_DOMAIN.search(text):
+    if _ATTACHED.search(text) or _ATTACHED.search(attached) or _SPACED_DOMAIN.search(text):
         return False
     return not _LINK.search(text) and not _DOMAIN.search(text) and "](" not in text
 
@@ -140,13 +147,19 @@ class PlayingCog(commands.Cog):
         self._orphans: Dict[int, int] = {}
         # Their posts: post message id -> channel id.
         self._orphan_posts: Dict[int, int] = {}
+        # Posts recorded before sending whose send failed and whose record could not be removed yet.
+        self._unsent: List[int] = []
 
     async def cog_load(self) -> None:
         self.lang_manager = LanguageManager.get_instance(self.bot)
+        # A claim older than this never got its room (the bot stopped while creating it).
+        self.store.release_stale_claims(self._now() - 60)
         self.bot.add_view(self.view)
         self._task = asyncio.create_task(self._run())
 
     async def cog_unload(self) -> None:
+        for channel_id, guild_id in list(self._orphans.items()):
+            self._record_orphan(guild_id, channel_id)  # the next copy of the cog only knows what is on record
         for view in [self.view, *self._sent_views]:
             view.stop()
         self._sent_views.clear()
@@ -214,6 +227,13 @@ class PlayingCog(commands.Cog):
 
     async def check_all(self) -> None:
         now = self._now()
+        # First, so that posts that never went out stop counting before anything is checked.
+        for pending in list(self._unsent):
+            try:
+                self.store.forget_playing_post(pending)
+                self._unsent.remove(pending)
+            except Exception:
+                self.logger.warning(f"playing: could not remove unsent post {pending}, will retry", exc_info=True)
         for settings in self.store.guilds_with_playing():
             guild = self.bot.get_guild(settings.guild_id)
             if guild is not None:
@@ -274,11 +294,16 @@ class PlayingCog(commands.Cog):
                 return await self._post(guild, channel, group, players, minimum)
         return None
 
-    def _still_allowed(self, guild_id: int, key: str) -> Optional[int]:
-        """The minimum number of players for a post about ``key`` as the settings are now, or None
-        when no post may go out (turned off, daily cap reached, game in its cooldown)."""
+    def _still_allowed(self, guild: discord.Guild, key: str, channel: Any) -> Optional[int]:
+        """The minimum number of players for a post about ``key`` in ``channel`` as the settings are
+        now, or None when no post may go out there (turned off, the channel changed, daily cap
+        reached, game in its cooldown)."""
         now = self._now()
+        guild_id = guild.id
         settings = self.store.get_settings(guild_id)
+        target = self._channel_for(guild, settings)
+        if target is None or target.id != channel.id:
+            return None
         if not settings.playing_enabled or self.store.count_playing_posts(guild_id, now - 86400) >= self.limits.playing_max_per_day:
             return None
         last = self.store.last_playing_post(guild_id, key)
@@ -326,7 +351,7 @@ class PlayingCog(commands.Cog):
                 await func.report_error(error, "playing: composing a post")
         # Checked again after writing it: from here to the send nothing is awaited.
         eligible = self._still_eligible(guild, channel, group, players)
-        minimum = self._still_allowed(guild.id, group.key)
+        minimum = self._still_allowed(guild, group.key, channel)
         if minimum is None or len(eligible) < minimum or self._together_in_voice(eligible):
             return None
         if [member.id for member in eligible[:cap]] != [member.id for member in named]:
@@ -346,16 +371,26 @@ class PlayingCog(commands.Cog):
         # fails afterwards), under a stand-in id until the message exists.
         pending = -time.time_ns()
         self.store.add_playing_post(guild.id, channel.id, pending, group.key, group.name, self._now())
+        message = None
         try:
             if view is not None:
                 message = await channel.send(text, allowed_mentions=allowed, suppress_embeds=True, view=view)
             else:
                 message = await channel.send(text, allowed_mentions=allowed, suppress_embeds=True)
-        except discord.HTTPException:
+        except Exception:
+            # Any failure (an HTTP error, a timeout): it was not posted.
             self.logger.warning(f"playing: could not post in channel {channel.id}", exc_info=True)
             self._backoff[guild.id] = self._now() + FAILURE_BACKOFF_SECONDS
-            self.store.forget_playing_post(pending)
             return None
+        finally:
+            if message is None:
+                # Not posted (also when cancelled): its record must not count.
+                self._unsent.append(pending)
+                try:
+                    self.store.forget_playing_post(pending)
+                    self._unsent.remove(pending)
+                except Exception:
+                    self.logger.warning(f"playing: could not remove unsent post {pending}, will retry", exc_info=True)
         try:
             self.store.move_playing_post(pending, message.id)
         except Exception as error:
@@ -400,38 +435,53 @@ class PlayingCog(commands.Cog):
                 key, values = ("playing_room_exists", {"channel": existing.mention}) if existing else ("playing_room_closed", {})
                 await interaction.followup.send(self._t(guild.id, key, **values), ephemeral=True)
                 return
-            rooms = {room[1] for room in self.store.temp_voice_rooms(guild.id) if guild.get_channel(room[1]) is not None}
-            rooms |= {channel_id for channel_id, guild_id in self._orphans.items() if guild_id == guild.id}
             if not self._can_open_rooms(channel):
                 await interaction.followup.send(self._t(guild.id, "playing_room_failed"), ephemeral=True)
                 return
+            rooms = self._open_rooms(guild)
             if len(rooms) >= self.limits.playing_max_rooms:
                 await interaction.followup.send(self._t(guild.id, "playing_room_limit"), ephemeral=True)
                 return
             # Claimed in the database first, so that even another copy of this cog (after a reload)
-            # cannot open a second room for the post.
-            if not self.store.claim_playing_post(message.id):
-                await interaction.followup.send(self._t(guild.id, "playing_room_closed"), ephemeral=True)
+            # cannot open a second room for the post, or more rooms than allowed.
+            if not self.store.claim_playing_post(message.id, len(rooms), self.limits.playing_max_rooms, self._now()):
+                now_post = self.store.playing_post(message.id)
+                key = "playing_room_closed" if now_post is None or now_post["voice_channel_id"] else "playing_room_limit"
+                await interaction.followup.send(self._t(guild.id, key), ephemeral=True)
                 return
+            room = None
             try:
                 room = await self._create_room(guild, channel, post["game"])
             except discord.HTTPException:
                 self.logger.warning(f"playing: could not open a voice room in guild {guild.id}", exc_info=True)
-                self.store.release_playing_post(message.id)
                 await interaction.followup.send(self._t(guild.id, "playing_room_failed"), ephemeral=True)
                 return
+            finally:
+                if room is None:
+                    # Not created (also when cancelled): the post may try again.
+                    self.store.release_playing_post(message.id)
             try:
-                self.store.add_temp_voice(guild.id, room.id, self._now(), message.id)
+                # The post points to its room first: one write is enough for the cleanup to find it.
                 self.store.set_playing_voice(message.id, room.id)
+                self.store.add_temp_voice(guild.id, room.id, self._now(), message.id)
             except Exception as error:
                 # An untracked room would never be deleted: take it back.
                 self.logger.error(f"playing: could not record voice room {room.id}", exc_info=True)
                 await func.report_error(error, "playing: recording a voice room")
                 if not await self._delete_room(room):
                     self._keep_orphan(guild.id, room.id, message.id)
+                else:
+                    self._mark_used(message.id)
                 await interaction.followup.send(self._t(guild.id, "playing_room_failed"), ephemeral=True)
                 return
         await interaction.followup.send(self._t(guild.id, "playing_room_ready", channel=room.mention), ephemeral=True)
+
+    def _open_rooms(self, guild: discord.Guild) -> set:
+        """The bot's rooms that still exist in ``guild``, however they are on record."""
+        rooms = {room[1] for room in self.store.temp_voice_rooms(guild.id)}
+        rooms |= {room[1] for room in self.store.playing_rooms(guild.id)}
+        rooms |= {channel_id for channel_id, guild_id in self._orphans.items() if guild_id == guild.id}
+        return {room for room in rooms if guild.get_channel(room) is not None}
 
     async def _create_room(self, guild: discord.Guild, channel: Any, game: str) -> Any:
         """A voice room next to ``channel``, open to the same people as it."""
@@ -458,6 +508,13 @@ class PlayingCog(commands.Cog):
         self.store.forget_temp_voice(room.id)
         return True
 
+    def _mark_used(self, message_id: int) -> None:
+        """A post whose room was opened and taken back: used up, but no room is being opened."""
+        try:
+            self.store.set_playing_voice(message_id, USED_NO_ROOM)
+        except Exception:
+            self.logger.warning(f"playing: could not mark post {message_id} as used", exc_info=True)
+
     def _keep_orphan(self, guild_id: int, channel_id: int, post_message_id: int) -> None:
         """Remembers a room that is neither recorded nor deleted, so the cleanup tries again."""
         self.logger.error(f"playing: voice room {channel_id} in guild {guild_id} is untracked, will retry deleting it")
@@ -469,6 +526,8 @@ class PlayingCog(commands.Cog):
         """Best effort: with the row (and its post) on record, a restart still finds the room."""
         post = next((post for post, room in self._orphan_posts.items() if room == channel_id), None)
         try:
+            if post is not None:
+                self.store.set_playing_voice(post, channel_id)
             if not self.store.is_temp_voice(channel_id):
                 self.store.add_temp_voice(guild_id, channel_id, 0, post)
         except Exception:
@@ -492,6 +551,15 @@ class PlayingCog(commands.Cog):
                 self._orphans.pop(channel_id, None)
             elif not await self._delete_room(room):
                 self._record_orphan(guild_id, channel_id)
+        # A room only its post points to (its own row could not be written) is put on record again.
+        tracked = {room[1] for room in self.store.temp_voice_rooms()}
+        for guild_id, channel_id, claimed_at in self.store.playing_rooms():
+            guild = self.bot.get_guild(guild_id)
+            if channel_id not in tracked and guild is not None and guild.get_channel(channel_id) is not None:
+                try:
+                    self.store.add_temp_voice(guild_id, channel_id, claimed_at)
+                except Exception:
+                    self.logger.warning(f"playing: could not record voice room {channel_id}", exc_info=True)
         for guild_id, channel_id, created_at in self.store.temp_voice_rooms():
             guild = self.bot.get_guild(guild_id)
             room = guild.get_channel(channel_id) if guild is not None else None

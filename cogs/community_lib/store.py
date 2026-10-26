@@ -83,7 +83,8 @@ CREATE TABLE IF NOT EXISTS playing_posts (
     game_key TEXT NOT NULL,
     game TEXT NOT NULL,
     posted_at REAL NOT NULL,
-    voice_channel_id INTEGER
+    voice_channel_id INTEGER,
+    room_claimed_at REAL
 );
 CREATE INDEX IF NOT EXISTS idx_playing_posts_guild ON playing_posts (guild_id, posted_at);
 CREATE TABLE IF NOT EXISTS temp_voice_rooms (
@@ -115,6 +116,7 @@ _ADDED_COLUMNS = [
     ("guild_settings", "playing_channel_id", "INTEGER"),
     ("guild_settings", "playing_min_players", "INTEGER NOT NULL DEFAULT 3"),
     ("temp_voice_rooms", "post_message_id", "INTEGER"),
+    ("playing_posts", "room_claimed_at", "REAL"),
 ]
 
 
@@ -295,17 +297,40 @@ class CommunityStore:
         with self._session() as connection:
             connection.execute("DELETE FROM playing_posts WHERE message_id = ?", (message_id,))
 
-    def claim_playing_post(self, message_id: int) -> bool:
-        """Marks a post as having opened its room (``voice_channel_id`` -1 until the room is known).
+    def claim_playing_post(self, message_id: int, rooms_open: int, max_rooms: int, now: float) -> bool:
+        """Marks a post as opening its room (``voice_channel_id`` -1 until the room is known).
 
-        Returns False when the post already opened one: only one claim ever succeeds.
+        Returns False when the post already opened one, or when ``rooms_open`` plus the rooms other
+        posts of the guild are opening right now reach ``max_rooms``: one statement decides both.
         """
         with self._session() as connection:
             cursor = connection.execute(
-                "UPDATE playing_posts SET voice_channel_id = -1 WHERE message_id = ? AND voice_channel_id IS NULL",
-                (message_id,),
+                "UPDATE playing_posts SET voice_channel_id = -1, room_claimed_at = ?"
+                " WHERE message_id = ? AND voice_channel_id IS NULL AND ? + ("
+                "  SELECT COUNT(*) FROM playing_posts AS other"
+                "  WHERE other.guild_id = playing_posts.guild_id AND other.voice_channel_id = -1"
+                "  AND other.message_id NOT IN (SELECT post_message_id FROM temp_voice_rooms WHERE post_message_id IS NOT NULL)"
+                " ) < ?",
+                (now, message_id, rooms_open, max_rooms),
             )
             return cursor.rowcount == 1
+
+    def release_stale_claims(self, before: float) -> None:
+        """Frees claims made before ``before`` that never got a room (the bot stopped meanwhile)."""
+        with self._session() as connection:
+            connection.execute(
+                "UPDATE playing_posts SET voice_channel_id = NULL WHERE voice_channel_id = -1 AND room_claimed_at < ?"
+                " AND message_id NOT IN (SELECT post_message_id FROM temp_voice_rooms WHERE post_message_id IS NOT NULL)",
+                (before,),
+            )
+
+    def playing_rooms(self, guild_id: Optional[int] = None) -> List[Tuple[int, int, float]]:
+        """``(guild_id, channel_id, claimed_at)`` for every room a post points to."""
+        query = "SELECT guild_id, voice_channel_id, COALESCE(room_claimed_at, posted_at) FROM playing_posts WHERE voice_channel_id > 0"
+        with self._session() as connection:
+            if guild_id is None:
+                return connection.execute(query).fetchall()
+            return connection.execute(query + " AND guild_id = ?", (guild_id,)).fetchall()
 
     def release_playing_post(self, message_id: int) -> None:
         """Takes back a claim whose room could not be created."""
