@@ -42,6 +42,17 @@
         "song_answer": "答案是 **[{title}]({url})**",
         "song_winner": "{user} 用了 {seconds} 秒猜中！",
         "song_nobody": "沒有人猜中！",
-        "song_interrupted": "有人開始放音樂了，猜歌到這裡結束。"
+        "song_interrupted": "有人開始放音樂了，猜歌到這裡結束。",
+        "offer": "🎮 {user} 想開一場{game}。按「開始」就開始（{seconds} 秒內有效，只有 {user} 能按）。",
+        "offer_start": "開始",
+        "offer_cancel": "取消",
+        "offer_not_yours": "這個按鈕只有提出遊戲的人能按。",
+        "offer_started": "🎮 {user} 開始了{game}！",
+        "offer_cancelled": "已取消這場遊戲。",
+        "offer_expired": "這個遊戲邀請已經失效了。",
+        "offer_limit": "這個伺服器已經有好幾個遊戲邀請在等人按了，先處理那些吧。",
+        "game_quiz": "伺服器知識問答",
+        "game_chain": "文字接龍",
+        "game_guess_song": "猜歌"
     }
 }

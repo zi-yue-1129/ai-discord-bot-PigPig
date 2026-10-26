@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
 import discord
 from discord import app_commands
@@ -58,6 +58,10 @@ CHAIN_MAX_SECONDS = 15 * 60
 CHAIN_REACTIONS = {None: "✅", "wrong_start": "❌", "used": "🔁", "dead_end": "🚫", "twice": "⏳"}
 # Songs considered for guess the song (the server's most played ones).
 SONG_POOL_SIZE = 200
+# How long the Start button on a game the AI offered can be pressed, and how many offers a server may have open.
+GAME_OFFER_SECONDS = 120
+MAX_GAME_OFFERS = 3
+GAMES = ("quiz", "chain", "guess_song")
 MIN_SONGS = 3
 _LANGUAGE_NAMES = {"zh_TW": "Traditional Chinese", "zh_CN": "Simplified Chinese", "ja_JP": "Japanese", "en_US": "English"}
 
@@ -84,6 +88,72 @@ class QuizView(discord.ui.View):
         return callback
 
 
+class GameOfferView(discord.ui.View):
+    """Start and Cancel buttons on a game the AI offered; only the member it was offered to can press them.
+
+    Nothing starts before Start is pressed, so text that tricks the model can at most post an offer.
+    """
+
+    def __init__(self, cog: "GamesCog", guild: Any, channel: Any, host: Any, game: str, options: Dict[str, Any]) -> None:
+        super().__init__(timeout=GAME_OFFER_SECONDS)
+        self.cog = cog
+        self.guild = guild
+        self.channel = channel
+        self.host = host
+        self.game = game
+        self.options = options
+        self.message: Any = None
+        self.done = False
+        start = discord.ui.Button(label=cog._t(guild.id, "offer_start"), style=discord.ButtonStyle.success)
+        start.callback = self._start
+        cancel = discord.ui.Button(label=cog._t(guild.id, "offer_cancel"), style=discord.ButtonStyle.secondary)
+        cancel.callback = self._cancel
+        self.add_item(start)
+        self.add_item(cancel)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.host.id:
+            await interaction.response.send_message(self.cog._t(self.guild.id, "offer_not_yours"), ephemeral=True)
+            return False
+        if self.done:
+            await interaction.response.send_message(self.cog._t(self.guild.id, "offer_expired"), ephemeral=True)
+            return False
+        return True
+
+    def close(self) -> None:
+        """Ends the offer (once): its buttons stop working and the server may hold another one."""
+        self.done = True
+        self.stop()
+        self.cog._forget_offer(self)
+
+    async def _start(self, interaction: discord.Interaction) -> None:
+        self.close()
+        # The checks run again now: the channel, the host or the music may be busy since the offer.
+        problem = self.cog.start_game(self.game, self.guild, self.channel, self.host, **self.options)
+        text = problem if problem is not None else self.cog._t(
+            self.guild.id, "offer_started", user=self.host.mention, game=self.cog._t(self.guild.id, f"game_{self.game}")
+        )
+        await interaction.response.edit_message(content=text, view=None, allowed_mentions=discord.AllowedMentions.none())
+
+    async def _cancel(self, interaction: discord.Interaction) -> None:
+        self.close()
+        await interaction.response.edit_message(content=self.cog._t(self.guild.id, "offer_cancelled"), view=None)
+
+    async def expire(self) -> None:
+        """Takes the buttons off an offer nobody answered (or one a newer offer replaced)."""
+        if self.done:
+            return
+        self.close()
+        if self.message is not None:
+            try:
+                await self.message.edit(content=self.cog._t(self.guild.id, "offer_expired"), view=None)
+            except discord.HTTPException:
+                pass
+
+    async def on_timeout(self) -> None:
+        await self.expire()
+
+
 class GamesCog(commands.Cog):
     """Server games; one game per channel at a time."""
 
@@ -107,6 +177,8 @@ class GamesCog(commands.Cog):
         self._guesses: Dict[int, "GuessRound"] = {}
         self.clip_seconds: float = song_guess.CLIP_SECONDS
         self.guess_seconds: float = song_guess.GUESS_SECONDS
+        # Open offers from the AI's start_server_game tool, by host.
+        self._offers: Dict[int, GameOfferView] = {}
 
     async def cog_load(self) -> None:
         self.lang_manager = LanguageManager.get_instance(self.bot)
@@ -115,6 +187,8 @@ class GamesCog(commands.Cog):
         # A running game would keep posting (and playing) with nobody left to answer it.
         for task in list(self._tasks):
             task.cancel()
+        for offer in list(self._offers.values()):
+            offer.close()
 
     def _t(self, guild_id: Any, key: str, **kwargs: Any) -> str:
         if self.lang_manager is None:
@@ -132,10 +206,13 @@ class GamesCog(commands.Cog):
 
         The host's chat quota is not touched here: each model call the game makes is charged instead.
         """
-        guild_id, channel = interaction.guild_id, interaction.channel
+        return self._busy_at(interaction.guild_id, interaction.channel, interaction.user.id)
+
+    def _busy_at(self, guild_id: int, channel: Any, host_id: int) -> Optional[str]:
+        """``_busy`` for a host and channel given directly (the AI's ``start_server_game`` tool)."""
         if channel.id in self.limits.running:
             return self._t(guild_id, "busy")
-        if interaction.user.id in self.limits.hosts:
+        if host_id in self.limits.hosts:
             return self._t(guild_id, "hosting")
         music = self.bot.get_cog("YTMusic") if hasattr(self.bot, "get_cog") else None
         requests = getattr(music, "requests", None)
@@ -155,16 +232,116 @@ class GamesCog(commands.Cog):
         return self._t(guild_id, "rate_limited", seconds=max(1, round(error.retry_after)))
 
     def _claim(self, interaction: discord.Interaction) -> None:
-        self.limits.running.add(interaction.channel.id)
-        self.limits.hosts.add(interaction.user.id)
+        self._claim_at(interaction.channel.id, interaction.user.id)
         task = _current_task()
         if task is not None:
             self._tasks.add(task)
 
+    def _claim_at(self, channel_id: int, host_id: int) -> None:
+        self.limits.running.add(channel_id)
+        self.limits.hosts.add(host_id)
+
     def _release(self, interaction: discord.Interaction) -> None:
-        self.limits.running.discard(interaction.channel.id)
-        self.limits.hosts.discard(interaction.user.id)
+        self._release_at(interaction.channel.id, interaction.user.id)
+
+    def _release_at(self, channel_id: int, host_id: int) -> None:
+        """Frees the channel and the host; also forgets the game's task (the one running this)."""
+        self.limits.running.discard(channel_id)
+        self.limits.hosts.discard(host_id)
         self._tasks.discard(_current_task())
+
+    def _start_problem(self, game: str, guild: Any, channel: Any, host: Any) -> Tuple[Optional[str], list]:
+        """Why ``game`` cannot start (the text to tell the host), or None, and the song pool for guess the song."""
+        if game == "guess_song":
+            return self._song_problem(guild, channel, host)
+        problem = self._busy_at(guild.id, channel, host.id)
+        if problem is None and game == "quiz" and (self._memory_store() is None or getattr(self.bot, "orchestrator", None) is None):
+            problem = self._t(guild.id, "unavailable")
+        return problem, []
+
+    def _forget_offer(self, offer: GameOfferView) -> None:
+        if self._offers.get(offer.host.id) is offer:
+            del self._offers[offer.host.id]
+
+    async def offer_game(
+        self, game: str, guild: Any, channel: Any, host: Any, rounds: int = 5, *, homophones: bool = False,
+        days: Optional[int] = None, this_channel: bool = False,
+    ) -> Optional[str]:
+        """Posts a game offer with Start and Cancel buttons for ``host`` (the AI's ``start_server_game`` tool).
+
+        Nothing starts until the host presses Start; the same checks as the slash commands run
+        now (to answer at once) and again on the press. A host has one open offer (a new one
+        replaces it) and a server at most ``MAX_GAME_OFFERS``.
+
+        Returns:
+            None once the offer is posted, otherwise the text telling the host why not.
+        """
+        if game not in GAMES:
+            raise ValueError(f"unknown game {game!r}")
+        options: Dict[str, Any] = {"rounds": max(3, min(int(rounds), 10))}
+        if game == "chain":
+            options = {"homophones": bool(homophones)}
+        elif game == "quiz":
+            options.update(days=max(1, min(int(days), 3650)) if days else None, this_channel=bool(this_channel))
+        problem, _ = self._start_problem(game, guild, channel, host)
+        if problem is not None:
+            return problem
+        previous = self._offers.get(host.id)
+        others = [offer for offer in self._offers.values() if offer.guild.id == guild.id and offer is not previous]
+        if len(others) >= MAX_GAME_OFFERS:
+            return self._t(guild.id, "offer_limit")
+        # Registered before the old offer is taken down (an await), so two quick requests leave one offer.
+        offer = GameOfferView(self, guild, channel, host, game, options)
+        self._offers[host.id] = offer
+        if previous is not None:
+            await previous.expire()
+        text = self._t(
+            guild.id, "offer", user=host.mention, game=self._t(guild.id, f"game_{game}"),
+            seconds=int(GAME_OFFER_SECONDS),
+        )
+        try:
+            offer.message = await channel.send(text, view=offer, allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException:
+            offer.close()
+            return self._t(guild.id, "failed")
+        return None
+
+    def start_game(
+        self, game: str, guild: Any, channel: Any, host: Any, rounds: int = 5, *, homophones: bool = False,
+        days: Optional[int] = None, this_channel: bool = False,
+    ) -> Optional[str]:
+        """Starts a game hosted by ``host`` in ``channel`` in the background (Start on an offer of the AI).
+
+        The same checks as the slash commands apply; the game's first message is posted in the
+        channel without pinging anyone, and the host is charged for its model calls as usual.
+
+        Returns:
+            None once it started, otherwise the text telling the host why not.
+        """
+        if game not in GAMES:
+            raise ValueError(f"unknown game {game!r}")
+        rounds = max(3, min(int(rounds), 10))
+        problem, pool = self._start_problem(game, guild, channel, host)
+        if problem is not None:
+            return problem
+
+        async def announce(text: str) -> Any:
+            return await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
+
+        # Claimed before the task starts, so a second request right after this one is refused.
+        self._claim_at(channel.id, host.id)
+        if game == "quiz":
+            days = max(1, min(int(days), 3650)) if days else None
+            session = self._play_quiz(guild, channel, host, rounds, days, this_channel, announce)
+        elif game == "chain":
+            session = self._play_chain(guild, channel, host, homophones, announce)
+        else:
+            self.limits.song_guilds.add(guild.id)
+            session = self._play_song_game(guild, channel, host, pool, rounds, announce)
+        task = asyncio.create_task(session)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return None
 
     # ------------------------------------------------------------ questions
     async def make_questions(
@@ -355,11 +532,18 @@ class GamesCog(commands.Cog):
             await interaction.response.send_message(self._t(guild.id, "unavailable"), ephemeral=True)
             return
         self._claim(interaction)
+        await self._play_quiz(guild, channel, interaction.user, rounds, days, this_channel, interaction.response.send_message)
+
+    async def _play_quiz(
+        self, guild: Any, channel: Any, host: Any, rounds: int, days: Optional[int], this_channel: bool,
+        announce: Callable[[str], Awaitable[Any]],
+    ) -> None:
+        """Runs a claimed quiz from its first message (``announce``) to the end, then frees the channel."""
         try:
-            await interaction.response.send_message(self._t(guild.id, "preparing", user=interaction.user.mention, rounds=rounds))
+            await announce(self._t(guild.id, "preparing", user=host.mention, rounds=rounds))
             since = self._now() - days * 86400 if days else None
             questions = await self.make_questions(
-                guild, rounds, str(channel.id) if this_channel else None, since, here=channel.id, host_id=interaction.user.id
+                guild, rounds, str(channel.id) if this_channel else None, since, here=channel.id, host_id=host.id
             )
             if not questions:
                 await channel.send(self._t(guild.id, "no_memories"))
@@ -375,7 +559,7 @@ class GamesCog(commands.Cog):
             except discord.HTTPException:
                 pass
         finally:
-            self._release(interaction)
+            self._release_at(channel.id, host.id)
 
     # ------------------------------------------------------------ word chain
     async def handle_message(self, message: discord.Message) -> bool:
@@ -513,17 +697,19 @@ class GamesCog(commands.Cog):
         if busy:
             await interaction.response.send_message(busy, ephemeral=True)
             return
-        use_homophones = homophones and homophones_available()
         self._claim(interaction)
+        await self._play_chain(guild, channel, interaction.user, homophones, interaction.response.send_message)
+
+    async def _play_chain(self, guild: Any, channel: Any, host: Any, homophones: bool, announce: Callable[[str], Awaitable[Any]]) -> None:
+        """Runs a claimed word chain from its rules (``announce``) to the end, then frees the channel."""
+        use_homophones = homophones and homophones_available()
         try:
             key = "chain_rules_homophones" if use_homophones else "chain_rules"
-            text = self._t(guild.id, key, user=interaction.user.mention, seconds=int(self.chain_idle_seconds))
+            text = self._t(guild.id, key, user=host.mention, seconds=int(self.chain_idle_seconds))
             if homophones and not use_homophones:
                 text += "\n" + self._t(guild.id, "chain_no_homophones")
-            await interaction.response.send_message(text)
-            await self.run_chain(
-                channel, guild, WordChain(self.starter_word(guild.id), homophones=use_homophones), interaction.user.id
-            )
+            await announce(text)
+            await self.run_chain(channel, guild, WordChain(self.starter_word(guild.id), homophones=use_homophones), host.id)
         except Exception as error:
             self.logger.error("games: the word chain failed", exc_info=True)
             await func.report_error(error, "games: word chain")
@@ -532,7 +718,7 @@ class GamesCog(commands.Cog):
             except discord.HTTPException:
                 pass
         finally:
-            self._release(interaction)
+            self._release_at(channel.id, host.id)
 
     # ------------------------------------------------------------ guess the song
     async def _take_guess(self, message: discord.Message, guess_round: "GuessRound") -> bool:
@@ -666,9 +852,18 @@ class GamesCog(commands.Cog):
     @app_commands.describe(rounds="How many songs (3-10)")
     async def guess_song(self, interaction: discord.Interaction, rounds: app_commands.Range[int, 3, 10] = 5) -> None:
         guild, channel = interaction.guild, interaction.channel
-        voice = getattr(interaction.user, "voice", None)
+        text, pool = self._song_problem(guild, channel, interaction.user)
+        if text:
+            await interaction.response.send_message(text, ephemeral=True)
+            return
+        self._claim(interaction)
+        self.limits.song_guilds.add(guild.id)
+        await self._play_song_game(guild, channel, interaction.user, pool, rounds, interaction.response.send_message)
+
+    def _song_problem(self, guild: Any, channel: Any, host: Any) -> Tuple[Optional[str], list]:
+        """Why guess the song cannot start (the text to tell the host), or None, and the song pool."""
+        voice = getattr(host, "voice", None)
         music = self.bot.get_cog("YTMusic")
-        voice_client = guild.voice_client
         problem = None
         if voice is None or voice.channel is None:
             problem = "song_need_voice"
@@ -676,30 +871,33 @@ class GamesCog(commands.Cog):
             problem = "song_unavailable"
         elif guild.id in self.limits.song_guilds:
             problem = "song_other_game"
-        elif self._music_busy(voice_client, music, guild.id):
+        elif self._music_busy(guild.voice_client, music, guild.id):
             problem = "song_music_playing"
         pool = self.song_pool(music, guild.id) if problem is None else []
         if problem is None and len(pool) < MIN_SONGS:
             problem = "song_not_enough"
-        text = self._t(guild.id, problem, count=MIN_SONGS) if problem else self._busy(interaction)
-        if text:
-            await interaction.response.send_message(text, ephemeral=True)
-            return
-        self._claim(interaction)
-        self.limits.song_guilds.add(guild.id)
+        if problem:
+            return self._t(guild.id, problem, count=MIN_SONGS), []
+        return self._busy_at(guild.id, channel, host.id), pool
+
+    async def _play_song_game(
+        self, guild: Any, channel: Any, host: Any, pool: list, rounds: int, announce: Callable[[str], Awaitable[Any]]
+    ) -> None:
+        """Runs a claimed song game (channel, host and guild taken) to the end, then hands everything back."""
+        music = self.bot.get_cog("YTMusic")
+        voice = host.voice
+        voice_client = guild.voice_client
         joined = False
         # The music player's idle timer would disconnect the borrowed connection mid-game.
         timer_paused = voice_client is not None and await self._pause_disconnect_timer(music, guild.id)
         try:
-            await interaction.response.send_message(
-                self._t(guild.id, "song_preparing", user=interaction.user.mention, rounds=rounds, channel=voice.channel.mention)
-            )
+            await announce(self._t(guild.id, "song_preparing", user=host.mention, rounds=rounds, channel=voice.channel.mention))
             if voice_client is None:
                 voice_client = await voice.channel.connect()
                 joined = True
             elif voice_client.channel != voice.channel:
                 await voice_client.move_to(voice.channel)
-            await self.run_song_game(channel, guild, voice_client, music, pool, min(rounds, len(pool)), interaction.user)
+            await self.run_song_game(channel, guild, voice_client, music, pool, min(rounds, len(pool)), host)
         except Exception as error:
             self.logger.error("games: guess the song failed", exc_info=True)
             await func.report_error(error, "games: guess the song")
@@ -708,7 +906,7 @@ class GamesCog(commands.Cog):
             except discord.HTTPException:
                 pass
         finally:
-            await self._finish_song_game(interaction, voice_client, music, joined, timer_paused)
+            await self._finish_song_game_at(guild, channel, host, voice_client, music, joined, timer_paused)
 
     @staticmethod
     async def _pause_disconnect_timer(music: Any, guild_id: int) -> bool:
@@ -724,13 +922,17 @@ class GamesCog(commands.Cog):
         self, interaction: discord.Interaction, voice_client: Any, music: Any, joined: bool, restart_timer: bool = False
     ) -> None:
         """Hands the voice channel back, then frees the server for another song game (not before)."""
-        guild = interaction.guild
+        await self._finish_song_game_at(
+            interaction.guild, interaction.channel, interaction.user, voice_client, music, joined, restart_timer
+        )
+
+    async def _finish_song_game_at(
+        self, guild: Any, channel: Any, host: Any, voice_client: Any, music: Any, joined: bool, restart_timer: bool = False
+    ) -> None:
         try:
-            await self._hand_back_voice(
-                guild, interaction.channel, voice_client, music, joined, interaction.user, restart_timer
-            )
+            await self._hand_back_voice(guild, channel, voice_client, music, joined, host, restart_timer)
         finally:
-            self._release(interaction)
+            self._release_at(channel.id, host.id)
             self.limits.song_guilds.discard(guild.id)
 
     async def _hand_back_voice(

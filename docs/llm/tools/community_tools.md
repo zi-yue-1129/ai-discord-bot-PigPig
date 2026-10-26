@@ -1,6 +1,6 @@
 # Community Tools
 
-`llm/tools/community_tools.py` lets the AI answer questions about the community features: rankings, achievements, the weekly recap, birthdays and events.
+`llm/tools/community_tools.py` lets the AI answer questions about the community features: rankings, achievements, the weekly recap, birthdays and events. `llm/tools/activity_tools.py` adds starting a game, who is playing what, and the most played songs.
 
 The AI's answer is posted for everyone in the channel, so each tool returns only what a public post would show:
 
@@ -17,6 +17,17 @@ The AI's answer is posted for everyone in the channel, so each tool returns only
 | `get_server_recap` | community | CommunityCog is loaded | `period`: this_week or last_week | The weekly recap's facts (messages, shareable channels, talkers, words, quote, titles; no music) |
 | `get_upcoming_birthdays` | community | CommunityCog is loaded (says so when birthdays are off for the server; building the tool list reads no database) | `days`: 1 to 30 | Saved birthdays, soonest first, without hidden members, bots or leavers |
 | `list_upcoming_events` | events | EventsCog is loaded | none | Up to 10 events: number, title, Discord start timestamp, sign-up counts (without hidden members and people who left), link |
+| `start_server_game` | games | GamesCog is loaded | `game`: quiz, chain or guess_song; `rounds`; `homophones`; `days`; `this_channel` | Posts an offer with Start and Cancel buttons only the asker can press; the game starts on Start, with the asker as host (same checks, again on the press, and quota as `/game`) |
+| `who_is_playing` | playing | PlayingCog is loaded (says so when `/community playing` is off) | none | Games being played now, most players first, naming and counting only players who can see the channel and are not hidden |
+| `get_popular_songs` | music | the music player's play log exists | `period`: week or month; `limit` | The most played songs and their play and skip counts, counted only where everyone could hear them |
+
+### Starting a game
+
+The model never starts a game by itself: `start_server_game` posts an offer that pings nobody, and only the asker can press Start (others are told it is not theirs). Text that tricks the model can at most post an offer. An offer expires after 2 minutes; a host has one open offer (a new one replaces it) and a server at most 3. Pressing Start runs the `/game` checks again, since the channel, the host or the music may be busy by then.
+
+### Popular songs
+
+The play log records the player's text channel and the voice channel of each play. A play is counted only when the voice channel is shareable and the text channel is shareable or is the channel the answer goes to, and not when a hidden member asked for it. Plays logged before the channels were recorded are not counted. `/game guess_song` still picks its songs from the whole log.
 
 ### The recap
 
