@@ -37,7 +37,7 @@ Identifies which users are likely "listening" or "available" in the current cont
 - **Text Channel Logic**: If called from a text channel, it lists online human members (excluding bots).
 - **Status Indicators**: Shows online status (🟢), idle (🌙), or DND (⛔).
 - **Device Awareness**: Shows if a user is connected via Mobile, Desktop, or Web.
-- **Privacy Filtering**: Excludes offline users and bots from the participants list.
+- **Privacy Filtering**: Excludes offline users and bots from the participants list. In text channels, members hidden with `/leaderboard optout` are left out too, and nobody is listed when the opt-out list cannot be read. Voice channel members are listed as Discord itself shows them.
 
 ## Implementation Details
 

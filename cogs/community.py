@@ -778,9 +778,12 @@ class CommunityCog(commands.Cog):
         guild = interaction.guild
         settings = self.store.get_settings(guild.id)
         today = self._local_now(settings).date()
+        # Members hidden with /leaderboard optout are left out, except the one asking (the reply is ephemeral).
+        hidden = self.store.optouts(guild.id) - {interaction.user.id}
         rows = [
             (guild.get_member(user_id), when)
             for user_id, when in upcoming_birthdays(today, self.store.birthdays(guild.id), self.UPCOMING_DAYS)
+            if user_id not in hidden
         ]
         lines = [
             self._t(guild.id, "upcoming_line", date=f"{when.month}/{when.day}", name=member.display_name)

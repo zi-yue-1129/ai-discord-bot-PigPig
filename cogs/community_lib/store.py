@@ -9,6 +9,9 @@ from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Set, Tuple, Union
 
+# How long a read-only opt-out check waits for a locked database before it counts as unreadable.
+OPTOUT_READ_TIMEOUT = 5.0
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS guild_settings (
     guild_id INTEGER PRIMARY KEY,
@@ -177,6 +180,12 @@ class GuildSettings:
 
 _COLUMNS = [f.name for f in fields(GuildSettings)]
 _BOOL_COLUMNS = {f.name for f in fields(GuildSettings) if f.type in ("bool", bool)}
+
+
+def _chunks(ids: List[int], size: int = 500) -> Iterator[List[int]]:
+    """``ids`` in pieces small enough to be SQL parameters (SQLite limits how many one statement takes)."""
+    for start in range(0, len(ids), size):
+        yield ids[start:start + size]
 
 
 class CommunityStore:
@@ -353,23 +362,62 @@ class CommunityStore:
             )
             return cursor.rowcount == 1
 
+    def open_claims(self, guild_id: int) -> List[Tuple[int, str, Optional[float], Optional[float]]]:
+        """``(message_id, token, claimed_at, used_at)`` of the guild's claims whose room is not on record.
+
+        A claim that was marked used (its room exists) but whose room could not be recorded is
+        included: its token is all that is left to find the room by.
+        """
+        with self._session() as connection:
+            return connection.execute(
+                "SELECT message_id, room_token, room_claimed_at, room_used_at FROM playing_posts"
+                " WHERE guild_id = ? AND voice_channel_id = -1 AND room_token IS NOT NULL",
+                (guild_id,),
+            ).fetchall()
+
     def mark_playing_post_sent(self, message_id: int) -> None:
         with self._session() as connection:
             connection.execute("UPDATE playing_posts SET sent = 1 WHERE message_id = ?", (message_id,))
 
-    def release_stale_claims(self, before: float, keep: Iterable[int] = ()) -> None:
+    def release_stale_claims(self, before: float, keep: Iterable[int] = (), guild_ids: Optional[Iterable[int]] = None) -> None:
         """Frees claims made before ``before`` (or at an unknown time) that never got a room, except
-        the posts in ``keep``."""
-        keep = list(keep)
-        marks = ",".join("?" * len(keep))
+        the posts in ``keep``; with ``guild_ids``, only the claims of those servers."""
+        keep = set(keep)
+        only = None if guild_ids is None else set(guild_ids)
         with self._session() as connection:
-            connection.execute(
-                "UPDATE playing_posts SET voice_channel_id = NULL, room_token = NULL"
-                " WHERE voice_channel_id = -1 AND (room_claimed_at IS NULL OR room_claimed_at < ?)"
-                " AND message_id NOT IN (SELECT post_message_id FROM temp_voice_rooms WHERE post_message_id IS NOT NULL)"
-                + (f" AND message_id NOT IN ({marks})" if keep else ""),
-                (before, *keep),
-            )
+            stale = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT message_id, guild_id FROM playing_posts"
+                    " WHERE voice_channel_id = -1 AND (room_claimed_at IS NULL OR room_claimed_at < ?)"
+                    " AND message_id NOT IN (SELECT post_message_id FROM temp_voice_rooms WHERE post_message_id IS NOT NULL)",
+                    (before,),
+                )
+                if row[0] not in keep and (only is None or row[1] in only)
+            ]
+            for chunk in _chunks(stale):
+                connection.execute(
+                    "UPDATE playing_posts SET voice_channel_id = NULL, room_token = NULL"
+                    f" WHERE message_id IN ({','.join('?' * len(chunk))})",
+                    chunk,
+                )
+
+    def forget_claim_tokens(self, message_ids: Iterable[int]) -> None:
+        """Takes the token away from used claims whose room was closed without the post ever pointing
+        to it, so that no channel can be taken for that room afterwards."""
+        for chunk in _chunks(list(message_ids)):
+            with self._session() as connection:
+                connection.execute(
+                    "UPDATE playing_posts SET room_token = NULL"
+                    f" WHERE voice_channel_id = -1 AND room_used_at IS NOT NULL AND message_id IN ({','.join('?' * len(chunk))})",
+                    chunk,
+                )
+
+    def post_of_temp_voice(self, channel_id: int) -> Optional[int]:
+        """The post a recorded room was opened from, or None."""
+        with self._session() as connection:
+            row = connection.execute("SELECT post_message_id FROM temp_voice_rooms WHERE channel_id = ?", (channel_id,)).fetchone()
+        return row[0] if row else None
 
     def playing_rooms(self, guild_id: Optional[int] = None) -> List[Tuple[int, int, float]]:
         """``(guild_id, channel_id, claimed_at)`` for every room a post points to."""
@@ -394,10 +442,22 @@ class CommunityStore:
                 "UPDATE playing_posts SET voice_channel_id = ? WHERE message_id = ?", (voice_channel_id, message_id)
             )
 
-    def forget_playing_posts(self, before: float) -> None:
-        """Drops posts older than ``before`` (they no longer count for anything)."""
+    def forget_playing_posts(self, before: float, keep: Iterable[int] = ()) -> None:
+        """Drops posts older than ``before`` (they no longer count for anything), except the posts in
+        ``keep`` and those with a claim that is not closed: their room still has to be found or deleted."""
+        keep = set(keep)
         with self._session() as connection:
-            connection.execute("DELETE FROM playing_posts WHERE posted_at < ?", (before,))
+            old = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT message_id FROM playing_posts WHERE posted_at < ?"
+                    " AND NOT (voice_channel_id = -1 AND room_token IS NOT NULL)",
+                    (before,),
+                )
+                if row[0] not in keep
+            ]
+            for chunk in _chunks(old):
+                connection.execute(f"DELETE FROM playing_posts WHERE message_id IN ({','.join('?' * len(chunk))})", chunk)
 
     def add_temp_voice(self, guild_id: int, channel_id: int, now: float, post_message_id: Optional[int] = None) -> None:
         """Remembers a voice room the bot made (and the post it was opened from), so it is deleted once empty."""
@@ -501,6 +561,20 @@ class CommunityStore:
 
     def is_opted_out(self, guild_id: int, user_id: int) -> bool:
         return user_id in self.optouts(guild_id)
+
+    def read_optouts(self, guild_id: int) -> Set[int]:
+        """Like ``optouts`` but read-only, for privacy checks that must fail closed.
+
+        Never creates or migrates the file: a missing file, a missing ``optouts`` table or a file that is not
+        a database raises ``sqlite3.Error`` instead of reading as "nobody opted out".
+        """
+        uri = f"{self.path.resolve().as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=OPTOUT_READ_TIMEOUT)
+        try:
+            rows = connection.execute("SELECT user_id FROM optouts WHERE guild_id = ?", (guild_id,)).fetchall()
+        finally:
+            connection.close()
+        return {user_id for (user_id,) in rows}
 
     # ------------------------------------------------------------ achievements
     def unlock(self, guild_id: int, user_id: int, achievement_ids: List[str], now: float) -> List[str]:

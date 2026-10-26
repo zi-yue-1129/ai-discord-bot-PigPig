@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import sqlite3
 import time
 import unicodedata
 import uuid
@@ -91,6 +92,25 @@ def room_name(game: str) -> str:
     return shown_game_name(game).replace("\\", "") or "game"
 
 
+# A room is asked for under a claim's token, which ends up in the room's name: that is how the
+# bot knows a room is its own when Discord created it without the answer getting back.
+ROOM_TOKEN_CHARS = 16
+_ROOM_SEPARATOR = " · #"
+_ROOM_TOKEN = re.compile(re.escape(_ROOM_SEPARATOR) + r"([0-9a-f]{%d})$" % ROOM_TOKEN_CHARS)
+# Discord allows 100 characters in a channel name: the game's name leaves room for the separator and the token.
+ROOM_LABEL_GAME_LIMIT = 100 - len(_ROOM_SEPARATOR) - ROOM_TOKEN_CHARS
+# A room only belongs to a claim if it was made after the claim (this much clock difference to Discord is allowed).
+CLAIM_CLOCK_SLACK_SECONDS = 10
+
+
+def room_label(game: str, token: str) -> str:
+    """The name a game's voice room is created with: the game, then the claim's token.
+
+    The game is cut to ROOM_LABEL_GAME_LIMIT so that the whole name fits Discord's 100 characters.
+    """
+    return f"{room_name(game)[:ROOM_LABEL_GAME_LIMIT].rstrip()}{_ROOM_SEPARATOR}{token[:ROOM_TOKEN_CHARS]}"
+
+
 def safe_post_text(text: str, mentions: List[str], game: str) -> bool:
     """Whether a written post may go out as it is: it names every player, mentions nobody else,
     and has no links or domains (the model may be talked into them by a game's name). ``game`` is
@@ -157,10 +177,18 @@ class PlayingCog(commands.Cog):
         self._orphan_posts: Dict[int, int] = {}
         # Voice rooms being opened; unloading waits for them, so that no other copy of the cog races them.
         self._opening: set = set()
+        # Posts whose room exists but could not be marked used yet: post message id -> guild id. Their
+        # claims are not freed, or the room would stay untracked for good.
+        self._unrecovered: Dict[int, int] = {}
+        # Rooms taken in for a claim whose creation request had not answered: post message id -> (guild id,
+        # channel id). Kept in memory, so that the answer can tell even when the database cannot be read.
+        self._adopted: Dict[int, tuple] = {}
+        # Posts whose claim could not be closed when their room was: the cleanup tries again.
+        self._unretired: set = set()
 
     async def cog_load(self) -> None:
         self.lang_manager = LanguageManager.get_instance(self.bot)
-        self._forget_abandoned()
+        await self._forget_abandoned()
         self.bot.add_view(self.view)
         self._task = asyncio.create_task(self._run())
 
@@ -176,15 +204,31 @@ class PlayingCog(commands.Cog):
             self._task.cancel()
             self._task = None
 
-    def _forget_abandoned(self) -> None:
+    async def _forget_abandoned(self) -> None:
         """Frees what an interrupted run left behind: room claims that never got a room (a creation
-        never outlives CREATE_TIMEOUT_SECONDS), and records of posts whose send never finished."""
+        request is given up after CREATE_TIMEOUT_SECONDS, but Discord may still have made the room,
+        so a claim looks for it by its token first), and records of posts whose send never finished."""
         now = self._now()
         try:
-            self.store.release_stale_claims(now - STALE_CLAIM_SECONDS, keep=self._orphan_posts)
             self.store.forget_unsent_playing_posts(now - FAILURE_BACKOFF_SECONDS)
-        except Exception:
+            if self.bot.guilds:  # right after a start nothing is cached yet: the first check frees them
+                for guild in self.bot.guilds:
+                    await self._tracked(self._adopt_late_rooms(guild))
+                # A server that is not available has nothing cached: a room in it cannot be found now,
+                # so its claims are freed once it is there (the others' are freed as usual).
+                keep = set(self._orphan_posts) | set(self._unrecovered)
+                available = [guild.id for guild in self.bot.guilds if not getattr(guild, "unavailable", False)]
+                self.store.release_stale_claims(now - STALE_CLAIM_SECONDS, keep=keep, guild_ids=available)
+        except sqlite3.Error:
             self.logger.warning("playing: could not free abandoned claims and posts, will retry", exc_info=True)
+
+    async def _tracked(self, work: Any) -> Any:
+        """Runs ``work`` on its own, so that unloading the cog waits for it (like for a room being
+        opened) instead of cutting it off between deleting a room and remembering it."""
+        task = asyncio.ensure_future(work)
+        self._opening.add(task)
+        task.add_done_callback(self._opening.discard)
+        return await asyncio.shield(task)
 
     def _t(self, guild_id: Any, key: str, **kwargs: Any) -> str:
         if self.lang_manager is None:
@@ -247,14 +291,16 @@ class PlayingCog(commands.Cog):
     async def check_all(self) -> None:
         now = self._now()
         # First, so that posts that never went out stop counting before anything is checked.
-        self._forget_abandoned()
+        await self._forget_abandoned()
         for settings in self.store.guilds_with_playing():
             guild = self.bot.get_guild(settings.guild_id)
             if guild is not None:
                 await self.check_guild(guild, settings)
         await self.cleanup_rooms()
         # Kept at least as long as they count for the cooldown and the button.
-        self.store.forget_playing_posts(now - max(POST_RETENTION_SECONDS, self._button_seconds()))
+        self.store.forget_playing_posts(
+            now - max(POST_RETENTION_SECONDS, self._button_seconds()), keep=set(self._orphan_posts) | set(self._unrecovered)
+        )
 
 
     # ------------------------------------------------------------ posting
@@ -485,7 +531,7 @@ class PlayingCog(commands.Cog):
 
     async def _open(self, guild: discord.Guild, channel: Any, post: Dict[str, Any], message_id: int, token: str) -> tuple:
         """Creates and records the room of a claimed post; returns the answer for the press."""
-        name = room_name(post["game"])
+        name = room_label(post["game"], token)
         try:
             room = await asyncio.wait_for(self._create_room(guild, channel, name), CREATE_TIMEOUT_SECONDS)
         except discord.HTTPException:
@@ -494,11 +540,29 @@ class PlayingCog(commands.Cog):
             return "playing_room_failed", {}
         except (asyncio.TimeoutError, asyncio.CancelledError) as error:
             # Discord may have accepted it anyway: the claim is kept until it is stale, so that
-            # no second room is opened for the post meanwhile.
+            # no second room is opened for the post meanwhile, and the room is looked for by the
+            # token in its name (now, when its event arrives, and before the claim is freed).
             self.logger.warning(f"playing: creating a voice room in guild {guild.id} did not finish", exc_info=True)
             if isinstance(error, asyncio.CancelledError):
                 raise
+            for adopted_post, adopted_room in await self._adopt_late_rooms(guild):
+                if adopted_post == message_id:
+                    return "playing_room_ready", {"channel": adopted_room.mention}
+            recovered = guild.get_channel(self._adopted.get(message_id, (0, 0))[1]) or self._recorded_room(guild, message_id)
+            if recovered is not None:  # its event may have been faster than this scan
+                return "playing_room_ready", {"channel": recovered.mention}
             return "playing_room_failed", {}
+        if room.id in self._orphans:  # its event got there first and could neither keep nor delete it
+            return "playing_room_failed", {}
+        recovered = self._recorded_room(guild, message_id)
+        if self._adopted.get(message_id, (0, 0))[1] == room.id or (recovered is not None and recovered.id == room.id):
+            # Its event got there first and took it in, with at least the post's pointer on record:
+            # the cleanup writes the missing row again. It is not taken back.
+            if not self.store.is_temp_voice(room.id):
+                self._record_room(guild.id, room.id, message_id)
+            return "playing_room_ready", {"channel": room.mention}
+        if self.store.is_temp_voice(room.id):  # its event got there first and recorded it
+            return "playing_room_ready", {"channel": room.mention}
         try:
             ours = self.store.confirm_playing_room(message_id, token, self._now())
         except Exception:
@@ -524,6 +588,83 @@ class PlayingCog(commands.Cog):
                 self.logger.warning(f"playing: could not release the claim of post {message_id}", exc_info=True)
             return "playing_room_failed", {}
         return "playing_room_ready", {"channel": room.mention}
+
+    def _recorded_room(self, guild: discord.Guild, message_id: int) -> Optional[Any]:
+        """The room the post points to, if there is one and it still exists."""
+        try:
+            post = self.store.playing_post(message_id)
+        except sqlite3.Error:
+            self.logger.warning(f"playing: could not read post {message_id}", exc_info=True)
+            return None
+        channel_id = (post or {}).get("voice_channel_id") or 0
+        return guild.get_channel(channel_id) if channel_id > 0 else None
+
+    async def _adopt_late_rooms(self, guild: discord.Guild) -> List[tuple]:
+        """Takes in the rooms Discord made for claims whose creation request did not finish.
+
+        A room is recognised by the token of a claim that is still open, in its name, and by having
+        been made after the claim: a channel without a token, with the token of a claim that is gone
+        or shared by two claims, or made before the claim (a renamed old channel) is never taken in.
+        A member who can manage channels and knows a live token can still make a channel that passes;
+        the token is only ever shown in the name of the bot's own room, which its event hands to this
+        scan at the same moment. Returns ``(post message id, room)`` pairs.
+        """
+        adopted: List[tuple] = []
+        try:
+            open_claims = self.store.open_claims(guild.id)
+        except sqlite3.Error:
+            self.logger.warning(f"playing: could not read the open claims of guild {guild.id}", exc_info=True)
+            return adopted
+        claims: Dict[str, list] = {}
+        for message_id, token, claimed_at, used_at in open_claims:
+            claims.setdefault(token[:ROOM_TOKEN_CHARS], []).append((message_id, token, claimed_at, used_at))
+        # What failed before is found out again below.
+        self._unrecovered = {post: guild_id for post, guild_id in self._unrecovered.items() if guild_id != guild.id}
+        if not claims:
+            return adopted
+        for room in list(guild.voice_channels):
+            found = _ROOM_TOKEN.search(getattr(room, "name", "") or "")
+            candidates = claims.get(found.group(1)) if found else None
+            if not candidates or room.id in self._orphans:
+                continue
+            if len(candidates) > 1:
+                self.logger.warning(f"playing: {len(candidates)} open claims share the token of room {room.id}, adopting none")
+                continue
+            message_id, token, claimed_at, used_at = candidates[0]
+            created_at = getattr(room, "created_at", None)
+            if not claimed_at or created_at is None or created_at.timestamp() < claimed_at - CLAIM_CLOCK_SLACK_SECONDS:
+                continue  # it was there before the claim (or the claim's time is unknown): not made for it
+            try:
+                if self.store.is_temp_voice(room.id) or self.store.temp_voice_for_post(message_id) is not None:
+                    continue  # recorded already
+                # A claim marked used before (its room could not be recorded then) is the room's own: the token proves it.
+                ours = True if used_at is not None else self.store.confirm_playing_room(message_id, token, self._now())
+            except sqlite3.Error:
+                self.logger.warning(f"playing: could not mark post {message_id} used", exc_info=True)
+                self._unrecovered[message_id] = guild.id  # its claim is kept, the room is looked for again
+                continue
+            if not ours:
+                continue
+            self.logger.info(f"playing: voice room {room.id} appeared late for post {message_id}, recording it")
+            self._adopted[message_id] = (guild.id, room.id)
+            if len(self._record_room(guild.id, room.id, message_id)) == 2:
+                # An untracked room would never be deleted: take it back. The post stays used.
+                self.logger.error(f"playing: could not record voice room {room.id}")
+                if not await self._delete_room(room):
+                    self._keep_orphan(guild.id, room.id, message_id)
+                continue
+            adopted.append((message_id, room))
+        return adopted
+
+    @commands.Cog.listener()
+    async def on_guild_channel_create(self, channel: Any) -> None:
+        """Recognises a room Discord made for a claim whose creation request had not answered yet."""
+        guild = getattr(channel, "guild", None)
+        if guild is None or getattr(channel, "type", None) != discord.ChannelType.voice:
+            return
+        if _ROOM_TOKEN.search(getattr(channel, "name", "") or "") is None:
+            return
+        await self._tracked(self._adopt_late_rooms(guild))
 
     def _record_room(self, guild_id: int, channel_id: int, post_message_id: Optional[int], created_at: Optional[float] = None) -> list:
         """Records a room both ways, each tried on its own: the post's pointer, and the room's row.
@@ -560,6 +701,31 @@ class PlayingCog(commands.Cog):
             name, category=channel.category, overwrites=dict(channel.overwrites), reason=reason
         )
 
+    def _retire_claims(self, channel_id: int) -> None:
+        """Takes the token from the used claims a room that is gone belonged to: a used claim whose post
+        never pointed to its room must not stay a way to find "its room", or a channel copying the name
+        would be taken for it. What cannot be written now is tried again by the cleanup."""
+        posts = {post for post, channel in self._orphan_posts.items() if channel == channel_id}
+        posts |= {post for post, where in self._adopted.items() if where[1] == channel_id}
+        try:
+            recorded_post = self.store.post_of_temp_voice(channel_id)
+            if recorded_post is not None:
+                posts.add(recorded_post)
+        except sqlite3.Error:
+            self.logger.warning(f"playing: could not read the post of voice room {channel_id}", exc_info=True)
+        self._unretired |= posts
+        self._close_claims()
+
+    def _close_claims(self) -> None:
+        """Takes the token from the claims in ``_unretired``; those that fail stay there for the next try."""
+        if not self._unretired:
+            return
+        try:
+            self.store.forget_claim_tokens(self._unretired)
+            self._unretired = set()
+        except sqlite3.Error:
+            self.logger.warning("playing: could not close the claim of a closed voice room, will retry", exc_info=True)
+
     async def _delete_room(self, room: Any) -> bool:
         """Deletes a room and forgets it; False (and the room kept on record) when Discord refused."""
         try:
@@ -569,8 +735,10 @@ class PlayingCog(commands.Cog):
         except discord.HTTPException:
             self.logger.warning(f"playing: could not delete voice room {room.id}", exc_info=True)
             return False
+        self._retire_claims(room.id)
         self._orphans.pop(room.id, None)
         self._orphan_posts = {post: channel for post, channel in self._orphan_posts.items() if channel != room.id}
+        self._adopted = {post: where for post, where in self._adopted.items() if where[1] != room.id}
         self.store.forget_temp_voice(room.id)
         return True
 
@@ -597,6 +765,13 @@ class PlayingCog(commands.Cog):
     async def cleanup_rooms(self) -> None:
         """Deletes the bot's rooms that are gone, empty after someone left, or never joined in time."""
         now = self._now()
+        self._close_claims()
+        # Rooms an administrator deleted need no more watching (a server that is not cached is left as it is).
+        self._adopted = {
+            post: (guild_id, channel_id)
+            for post, (guild_id, channel_id) in self._adopted.items()
+            if self.bot.get_guild(guild_id) is None or self.bot.get_guild(guild_id).get_channel(channel_id) is not None
+        }
         for channel_id, guild_id in list(self._orphans.items()):
             guild = self.bot.get_guild(guild_id)
             room = guild.get_channel(channel_id) if guild is not None else None
@@ -618,6 +793,7 @@ class PlayingCog(commands.Cog):
             room = guild.get_channel(channel_id) if guild is not None else None
             if room is None:
                 if guild is not None:
+                    self._retire_claims(channel_id)
                     self.store.forget_temp_voice(channel_id)
                 continue
             if not room.members and now - created_at >= self.limits.playing_room_idle_minutes * 60:
