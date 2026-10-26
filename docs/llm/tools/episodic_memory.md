@@ -51,6 +51,7 @@ Provides a hybrid search interface (Vector + Keyword) for deep conversational re
 - **Context Awareness**: Automatically scopes searches to the current channel unless `global_search` is requested.
 - **Metadata Richness**: Returns direct "Jump URLs" to the original Discord messages for verification.
 - **Permission Scoping**: Can be filtered to specific users.
+- **Hidden members**: A memory with a member who chose `/leaderboard optout` in it is never returned (nor injected automatically into a reply's context), whoever asks, so that what they said is not retold; when the opt-out list cannot be read, no memory is returned.
 
 ## Integration
 

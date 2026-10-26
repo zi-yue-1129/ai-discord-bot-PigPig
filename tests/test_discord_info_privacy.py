@@ -185,3 +185,133 @@ def test_the_stored_opt_outs_are_read_without_the_leaderboard_cog(tmp_path: Any)
     CommunityStore(path).set_optout(GUILD_ID, HIDDEN_ID, True)
 
     assert hidden_member_ids(_without_cog(), GUILD_ID, db_path=path) == {HIDDEN_ID}
+
+
+# ------------------------------------------------ channels the asker cannot see, and hidden voice members
+
+
+class _Voice:
+    """Stands in for discord.VoiceChannel."""
+
+    def __init__(self, channel_id: int, name: str, members: list, viewers: Optional[Set[int]] = None) -> None:
+        self.id = channel_id
+        self.name = name
+        self.category = None
+        self.members = members
+        self.bitrate = 64000
+        self.user_limit = 0
+        self.position = channel_id
+        self.viewers = viewers  # None: everyone sees it
+
+    def permissions_for(self, member: Any) -> Any:
+        return SimpleNamespace(view_channel=self.viewers is None or member.id in self.viewers)
+
+
+class _Text(_TextChannel):
+    def __init__(self, channel_id: int, name: str, members: list, viewers: Optional[Set[int]] = None) -> None:
+        super().__init__(members)
+        self.id = channel_id
+        self.name = name
+        self.topic = f"topic of {name}"
+        self.position = channel_id
+        self.viewers = viewers
+
+    def permissions_for(self, member: Any) -> Any:
+        return SimpleNamespace(view_channel=self.viewers is None or member.id in self.viewers)
+
+
+def _guild_with(monkeypatch: pytest.MonkeyPatch, runtime: Any, *channels: Any) -> Any:
+    monkeypatch.setattr(discord, "TextChannel", _Text)
+    monkeypatch.setattr(discord, "VoiceChannel", _Voice)
+    guild = runtime.message.guild
+    guild.channels = list(channels)
+    guild.name, guild.member_count, guild.premium_tier, guild.premium_subscription_count = "Pig Land", 2, 0, 0
+    guild.owner, guild.created_at, guild.roles = None, None, []
+    return guild
+
+
+def _server_context(runtime: Any) -> Any:
+    tools = {tool.name: tool for tool in ServerContextTools(runtime).get_tools()}
+    return tools["get_server_context"].func
+
+
+def test_a_voice_channel_the_asker_cannot_see_is_reported_as_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = _runtime()
+    members = list(runtime.message.channel.members)
+    _guild_with(monkeypatch, runtime, _Voice(700, "secret-room", members, viewers={HIDDEN_ID}))
+
+    reply = _channel_context(runtime)("secret-room")
+
+    assert reply == "Channel 'secret-room' not found in this server."
+
+
+def test_a_text_channel_the_asker_cannot_see_is_reported_as_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = _runtime()
+    _guild_with(monkeypatch, runtime, _Text(701, "staff", list(runtime.message.channel.members), viewers={HIDDEN_ID}))
+
+    assert _channel_context(runtime)("staff") == "Channel 'staff' not found in this server."
+
+
+def test_a_name_shared_with_a_private_channel_finds_the_one_the_asker_can_see(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = _runtime()
+    members = list(runtime.message.channel.members)
+    _guild_with(monkeypatch, runtime, _Text(701, "chat", members, viewers={HIDDEN_ID}), _Text(702, "chat", members))
+
+    assert "ID: 702" in _channel_context(runtime)("chat")
+
+
+def test_the_server_overview_lists_only_channels_the_asker_can_see(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = _runtime()
+    members = list(runtime.message.channel.members)
+    _guild_with(
+        monkeypatch, runtime,
+        _Text(701, "public-chat", members), _Text(702, "staff-only", members, viewers={HIDDEN_ID}),
+        _Voice(703, "lounge", members), _Voice(704, "secret-room", members, viewers={HIDDEN_ID}),
+    )
+
+    reply = _server_context(runtime)()
+
+    assert "public-chat" in reply and "lounge" in reply
+    assert "staff-only" not in reply and "secret-room" not in reply
+
+
+def test_a_visible_voice_channel_leaves_hidden_members_out_of_its_names_and_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = _runtime()
+    members = list(runtime.message.channel.members)  # user10 and the hidden user11
+    _guild_with(monkeypatch, runtime, _Voice(703, "lounge", members))
+
+    reply = _channel_context(runtime)("lounge")
+
+    assert "user10" in reply and "user11" not in reply and "Connected: 1 users" in reply
+
+
+def test_a_voice_channel_shows_nobody_when_the_opt_outs_cannot_be_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = _runtime(FakeOptouts(set(), broken=True))
+    members = list(runtime.message.channel.members)
+    _guild_with(monkeypatch, runtime, _Voice(703, "lounge", members))
+
+    reply = _channel_context(runtime)("lounge")
+
+    assert "user10" not in reply and "user11" not in reply and "Connected" not in reply
+
+
+def test_the_voice_participant_list_leaves_hidden_members_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = _runtime()
+    _guild_with(monkeypatch, runtime)
+    runtime.message.channel = _Voice(703, "lounge", list(runtime.message.channel.members))
+    runtime.message.channel.guild = runtime.message.guild
+
+    reply = _participants(runtime)()
+
+    assert "user10" in reply and "user11" not in reply
+
+
+def test_the_voice_participant_list_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = _runtime(FakeOptouts(set(), broken=True))
+    _guild_with(monkeypatch, runtime)
+    runtime.message.channel = _Voice(703, "lounge", list(runtime.message.channel.members))
+    runtime.message.channel.guild = runtime.message.guild
+
+    reply = _participants(runtime)()
+
+    assert "user10" not in reply and "user11" not in reply

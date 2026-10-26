@@ -287,8 +287,8 @@ async def test_the_recap_is_posted_once_with_titles_and_without_hidden_members(
     fields = {field.name: field.value for field in embed.fields}
     assert sent["allowed_mentions"].users is False
     assert embed.title == "weekly_title|guild=Pig Land"
-    assert embed.description == "weekly_intro|total=105"
-    assert fields["weekly_messages|"] == "**105** weekly_trend|change=+31%|previous=80"
+    assert embed.description == "weekly_intro|total=55"  # the hidden member's 50 messages are not counted
+    assert fields["weekly_messages|"] == "**55** weekly_trend|change=-31%|previous=80"
     assert fields["weekly_channels|"] == "<#501> · 40\n<#500> · 20"
     assert fields["weekly_talkers|"] == "<@11> · 30\n<@10> · 5"
     assert "best joke ever" in fields["weekly_quote|count=5"] and "<@11>" in fields["weekly_quote|count=5"]
@@ -458,3 +458,14 @@ def test_a_channel_that_denies_a_role_is_not_public(guild: FakeGuild) -> None:
 
     assert is_public(guild, guild.channels[501]) is False
     assert public_channel_ids(guild) == ["500"]
+
+
+@pytest.mark.asyncio
+async def test_hidden_members_messages_are_left_out_of_both_weeks_totals(cog: CommunityCog, guild: FakeGuild) -> None:
+    from cogs.community_lib.recap import RecapBuilder
+
+    cog.bot.stats_collector = FakeCollector([("13", 50), ("11", 30), ("not-a-member", 4)], [("13", 40), ("11", 10)])
+
+    recap = await RecapBuilder(cog.bot, cog.limits).build(guild, MONDAY, SUNDAY_EVENING, {13})
+
+    assert recap.total == 34 and recap.previous_total == 10  # a row that is no member id cannot be told apart: counted

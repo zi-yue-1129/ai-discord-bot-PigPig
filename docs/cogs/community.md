@@ -41,7 +41,7 @@ Feb 29 birthdays and join dates are celebrated on Feb 28 in common years.
 
 ## Daily messages
 
-A background check runs every 5 minutes. Once the server's local hour reaches the configured hour, today's birthday and anniversary messages are posted, once per day (recorded in `job_runs`, so a restart neither repeats nor loses them). Several people on the same day share one message, naming at most `max_mentions` of them.
+A background check runs every 5 minutes. Once the server's local hour reaches the configured hour, today's birthday and anniversary messages are posted, once per day (recorded in `job_runs`, so a restart neither repeats nor loses them). Several people on the same day share one message, naming at most `max_mentions` of them. Members hidden with `/leaderboard optout` are neither named in the birthday and anniversary messages nor given the birthday role; when the opt-out list cannot be read, the job fails and is retried instead of naming anyone.
 
 A job that fails (Discord error, no channel to post in yet) is retried while it is still due, waiting 5 minutes and then twice as long each time, up to an hour; it is only recorded as done once it succeeds. The wait is kept in memory, so after a restart a failing job is tried once right away.
 
@@ -62,7 +62,7 @@ Once a week, at the configured day and hour, one embed sums up the week (Monday 
 
 Only channels everyone can read (`@everyone` can view the channel and read its history) count toward the busiest channels, hot words, top emojis and the quote of the week; private channels never show up in the recap. Threads count when they are public and in the bot's cache: an archived thread is left out (its words and quotes are dropped, never leaked).
 
-Members who opted out with `/leaderboard optout` are never named, quoted or given a title. Weeks with fewer than `min_messages` messages are skipped. If the bot was down at the scheduled time, the recap is still posted within 24 hours, once (`job_runs`).
+Members who opted out with `/leaderboard optout` are never named, quoted or given a title, and what they wrote is not counted in the totals. Weeks with fewer than `min_messages` messages are skipped. If the bot was down at the scheduled time, the recap is still posted within 24 hours, once (`job_runs`).
 
 ## What everyone is playing
 

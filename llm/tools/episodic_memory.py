@@ -7,6 +7,7 @@ from langchain.tools import tool
 
 from function import func
 from cogs.memory.interfaces.vector_store_interface import MemoryFragment
+from llm.memory.privacy import hidden_in_guild, without_hidden_participants
 
 class EpisodicMemoryTools:
     """Container for episodic memory tools bound to a runtime.
@@ -97,6 +98,10 @@ class EpisodicMemoryTools:
                     guild_id=search_guild_id,
                 )
     
+                # What a hidden member (/leaderboard optout) said is not retold; without the list nothing is.
+                if fragments and guild is not None:
+                    fragments = without_hidden_participants(fragments, hidden_in_guild(bot, guild.id))
+
                 if not fragments:
                     return "No relevant memories found."
     

@@ -60,7 +60,7 @@ async def read_user_memory(user_id: int) -> str:
 - `str`: Stored memory content, or "not found" message if no memory exists
 
 **Purpose:**
-Reads personal memory or preferences stored for a specific user.
+Reads personal memory or preferences stored for a specific user. The memory of a member who chose `/leaderboard optout` is only read out to that member; to anyone else the tool answers that it is hidden (and when the opt-out list cannot be read, it reads out nobody else's memory). The same goes for the personal memory put into a reply's context for the other people in the recent conversation.
 
 **Use Cases:**
 - Retrieve user's name or preferences

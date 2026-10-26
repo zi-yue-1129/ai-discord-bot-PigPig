@@ -68,6 +68,20 @@ class Recap:
     missing: List[Tuple[Any, int]] = field(default_factory=list)
 
 
+def _total_without(rows: Sequence[Tuple[Any, int]], hidden: Set[int]) -> int:
+    """The sum of ``(user_id, count)`` rows, leaving out the hidden members' (a row whose id is no
+    number cannot be told apart and is counted)."""
+    total = 0
+    for user_id, count in rows:
+        try:
+            if int(user_id) in hidden:
+                continue
+        except (TypeError, ValueError):
+            pass
+        total += int(count)
+    return total
+
+
 def _visible(guild: Any, rows: Sequence[Tuple[Any, int]], hidden: Set[int], limit: Optional[int] = None) -> List[Tuple[Any, int]]:
     """Turns ``(user_id, value)`` rows into ``(member, value)`` for current, human, not hidden members."""
     found = []
@@ -141,9 +155,10 @@ class RecapBuilder:
         recap = Recap(week=week_start(start), start=start, end=end)
 
         per_user = await collector.message_counts_by_user(gid, since, until)
-        recap.total = sum(count for _, count in per_user)
-        recap.previous_total = sum(
-            count for _, count in await collector.message_counts_by_user(gid, since - 7 * 86400, until - 7 * 86400)
+        # What hidden members wrote is not counted either: the total would give them away.
+        recap.total = _total_without(per_user, hidden)
+        recap.previous_total = _total_without(
+            await collector.message_counts_by_user(gid, since - 7 * 86400, until - 7 * 86400), hidden
         )
         recap.talkers = _visible(guild, per_user, hidden, TOP_TALKERS)
         for channel_id, count in await collector.message_counts_by_channel(gid, since, until):

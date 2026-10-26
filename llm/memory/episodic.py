@@ -15,6 +15,7 @@ import discord
 
 from addons.logging import get_logger
 from function import func
+from llm.memory.privacy import hidden_in_guild, without_hidden_participants
 
 _LOGGER = get_logger(server_id="Bot", source="llm.memory.episodic")
 
@@ -155,6 +156,12 @@ class EpisodicMemoryProvider:
             # or cache a result from the invalidated generation.
             if self._pending_queries.get(cache_key) is not event:
                 return None
+
+            # What a hidden member (/leaderboard optout) said is not retold, whoever asks; the cached
+            # result is already filtered. Without the opt-out list nothing is injected.
+            guild = getattr(message, "guild", None)
+            if fragments and guild is not None:
+                fragments = without_hidden_participants(fragments, hidden_in_guild(self.bot, guild.id))
 
             if not fragments:
                 formatted_result = None

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -813,3 +814,71 @@ async def test_upcoming_birthdays_leave_out_hidden_members_but_not_the_one_askin
     text, ephemeral = sent[0]
     assert ephemeral is True
     assert "user10" in text and "user12" in text and "user11" not in text
+
+
+@pytest.mark.asyncio
+async def test_a_hidden_members_birthday_is_neither_announced_nor_given_a_role(
+    cog: CommunityCog, guild: FakeGuild, store: CommunityStore
+) -> None:
+    store.update_settings(GUILD_ID, birthday_enabled=True, birthday_hour=9, birthday_role_id=77)
+    hidden, visible = guild.add(10), guild.add(11)
+    store.set_birthday(GUILD_ID, 10, 10, 25)
+    store.set_birthday(GUILD_ID, 11, 10, 25)
+    store.set_optout(GUILD_ID, 10, True)  # /leaderboard optout
+
+    _at(cog, datetime(2026, 10, 25, 9, 0, tzinfo=TAIPEI))
+    await cog.run_daily_jobs()
+
+    assert [text for text, _ in guild.channel.sent] == ["birthday|mentions=<@11>"]
+    assert hidden.roles == [] and [role.id for role in visible.roles] == [77]
+
+
+@pytest.mark.asyncio
+async def test_a_day_with_only_hidden_birthdays_posts_nothing_and_is_done(
+    cog: CommunityCog, guild: FakeGuild, store: CommunityStore
+) -> None:
+    store.update_settings(GUILD_ID, birthday_enabled=True, birthday_hour=9)
+    guild.add(10)
+    store.set_birthday(GUILD_ID, 10, 10, 25)
+    store.set_optout(GUILD_ID, 10, True)
+
+    _at(cog, datetime(2026, 10, 25, 9, 0, tzinfo=TAIPEI))
+    await cog.run_daily_jobs()
+
+    assert guild.channel.sent == []
+    assert await cog.celebrate_birthdays(guild, store.get_settings(GUILD_ID), cog._local_now(store.get_settings(GUILD_ID))) is True
+
+
+@pytest.mark.asyncio
+async def test_a_hidden_members_join_anniversary_is_not_announced(
+    cog: CommunityCog, guild: FakeGuild, store: CommunityStore
+) -> None:
+    store.update_settings(GUILD_ID, anniversary_enabled=True, birthday_hour=9)
+    guild.add(10, joined_at=datetime(2025, 10, 25, 3, 0, tzinfo=timezone.utc))
+    guild.add(11, joined_at=datetime(2023, 10, 25, 3, 0, tzinfo=timezone.utc))
+    store.set_optout(GUILD_ID, 10, True)
+
+    _at(cog, datetime(2026, 10, 25, 10, 0, tzinfo=TAIPEI))
+    await cog.run_daily_jobs()
+
+    text, allowed = guild.channel.sent[0]
+    assert text == "anniversary|lines=anniversary_line|mention=<@11>|years=3"
+    assert [user.id for user in allowed.users] == [11]
+
+
+@pytest.mark.asyncio
+async def test_birthdays_are_not_announced_while_the_opt_out_list_cannot_be_read(
+    cog: CommunityCog, guild: FakeGuild, store: CommunityStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store.update_settings(GUILD_ID, birthday_enabled=True, birthday_hour=9)
+    guild.add(10)
+    store.set_birthday(GUILD_ID, 10, 10, 25)
+
+    def locked(guild_id: int) -> set:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(store, "optouts", locked)
+    _at(cog, datetime(2026, 10, 25, 9, 0, tzinfo=TAIPEI))
+    await cog.run_daily_jobs()
+
+    assert guild.channel.sent == []  # nobody is named when it is unknown who is hidden; the job is retried

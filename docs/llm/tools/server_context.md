@@ -30,7 +30,8 @@ def __init__(self, runtime: "OrchestratorRequest"):
 - **Description**: Queries detailed info about a specific channel.
 - **Args**:
   - `channel_name`: Optional name of a channel to inspect. Defaults to current channel.
-- **Returns**: Channel category, topic, NSFW status, slowmode settings, and online member count. Members hidden with `/leaderboard optout` are not counted; when the opt-out list cannot be read, the count is left out.
+- **Returns**: Channel category, topic, NSFW status, slowmode settings, and online member count; for a voice channel the bitrate, user limit, who is connected and how many. Members hidden with `/leaderboard optout` are not counted or named; when the opt-out list cannot be read, the count and the names are left out.
+- **Visibility**: A channel the person asking cannot see is answered as "not found" (its topic and members are not theirs to learn), and `get_server_context` lists only the channels they can see.
 - **Purpose**: Understands specific rules or themes of a channel.
 
 #### `get_user_discord_info(user_id: Optional[str])`
