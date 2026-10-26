@@ -50,6 +50,7 @@ class FakeMember:
         self.bot = bot
         self.display_name = f"user{member_id}"
         self.mention = f"<@{member_id}>"
+        self.display_avatar = None
 
 
 class FakeChannel:
@@ -684,16 +685,196 @@ async def test_no_events_is_said_plainly(world: SimpleNamespace, tmp_path: Path)
 
 # ------------------------------------------------------------------ profile extras
 @pytest.mark.asyncio
-async def test_the_stats_tool_adds_rank_titles_and_badges(world: SimpleNamespace) -> None:
+async def test_the_stats_tool_adds_rank_and_badges_but_no_titles(world: SimpleNamespace) -> None:
     world.storage.rows["total"] = [("11", 9), ("10", 5)]
     world.store.unlock(GUILD_ID, AUTHOR_ID, ["msg_100"], NOW.timestamp())
-    world.store.set_titles(GUILD_ID, "2026-10-19", {"talker": AUTHOR_ID})
+    # Titles are awarded from every channel and from songs requested anywhere (private ones too).
+    world.store.set_titles(GUILD_ID, "2026-10-19", {"talker": AUTHOR_ID, "dj": AUTHOR_ID})
 
     lines = await _profile_extras(world.runtime, world.guild, str(AUTHOR_ID))
 
     assert lines[0] == "profile_rank|rank=2|total=2"
-    assert lines[1].startswith("profile_titles|") and lines[2].startswith("profile_badges|")
+    assert len(lines) == 2 and lines[1].startswith("profile_badges|")
+    # /profile itself still shows them.
+    shown = await world.cogs["LeaderboardCog"].profile_extras(world.guild, world.guild.get_member(AUTHOR_ID))
+    assert any(line.startswith("profile_titles|") for line in shown)
     # Without the leaderboard cog, or for someone who left, there is nothing to add.
     assert await _profile_extras(world.runtime, world.guild, "77") == []
     del world.cogs["LeaderboardCog"]
     assert await _profile_extras(world.runtime, world.guild, str(AUTHOR_ID)) == []
+
+
+def _stats_tool(world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> Any:
+    from llm.tools import user_stats
+
+    async def get_user_stats(user_id: str, guild_id: str) -> dict:
+        return {"total_messages": 5, "streak_days": 1, "active_hours": {}, "top_words": {}, "top_emojis": {}, "top_channels": {}}
+
+    world.storage.get_user_stats = get_user_stats
+    monkeypatch.setattr(user_stats, "_generate_stats_image_sync", lambda *args: b"png")
+
+    async def send(**kwargs: Any) -> None:
+        return None
+
+    world.here.send = send
+    return user_stats.UserStatsTools(world.runtime).get_tools()[0].coroutine
+
+
+@pytest.mark.asyncio
+async def test_the_stats_answer_never_names_a_dj_title_won_in_a_private_channel(
+    world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world.store.set_titles(GUILD_ID, "2026-10-19", {"dj": 12})
+
+    reply = await _stats_tool(world, monkeypatch)(user_id="12")
+
+    assert "dj" not in reply and "profile_titles" not in reply
+
+
+@pytest.mark.asyncio
+async def test_a_member_who_hides_while_their_stats_are_read_is_refused(
+    world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tool = _stats_tool(world, monkeypatch)
+    leaderboard = world.cogs["LeaderboardCog"]
+    original = leaderboard.profile_extras
+
+    async def hide_meanwhile(*args: Any, **kwargs: Any) -> list:
+        world.store.set_optout(GUILD_ID, 12, True)
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(leaderboard, "profile_extras", hide_meanwhile)
+
+    reply = await tool(user_id="12")
+
+    assert "hide" in reply and "5" not in reply
+
+
+# ------------------------------------------------------------------ limits and edge cases
+@pytest.mark.asyncio
+async def test_an_opt_out_list_that_breaks_after_the_tools_were_built_fails_closed(
+    world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world.storage.rows["total"] = [("11", 9)]
+    world.store.update_settings(GUILD_ID, birthday_enabled=True)
+    world.store.set_birthday(GUILD_ID, 12, 10, 27)
+    tools = _tools(world)
+    assert "get_upcoming_birthdays" in tools
+
+    def broken(guild_id: int) -> set:
+        raise sqlite3.OperationalError("database disk image is malformed")
+
+    monkeypatch.setattr(world.store, "read_optouts", broken)
+
+    for name, kwargs in (("get_leaderboard", {"period": "all"}), ("get_server_recap", {}), ("get_upcoming_birthdays", {"days": 7})):
+        assert await tools[name].coroutine(**kwargs) == community_tools.UNAVAILABLE, name
+
+
+@pytest.mark.asyncio
+async def test_an_opt_out_list_that_breaks_while_the_answer_is_read_fails_closed(
+    recap_world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = recap_world
+    w.storage.rows["total"] = [("11", 9)]
+    await w.say(11, w.public, "hello", 3)
+
+    def broken(guild_id: int) -> set:
+        raise sqlite3.OperationalError("database is locked")
+
+    leaderboard = w.cogs["LeaderboardCog"]
+    original_rankings = leaderboard.rankings
+
+    async def break_during_ranking(*args: Any) -> Any:
+        ranked = await original_rankings(*args)
+        monkeypatch.setattr(w.store, "read_optouts", broken)
+        return ranked
+
+    monkeypatch.setattr(leaderboard, "rankings", break_during_ranking)
+    assert await _call(w, "get_leaderboard", period="all") == community_tools.UNAVAILABLE
+
+    monkeypatch.undo()
+    collector = w.bot.stats_collector
+    original_counts = collector.message_counts_by_channel
+
+    async def break_during_counting(*args: Any, **kwargs: Any) -> list:
+        monkeypatch.setattr(w.store, "read_optouts", broken)
+        return await original_counts(*args, **kwargs)
+
+    monkeypatch.setattr(collector, "message_counts_by_channel", break_during_counting)
+    assert await _call(w, "get_server_recap") == community_tools.UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_birthdays_are_capped_and_days_clamped(world: SimpleNamespace) -> None:
+    world.store.update_settings(GUILD_ID, birthday_enabled=True)
+    for member_id in range(100, 120):
+        world.guild.add(member_id)
+        world.store.set_birthday(GUILD_ID, member_id, 10, 26)
+    world.store.set_birthday(GUILD_ID, 12, 11, 30)  # 36 days ahead
+
+    text = await _call(world, "get_upcoming_birthdays", days=365)
+
+    assert text.startswith("Birthdays in the next 30 days")
+    assert len(text.splitlines()) == 1 + community_tools.MAX_BIRTHDAYS and "user12" not in text
+    assert await _call(world, "get_upcoming_birthdays", days=-5) == "No saved birthdays in the next 1 days."
+
+
+@pytest.mark.asyncio
+async def test_events_are_capped(world: SimpleNamespace, tmp_path: Path) -> None:
+    world.guild.channel(600)
+    store = EventStore(tmp_path / "events.db")
+    soon = datetime.now(timezone.utc).timestamp() + 3600
+    for index in range(EventTools.MAX_EVENTS + 3):
+        event_id = store.add(GUILD_ID, 600, AUTHOR_ID, f"event {index}", soon + index, 0, 15, 0)
+        store.set_message(event_id, 2000 + index)
+    world.cogs["EventsCog"] = SimpleNamespace(store=store)
+
+    text = await _call(world, "list_upcoming_events", EventTools)
+
+    assert len(text.splitlines()) == 1 + EventTools.MAX_EVENTS
+
+
+@pytest.mark.asyncio
+async def test_the_cached_quote_belongs_to_its_week(recap_world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    w = recap_world
+    fetched: List[Any] = []
+
+    async def quote(self: Any, guild: Any, storage: Any, since: float, until: float, hidden: set) -> dict:
+        fetched.append(since)
+        return {"member": guild.get_member(12), "content": f"joke {len(fetched)}", "url": "https://discord.com/channels/42/600/7", "count": 4}
+
+    monkeypatch.setattr(recap_module.RecapBuilder, "_quote", quote)
+
+    assert "<<<joke 1>>>" in await _call(w, "get_server_recap")
+    w.cogs["CommunityCog"]._local_now = lambda settings: NOW + timedelta(days=2)  # next Tuesday
+    assert "<<<joke 2>>>" in await _call(w, "get_server_recap")
+    assert len(fetched) == 2
+
+
+@pytest.mark.asyncio
+async def test_without_any_shareable_channel_nothing_is_counted(recap_world: SimpleNamespace) -> None:
+    """An empty channel list means "no channel", never "every channel"."""
+    w = recap_world
+    night = datetime(2026, 10, 21, 2, 30, tzinfo=TAIPEI)
+    await w.say(12, w.public, "hello", 3, at=night)
+    storage = w.cogs["StatsCog"].stats_storage
+    await storage.record_reaction("m1", str(GUILD_ID), str(w.public.id), "12", WEEK_DAY.timestamp(), 5)
+    for channel in w.guild.channels:
+        channel.public = False
+
+    text = await _call(w, "get_server_recap")
+
+    assert _line(text, TOTAL) == f"{TOTAL}: 0 (last week: 0)"
+    assert "user12" not in text and "Title" not in text and "hello" not in text
+
+
+def test_a_channel_whose_nsfw_flag_cannot_be_read_is_not_shareable(world: SimpleNamespace) -> None:
+    channel = world.guild.channel(600)
+
+    def broken() -> bool:
+        raise RuntimeError("no cache")
+
+    channel.is_nsfw = broken
+
+    assert not community_tools.shareable(channel)
+    assert "600" not in community_tools.shareable_channels(world.guild)

@@ -113,7 +113,7 @@ class UserStatsTools:
             Sends a PNG stats image (word cloud + activity chart) to the channel,
             and returns a brief text summary for use in conversation.
             Call this whenever a user asks about their stats, activity, message count,
-            word cloud, usage history, server rank, titles or badges.
+            word cloud, usage history, server rank or badges.
 
             Args:
                 user_id: Optional Discord user ID. Defaults to message sender.
@@ -220,14 +220,18 @@ class UserStatsTools:
 
 
 async def _profile_extras(runtime: Any, guild: Any, user_id: str) -> List[str]:
-    """The member's all-time rank, rotating titles and badges (as on /profile); empty when unavailable."""
+    """The member's all-time rank and badges (as on /profile); empty when unavailable.
+
+    The rotating titles are left out: the weekly recap awards them from activity in every channel,
+    private ones included, and from songs requested anywhere.
+    """
     bot = getattr(runtime, "bot", None)
     cog = bot.get_cog("LeaderboardCog") if bot is not None else None
     member = guild.get_member(int(user_id)) if cog is not None else None
     if member is None:
         return []
     try:
-        return await cog.profile_extras(guild, member)
+        return await cog.profile_extras(guild, member, titles=False)
     except Exception:
         _logger.error("get_user_stats: could not read the member's rank, titles and badges", exc_info=True)
         return []

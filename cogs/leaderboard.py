@@ -309,17 +309,22 @@ class LeaderboardCog(commands.Cog):
         lines = [_format_text_card(member.display_name, shown, _make_t(self.bot, str(guild.id)))]
         return "\n".join(lines + extras)
 
-    async def profile_extras(self, guild: discord.Guild, member: Any) -> List[str]:
-        """The profile lines after the stats card: all-time rank (unless hidden), titles and badges."""
+    async def profile_extras(self, guild: discord.Guild, member: Any, titles: bool = True) -> List[str]:
+        """The profile lines after the stats card: all-time rank (unless hidden), titles and badges.
+
+        Args:
+            titles: Include the rotating titles. The weekly recap awards them from activity in
+                every channel (and from the music log), so answers posted for everyone leave them out.
+        """
         lines = []
         if not self.store.is_opted_out(guild.id, member.id):
             ranked = await self.rankings(guild, "messages", "all") or []
             place = next((place for place, (m, _) in enumerate(ranked, start=1) if m.id == member.id), None)
             if place is not None:
                 lines.append(self._r(guild.id, "profile_rank", rank=place, total=len(ranked)))
-        titles = self.store.titles_of(guild.id, member.id)
-        if titles:
-            names = self._r(guild.id, "list_joiner").join(self._title(guild.id, title_id) for title_id in titles)
+        held = self.store.titles_of(guild.id, member.id) if titles else []
+        if held:
+            names = self._r(guild.id, "list_joiner").join(self._title(guild.id, title_id) for title_id in held)
             lines.append(self._r(guild.id, "profile_titles", titles=names))
         unlocked = [self._by_id[i] for i, _ in self.store.achievements(guild.id, member.id) if i in self._by_id]
         if unlocked:
