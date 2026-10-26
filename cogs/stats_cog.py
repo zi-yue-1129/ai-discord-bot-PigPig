@@ -18,6 +18,7 @@ import discord
 from discord.ext import commands
 
 from addons.logging import get_logger
+from addons.visibility import audience_can_read
 from cogs.memory.db.stats_storage import StatsStorage
 from function import func, ROOT_DIR
 
@@ -181,6 +182,8 @@ class StatsCog(commands.Cog):
                     message_content=content,
                     channel_id=str(message.channel.id),
                     timestamp=timestamp,
+                    # Decided now: whether the channel is public later says nothing about today.
+                    public=audience_can_read(message.channel),
                 )
             )
             # Lets other cogs (achievements) react to the fresh numbers without re-reading them.

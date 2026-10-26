@@ -20,7 +20,7 @@ from discord.ext import commands
 from addons.logging import get_logger
 from addons.settings import base_config
 from function import func
-from llm.tools.user_stats import _format_text_card, _make_t, public_stats
+from llm.tools.user_stats import _format_text_card, _make_t, with_public_terms
 
 from .community import COMMUNITY_DB_PATH
 from .community_lib.achievements import (
@@ -302,7 +302,8 @@ class LeaderboardCog(commands.Cog):
         stats = await storage.get_user_stats(str(member.id), str(guild.id)) if storage else None
         if not stats:
             return self._r(guild.id, "no_stats", name=member.display_name)
-        lines = [_format_text_card(member.display_name, public_stats(guild, stats), _make_t(self.bot, str(guild.id)))]
+        shown = await with_public_terms(storage, guild, str(member.id), stats)
+        lines = [_format_text_card(member.display_name, shown, _make_t(self.bot, str(guild.id)))]
         if not self.store.is_opted_out(guild.id, member.id):
             ranked = await self.rankings(guild, "messages", "all") or []
             place = next((place for place, (m, _) in enumerate(ranked, start=1) if m.id == member.id), None)

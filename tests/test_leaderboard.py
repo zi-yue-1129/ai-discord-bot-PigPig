@@ -442,6 +442,26 @@ async def test_the_stats_cog_hands_fresh_stats_to_other_cogs(storage: StatsStora
     assert name == "user_stats_updated" and sent_message is message and stats["total_messages"] == 1
 
 
+
+@pytest.mark.asyncio
+async def test_the_stats_cog_counts_public_words_only_in_channels_everyone_can_read(
+    storage: StatsStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Patch the globals the cog really uses (other test files may re-import cogs modules).
+    monkeypatch.setitem(StatsCog.on_message.__globals__, "audience_can_read", lambda channel: channel.id == 5)
+    stats_cog = StatsCog(SimpleNamespace(procedural_storage=SimpleNamespace(db=storage.db)))
+    for channel_id, text in [(5, "pizza"), (6, "secretproject")]:
+        await stats_cog.on_message(SimpleNamespace(
+            guild=SimpleNamespace(id=GUILD_ID),
+            author=SimpleNamespace(id=10, bot=False),
+            channel=SimpleNamespace(id=channel_id, name="c"),
+            content=text,
+            created_at=datetime(2026, 10, 25, 4, 0, tzinfo=timezone.utc),
+        ))
+
+    assert await storage.get_user_public_terms("10", str(GUILD_ID), "word", ["5", "6"]) == [("pizza", 1)]
+
+
 # ------------------------------------------------------------------ translations
 
 

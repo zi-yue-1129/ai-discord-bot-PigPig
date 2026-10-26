@@ -244,3 +244,32 @@ async def test_words_used_once_in_settled_weeks_are_pruned(storage: StatsStorage
 
     assert await storage.get_weekly_terms(GUILD, "2026-09-28", "word") == [("pizza", 2)]
     assert await storage.get_weekly_terms(GUILD, "2026-10-12", "word") == [("lastweek", 1)]
+
+
+# ------------------------------------------------------------ public words per member
+
+
+@pytest.mark.asyncio
+async def test_only_words_from_public_messages_are_counted_per_member(storage: StatsStorage) -> None:
+    await storage.upsert_user_stats(USER, GUILD, "pizza pizza 😀", "1", "2026-10-20T04:00:00Z", public=True)
+    await storage.upsert_user_stats(USER, GUILD, "secretproject 🤫", "2", "2026-10-20T04:00:00Z", public=False)
+    await storage.upsert_user_stats(USER, GUILD, "pizza", "3", "2026-10-20T04:00:00Z", public=True)
+    await storage.upsert_user_stats(OTHER, GUILD, "pasta", "1", "2026-10-20T04:00:00Z", public=True)
+
+    assert await storage.get_user_public_terms(USER, GUILD, "word", ["1", "2", "3"]) == [("pizza", 3)]
+    assert await storage.get_user_public_terms(USER, GUILD, "emoji", ["1", "2", "3"]) == [("😀", 1)]
+    # A channel that is no longer public is left out too.
+    assert await storage.get_user_public_terms(USER, GUILD, "word", ["3"]) == [("pizza", 1)]
+    assert await storage.get_user_public_terms(USER, GUILD, "word", []) == []
+
+
+@pytest.mark.asyncio
+async def test_public_words_are_capped_per_member_and_channel(storage: StatsStorage, monkeypatch: pytest.MonkeyPatch) -> None:
+    import cogs.memory.db.stats_storage as module
+
+    monkeypatch.setattr(module, "MAX_PUBLIC_TERMS", 2)
+    await storage.upsert_user_stats(USER, GUILD, "pizza pizza pizza pasta pasta sushi", "1", "2026-10-20T04:00:00Z", public=True)
+
+    await storage.prune_activity_history(datetime(2026, 10, 25, 12, 0).astimezone())
+
+    assert await storage.get_user_public_terms(USER, GUILD, "word", ["1"]) == [("pizza", 3), ("pasta", 2)]

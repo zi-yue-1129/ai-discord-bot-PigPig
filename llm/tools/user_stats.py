@@ -9,7 +9,7 @@ from __future__ import annotations
 import io
 import asyncio
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 import discord
 from langchain_core.tools.structured import StructuredTool
@@ -146,7 +146,9 @@ class UserStatsTools:
             stats = await storage.get_user_stats(effective_id, guild_id)
             if not stats:
                 return f"No stats found for user {effective_id} in this server."
-            stats = public_stats(message.guild, stats, also_visible=getattr(message.channel, "id", None))
+            stats = await with_public_terms(
+                storage, message.guild, effective_id, stats, also_visible=getattr(message.channel, "id", None)
+            )
 
             display_name = f"User {effective_id}"
             avatar_url = None
@@ -234,20 +236,29 @@ def _is_hidden(runtime: Any, guild_id: int, user_id: str, db_path: Optional[str]
         return True
 
 
+# How many of a member's public words feed the word cloud, and how many emojis are listed.
+PUBLIC_WORDS = 60
+PUBLIC_EMOJIS = 8
+
+
+def _visible_channel_ids(guild: Any, also_visible: Optional[int]) -> List[str]:
+    from cogs.community_lib.recap import public_channel_ids
+
+    ids = public_channel_ids(guild)
+    if also_visible is not None and str(also_visible) not in ids:
+        ids.append(str(also_visible))
+    return ids
+
+
 def public_stats(guild: Any, stats: Dict[str, Any], also_visible: Optional[int] = None) -> Dict[str, Any]:
     """The part of a member's all-time stats that may be shown to anyone in the server.
 
     Channels are only listed when everyone can read them (``recap.is_public``), or when it is
     ``also_visible`` (the channel the answer is posted in). The all-time word and emoji counts
-    (and so the word cloud) are left out: they record neither the channel nor whether it was
-    public when the words were written, so even a channel that is public today cannot vouch
-    for them.
+    are always left out: they record neither the channel nor whether it was public when the
+    words were written. ``with_public_terms`` adds the ones that can be shown.
     """
-    from cogs.community_lib.recap import public_channel_ids
-
-    public = set(public_channel_ids(guild))
-    if also_visible is not None:
-        public.add(str(also_visible))
+    public = set(_visible_channel_ids(guild, also_visible))
     channels = stats.get("top_channels") or {}
     return {
         **stats,
@@ -255,6 +266,25 @@ def public_stats(guild: Any, stats: Dict[str, Any], also_visible: Optional[int] 
         "top_emojis": {},
         "top_channels": {channel: count for channel, count in channels.items() if str(channel) in public},
     }
+
+
+async def with_public_terms(
+    storage: Any, guild: Any, user_id: str, stats: Dict[str, Any], also_visible: Optional[int] = None
+) -> Dict[str, Any]:
+    """``public_stats`` plus the member's words and emojis that may be shown.
+
+    They come from ``user_public_terms``: only messages sent while their channel was readable
+    by everyone were counted there, and only channels that still are (or ``also_visible``) count.
+    """
+    shown = public_stats(guild, stats, also_visible)
+    lookup = getattr(storage, "get_user_public_terms", None)
+    if lookup is None:
+        return shown
+    ids = _visible_channel_ids(guild, also_visible)
+    guild_id = str(getattr(guild, "id", ""))
+    shown["top_words"] = dict(await lookup(str(user_id), guild_id, "word", ids, PUBLIC_WORDS))
+    shown["top_emojis"] = dict(await lookup(str(user_id), guild_id, "emoji", ids, PUBLIC_EMOJIS))
+    return shown
 
 
 # ======================================================================

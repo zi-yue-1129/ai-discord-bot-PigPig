@@ -157,3 +157,27 @@ def test_public_channels_follow_the_real_discord_permission_rules() -> None:
 
     thread = _private_thread(open_guild, owner=5, members=[5])
     assert is_public(open_guild, thread) is False
+
+
+@pytest.mark.asyncio
+async def test_words_counted_while_public_are_shown_for_channels_still_public() -> None:
+    from llm.tools.user_stats import with_public_terms
+
+    class Storage:
+        def __init__(self) -> None:
+            self.asked: list = []
+
+        async def get_user_public_terms(self, user_id: str, guild_id: str, kind: str, channel_ids: Any, limit: int) -> list:
+            self.asked.append(sorted(channel_ids))
+            return [("pizza", 3)] if kind == "word" else [("😀", 1)]
+
+    guild = SimpleNamespace(id=GUILD_ID, default_role="@everyone", channels=[_channel(500, True), _channel(666, False)], threads=[])
+    for channel in guild.channels:
+        channel.guild = guild
+    storage = Storage()
+    stats = {"total_messages": 5, "top_channels": {"500": 5}, "top_words": {"secretproject": 9}, "top_emojis": {"🤫": 2}}
+
+    shown = await with_public_terms(storage, guild, str(AUTHOR_ID), stats)
+
+    assert shown["top_words"] == {"pizza": 3} and shown["top_emojis"] == {"😀": 1}
+    assert storage.asked == [["500"], ["500"]]

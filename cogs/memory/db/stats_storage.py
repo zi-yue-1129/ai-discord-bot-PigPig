@@ -56,6 +56,8 @@ _DISCORD_EMOJI_RE = re.compile(r"<a?:\w+:\d+>")
 
 # Maximum number of words to keep in top_words to prevent unbounded growth
 _MAX_TOP_WORDS = 200
+# How many words (and emojis) per member and channel ``user_public_terms`` keeps after a prune.
+MAX_PUBLIC_TERMS = 200
 # Longer "words" are spam (one long run of letters), not something people say.
 MAX_WORD_CHARS = 20
 
@@ -126,8 +128,13 @@ class StatsStorage:
         message_content: str,
         channel_id: str,
         timestamp: str,
+        public: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """Insert or update cumulative stats for a single message event.
+
+        Args:
+            public: The channel is readable by everyone right now, so the message's words and
+                emojis may also go into ``user_public_terms`` (shown on profiles).
 
         Returns:
             The user's updated stats (as ``get_user_stats``) plus ``previous_active_at``,
@@ -142,6 +149,7 @@ class StatsStorage:
                 message_content,
                 channel_id,
                 timestamp,
+                public,
             )
         except Exception as e:
             await func.report_error(
@@ -157,9 +165,10 @@ class StatsStorage:
         message_content: str,
         channel_id: str,
         timestamp: str,
+        public: bool = False,
     ) -> Dict[str, Any]:
         with self.db.get_connection() as conn:
-            previous = _apply_message(conn, user_id, guild_id, message_content, channel_id, timestamp)
+            previous = _apply_message(conn, user_id, guild_id, message_content, channel_id, timestamp, public)
             conn.commit()
         stats = self._get_user_stats_sync(user_id, guild_id) or {}
         stats["previous_active_at"] = previous
@@ -451,6 +460,42 @@ class StatsStorage:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    async def get_user_public_terms(
+        self, user_id: str, guild_id: str, kind: str, channel_ids: Sequence[str], limit: int = 10
+    ) -> List[tuple[str, int]]:
+        """A member's most used words or emojis from messages sent while their channel was public.
+
+        Args:
+            user_id: The member.
+            guild_id: The guild.
+            kind: ``"word"`` or ``"emoji"``.
+            channel_ids: Only count these channels (the ones still readable by everyone).
+            limit: How many terms to return.
+
+        Returns:
+            ``(term, count)`` pairs, most used first; empty when the lookup fails.
+        """
+        try:
+            return await asyncio.to_thread(self._get_user_public_terms_sync, user_id, guild_id, kind, channel_ids, limit)
+        except Exception as e:
+            await func.report_error(e, f"get_user_public_terms failed (user={user_id}, guild={guild_id})")
+            return []
+
+    def _get_user_public_terms_sync(
+        self, user_id: str, guild_id: str, kind: str, channel_ids: Sequence[str], limit: int
+    ) -> List[tuple[str, int]]:
+        ids = [str(channel_id) for channel_id in channel_ids]
+        if not ids:
+            return []
+        with self.db.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT term, SUM(count) AS total FROM user_public_terms "
+                f"WHERE guild_id = ? AND user_id = ? AND kind = ? AND channel_id IN ({', '.join('?' * len(ids))}) "
+                "GROUP BY term ORDER BY total DESC, term LIMIT ?",
+                (guild_id, user_id, kind, *ids, limit),
+            ).fetchall()
+            return [(row["term"], row["total"]) for row in rows]
+
     async def prune_activity_history(self, now: Optional[datetime] = None) -> None:
         """Deletes weekly term counts and reaction counts that are too old to be shown.
 
@@ -472,6 +517,19 @@ class StatsStorage:
             conn.execute("DELETE FROM channel_weekly_terms WHERE week_start < ?", (oldest_week,))
             conn.execute("DELETE FROM channel_weekly_terms WHERE week_start < ? AND count <= 1", (settled_week,))
             conn.execute("DELETE FROM message_reactions WHERE created_at < ?", (oldest_reaction,))
+            # A member's public words are kept per channel up to MAX_PUBLIC_TERMS each (most used first).
+            conn.execute(
+                """
+                DELETE FROM user_public_terms WHERE rowid IN (
+                    SELECT rowid FROM (
+                        SELECT rowid, ROW_NUMBER() OVER (
+                            PARTITION BY guild_id, user_id, channel_id, kind ORDER BY count DESC, term
+                        ) AS place FROM user_public_terms
+                    ) WHERE place > ?
+                )
+                """,
+                (MAX_PUBLIC_TERMS,),
+            )
             conn.commit()
 
 
@@ -539,6 +597,23 @@ def _add_weekly_terms(
     )
 
 
+def _add_user_public_terms(
+    conn: sqlite3.Connection, guild_id: str, user_id: str, channel_id: str, emojis: List[str], words: List[str]
+) -> None:
+    """Adds one public message's emojis and words to its author's public counts (without committing)."""
+    counts = [("emoji", term, n) for term, n in Counter(emojis).items()]
+    counts += [("word", term, n) for term, n in Counter(words).items()]
+    if not counts:
+        return
+    conn.executemany(
+        """
+        INSERT INTO user_public_terms (guild_id, user_id, channel_id, kind, term, count) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(guild_id, user_id, kind, term, channel_id) DO UPDATE SET count = count + excluded.count
+        """,
+        [(guild_id, user_id, str(channel_id), kind, term, n) for kind, term, n in counts],
+    )
+
+
 def _apply_message(
     conn: sqlite3.Connection,
     user_id: str,
@@ -546,6 +621,7 @@ def _apply_message(
     message_content: str,
     channel_id: str,
     timestamp: str,
+    public: bool = False,
 ) -> Optional[str]:
     """Adds one message to a user's cumulative stats row (without committing).
 
@@ -556,6 +632,7 @@ def _apply_message(
         message_content: Message text.
         channel_id: Channel the message was sent in.
         timestamp: ISO-8601 send time.
+        public: Whether the channel is readable by everyone now (see ``user_public_terms``).
 
     Returns:
         The user's ``last_active_at`` before this message (None for their first one).
@@ -566,6 +643,8 @@ def _apply_message(
     emojis = _extract_emojis(message_content)
     words = _segment_words(message_content)
     _add_weekly_terms(conn, guild_id, channel_id, week_start(local_time), emojis, words)
+    if public and channel_id:
+        _add_user_public_terms(conn, guild_id, user_id, channel_id, emojis, words)
 
     existing = conn.execute(
         "SELECT * FROM user_stats WHERE user_id = ? AND guild_id = ?",
