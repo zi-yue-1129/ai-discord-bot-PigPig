@@ -98,12 +98,13 @@ class ConfirmView(discord.ui.View):
 
 async def ask(channel: Any, content: str, view: ConfirmView) -> ConfirmView:
     """Posts ``view`` under ``content`` (pinging nobody), replacing the open question under its key."""
+    previous = None
     if view.pending is not None:
         previous = view.pending.get(view.key)
         view.pending[view.key] = view
+    try:
         if previous is not None:
             await previous.replace()
-    try:
         view.message = await channel.send(content, view=view, allowed_mentions=discord.AllowedMentions.none())
     except BaseException:
         # Also when the task is cancelled, so the key is never left reserved.

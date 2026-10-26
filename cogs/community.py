@@ -930,14 +930,14 @@ class CommunityCog(commands.Cog):
         view = BirthdayProposalView(self, guild_id, asker.id, target.id, month, day)
         # Reserved before the await, so two quick requests cannot both ping the member.
         self._birthday_proposals[key] = view
-        if previous is not None:
-            await previous.close("birthday_proposal_replaced")
         if asker.id == target.id:
             text = self._t(guild_id, "birthday_proposal_self", target=target.mention, month=month, day=day)
         else:
             shown_asker = self._t(guild_id, "someone") if asker.id in hidden else asker.mention
             text = self._t(guild_id, "birthday_proposal", target=target.mention, asker=shown_asker, month=month, day=day)
         try:
+            if previous is not None:
+                await previous.close("birthday_proposal_replaced")
             # Only the member being asked is pinged.
             view.message = await channel.send(text, view=view, allowed_mentions=discord.AllowedMentions(users=[target]))
         except BaseException:
@@ -949,6 +949,10 @@ class CommunityCog(commands.Cog):
     def _may_propose(self, guild_id: int, asker_id: int) -> bool:
         """Counts a proposal for someone else; False once ``asker_id`` used up the hour's allowance."""
         now = self._now()
+        # Forget everyone whose last proposal is over an hour old, so the record stays small.
+        self._proposal_times = {
+            other: times for other, times in self._proposal_times.items() if times and now - times[-1] < 3600
+        }
         key = (guild_id, asker_id)
         recent = [sent for sent in self._proposal_times.get(key, []) if now - sent < 3600]
         if len(recent) >= self.limits.birthday_proposals_per_hour:

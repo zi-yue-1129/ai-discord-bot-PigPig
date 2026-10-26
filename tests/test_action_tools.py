@@ -1030,6 +1030,57 @@ async def test_wheel_options_with_commas_stay_whole(world: SimpleNamespace) -> N
     assert landed in ("The wheel landed on <<<hot pot>>> (already shown in the channel).",
                       "The wheel landed on <<<ramen>>> (already shown in the channel).")
 
+# ------------------------------------------------------------------ review round 4
+async def _cancelled(*args: Any, **kwargs: Any) -> None:
+    import asyncio
+
+    raise asyncio.CancelledError()
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_while_the_replaced_message_is_edited_frees_the_new_place(birthdays: SimpleNamespace) -> None:
+    import asyncio
+
+    world = birthdays
+    host = world.guild.get_member(HOST_ID)
+    event = _event(world)
+
+    await world.propose(month=1, day=1, user_id="2")
+    await world.events.post_draft(world.here, host, "raid", "3600")
+    await world.events.propose_answer(world.here, host, event.id, GOING)
+    for message in world.here.messages:
+        message.edit = _cancelled
+
+    with pytest.raises(asyncio.CancelledError):
+        await world.cog.propose_birthday(world.here, host, world.guild.get_member(3), 1, 1)
+    with pytest.raises(asyncio.CancelledError):
+        await world.events.post_draft(world.here, host, "raid 2", "3600")
+    with pytest.raises(asyncio.CancelledError):
+        await world.events.propose_answer(world.here, host, event.id, MAYBE)
+
+    assert world.cog._birthday_proposals == {} and world.events._drafts == {} and world.events._answer_asks == {}
+    assert (await world.propose(month=1, day=1, user_id="3")).startswith("Posted a question")
+
+
+def test_old_rate_records_are_forgotten(birthdays: SimpleNamespace) -> None:
+    cog = birthdays.cog
+    clock = {"now": NOW}
+    cog._now = lambda: clock["now"]
+    for asker_id in range(1_000):
+        assert cog._may_propose(GUILD_ID, asker_id)
+    clock["now"] = NOW + 366 * 86400
+    assert cog._may_propose(GUILD_ID, 99_999)
+    assert list(cog._proposal_times) == [(GUILD_ID, 99_999)]
+
+
+def test_the_hourly_allowance_is_per_server(birthdays: SimpleNamespace) -> None:
+    cog = birthdays.cog
+    cog._now = lambda: NOW
+    for _ in range(cog.limits.birthday_proposals_per_hour):
+        assert cog._may_propose(GUILD_ID, HOST_ID)
+    assert not cog._may_propose(GUILD_ID, HOST_ID)
+    assert cog._may_propose(GUILD_ID + 1, HOST_ID)
+
 # ------------------------------------------------------------------ direct messages
 def test_event_and_fun_tools_are_not_offered_in_direct_messages(world: SimpleNamespace) -> None:
     world.runtime.message = SimpleNamespace(guild=None, author=world.guild.get_member(HOST_ID), channel=world.here)

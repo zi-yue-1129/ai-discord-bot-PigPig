@@ -528,9 +528,10 @@ class EventsCog(commands.Cog):
         previous = self._drafts.get(key)
         view = EventDraftView(self, draft)
         self._drafts[key] = view
-        if previous is not None:
-            await previous.close("draft_replaced")
         try:
+            # Inside the cleanup: a cancel while the old draft is edited must not leave this one reserved.
+            if previous is not None:
+                await previous.close("draft_replaced")
             view.message = await channel.send(self.draft_text(draft), view=view, allowed_mentions=discord.AllowedMentions.none())
         except BaseException:
             view.finish()
