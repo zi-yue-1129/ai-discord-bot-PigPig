@@ -404,6 +404,37 @@ async def test_a_due_reminder_is_written_by_the_model_and_sent_to_the_channel(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("hidden", [{2}, None], ids=["opted-out", "unreadable-list"])
+async def test_a_reminder_from_someone_else_goes_by_dm_once_the_target_is_hidden(
+    tmp_path: Path, writer_text: Dict[str, Any], hidden: Optional[set]
+) -> None:
+    channel = _Channel()
+    dm = _Dm()
+    cog = _make_cog(tmp_path, channel, dm=dm, hidden=hidden)
+    _add(cog.store, due_at=NOW, creator=1, target=2)
+
+    await cog._deliver_due(NOW)
+
+    assert channel.sent == [], "a hidden member is not pinged or named in a public channel"
+    assert [item["content"] for item in dm.sent] == ["commands/remind/responses/reminder_message|<@2>|drink water"]
+    assert channel.history_limits == [], "the channel is not read to write a message that is not posted there"
+    assert cog.store.pending() == []
+
+
+@pytest.mark.asyncio
+async def test_a_hidden_member_still_gets_their_own_reminder_in_the_channel(
+    tmp_path: Path, writer_text: Dict[str, Any]
+) -> None:
+    channel = _Channel()
+    cog = _make_cog(tmp_path, channel, hidden={2})
+    _add(cog.store, due_at=NOW, creator=2, target=2)
+
+    await cog._deliver_due(NOW)
+
+    assert [item["content"] for item in channel.sent] == ["<@2> model words"]
+
+
+@pytest.mark.asyncio
 async def test_only_the_target_can_be_pinged(tmp_path: Path, writer_text: Dict[str, Any]) -> None:
     channel = _Channel()
     cog = _make_cog(tmp_path, channel)
@@ -694,6 +725,21 @@ async def test_one_member_gets_only_a_few_reminders_from_others(tmp_path: Path, 
     assert cog.store.count_from_others(2) == ReminderCog.MAX_PENDING_FROM_OTHERS == 3
     # The member's own reminders are not counted against that.
     assert (await _set_for(cog, channel, creator=2, target=2)).startswith("commands/remind/responses/confirm_setup")
+
+
+@pytest.mark.asyncio
+async def test_a_hidden_member_does_not_reveal_how_many_reminders_they_have(tmp_path: Path, asks: List[tuple]) -> None:
+    cog = _make_cog(tmp_path, _Channel(), hidden={2})
+    cog.max_pending_from_others = 1
+    for creator in (3,):
+        cog.store.add(
+            guild_id="7", channel_id=70, creator_id=creator, target_id=2, message="m",
+            created_at=cog._now(), due_at=cog._now() + 600,
+        )
+
+    reply = await _set_for(cog, _guild_channel([1, 2, 3]), creator=1, target=2)
+
+    assert reply.startswith("commands/remind/responses/others_unavailable")
 
 
 @pytest.mark.asyncio

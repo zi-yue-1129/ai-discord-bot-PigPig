@@ -152,9 +152,28 @@ class ReminderCog(commands.Cog):
             reminder.guild_id, "commands", "remind", "responses", "reminder_message", user=mention, message=reminder.message
         )
 
+    async def _is_hidden_target_of_someone_else(self, reminder: Reminder) -> bool:
+        """Whether ``reminder`` was set by another member for a target who hid with /leaderboard optout.
+
+        An opt-out list that cannot be read counts as hidden. Direct-message reminders belong to no
+        server and are never public, so they are not hidden.
+        """
+        if reminder.creator_id == reminder.target_id:
+            return False
+        try:
+            guild_id = int(reminder.guild_id)
+        except ValueError:
+            return False
+        hidden = await hidden_in_guild_async(self.bot, guild_id)
+        return hidden is None or reminder.target_id in hidden
+
     async def _deliver_one(self, reminder: Reminder, now: float) -> None:
         """Writes and sends one due reminder, falling back to a DM and then to a retry."""
         channel = self.bot.get_channel(reminder.channel_id)
+        if channel is not None and await self._is_hidden_target_of_someone_else(reminder):
+            # They may have opted out after accepting: a third party's reminder must not ping or name them
+            # in a public channel any more, so it reaches them by direct message only.
+            channel = None
         target = await self._lookup_user(reminder.target_id)
         creator = await self._lookup_user(reminder.creator_id)
         mention = target.mention if target is not None else f"<@{reminder.target_id}>"
@@ -333,13 +352,14 @@ class ReminderCog(commands.Cog):
         Returns:
             What the person setting it is told.
         """
-        problem = self._problem_for_others(channel, creator_id, target_user)
-        if problem is not None:
-            return self._limit_text(guild_id, problem)
-        # A member who hid with /leaderboard optout is never pinged or named by third parties.
+        # A member who hid with /leaderboard optout is never pinged or named by third parties. This is
+        # checked first so that no other refusal (such as their reminder cap) tells who hid.
         hidden = await hidden_in_guild_async(self.bot, int(guild_id))
         if hidden is None or target_user.id in hidden:
             return self._t(guild_id, "others_unavailable")
+        problem = self._problem_for_others(channel, creator_id, target_user)
+        if problem is not None:
+            return self._limit_text(guild_id, problem)
         # Each question pings the member, so how often one person may ask is limited (owner's rate_limits).
         limiter = getattr(self.bot, "rate_limiter", None)
         if limiter is not None:

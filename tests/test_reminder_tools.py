@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
@@ -15,12 +16,21 @@ from llm.tools.reminder import ReminderTools
 NOW = 1_800_000_000.0
 
 
-def _runtime(tmp_path: Path, author_id: int = 1, with_cog: bool = True) -> SimpleNamespace:
+def _runtime(tmp_path: Path, author_id: int = 1, with_cog: bool = True, hidden: Optional[set] = frozenset()) -> SimpleNamespace:
+    """A runtime for the reminder tools. ``hidden`` is the /leaderboard optout list (None: it cannot be read)."""
     cog: Optional[ReminderCog] = None
     if with_cog:
         cog = ReminderCog(SimpleNamespace())
         cog.store = ReminderStore(tmp_path / "reminders.db")
-    bot = SimpleNamespace(get_cog=lambda name: cog if name == "ReminderCog" else None)
+
+    def read_optouts(guild_id: int) -> set:
+        if hidden is None:
+            raise sqlite3.OperationalError("database is locked")
+        return set(hidden)
+
+    leaderboard = SimpleNamespace(store=SimpleNamespace(read_optouts=read_optouts))
+    cogs = {"ReminderCog": cog, "LeaderboardCog": leaderboard}
+    bot = SimpleNamespace(get_cog=lambda name: cogs.get(name))
     message = SimpleNamespace(author=SimpleNamespace(id=author_id))
     return SimpleNamespace(bot=bot, message=message, logger=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None))
 
@@ -52,6 +62,32 @@ async def test_listing_shows_only_the_callers_pending_reminders_with_their_ids(t
     assert text.index(f"#{sooner}") < text.index(f"#{later}")
     assert "drink water" in text and "call mom" in text
     assert "<@3>" in text
+
+
+@pytest.mark.asyncio
+async def test_listing_never_names_a_member_who_hid(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path, author_id=2, hidden={5, 3})
+    _add(runtime, creator=5, target=2, message="from a hidden member", due_at=NOW + 60)
+    _add(runtime, creator=2, target=3, message="for a hidden member", due_at=NOW + 120)
+    _add(runtime, creator=2, target=4, message="for a visible member", due_at=NOW + 180)
+
+    text = await _tools(runtime)["list_reminders"].ainvoke({})
+
+    assert "<@5>" not in text and "<@3>" not in text
+    assert "from a hidden member" in text and "for a hidden member" in text, "the caller still sees their own reminders"
+    assert "<@4>" in text
+
+
+@pytest.mark.asyncio
+async def test_listing_names_nobody_while_the_opt_out_list_is_unreadable(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path, author_id=2, hidden=None)
+    _add(runtime, creator=5, target=2, message="from someone", due_at=NOW + 60)
+    _add(runtime, creator=2, target=4, message="for someone", due_at=NOW + 120)
+
+    text = await _tools(runtime)["list_reminders"].ainvoke({})
+
+    assert "<@5>" not in text and "<@4>" not in text
+    assert "from someone" in text and "for someone" in text
 
 
 @pytest.mark.asyncio

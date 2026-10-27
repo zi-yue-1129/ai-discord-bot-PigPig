@@ -29,12 +29,13 @@ using the ReminderCog.
 from datetime import datetime
 
 from addons.logging import get_logger
-from typing import Optional, Tuple, TYPE_CHECKING
+from typing import Dict, Optional, Set, Tuple, TYPE_CHECKING
 
 from langchain_core.tools import tool
 
 from cogs.remind import ReminderCog
 from function import func
+from llm.memory.privacy import hidden_in_guild_async
 
 if TYPE_CHECKING:
     from llm.schema import OrchestratorRequest
@@ -207,6 +208,18 @@ class ReminderTools:
             from_others = cog.store.list_from_others(user_id)
             if not pending and not from_others:
                 return "You have no pending reminders."
+            # Members who hid with /leaderboard optout are not named to anyone else; when a server's
+            # opt-out list cannot be read nobody is named.
+            hidden_by_guild: Dict[str, Optional[Set[int]]] = {}
+            for reminder in pending + from_others:
+                if reminder.guild_id not in hidden_by_guild:
+                    try:
+                        hidden_by_guild[reminder.guild_id] = await hidden_in_guild_async(
+                            getattr(runtime, "bot", None), int(reminder.guild_id)
+                        )
+                    except ValueError:
+                        # Direct-message reminders ("@me") belong to no server, so there is no list to read.
+                        hidden_by_guild[reminder.guild_id] = None
             lines = []
             for title, reminders in (
                 ("Pending reminders you set (ID | due | target | text):", pending),
@@ -217,8 +230,10 @@ class ReminderTools:
                 lines.append(title)
                 for reminder in reminders:
                     due = datetime.fromtimestamp(reminder.due_at).strftime("%Y-%m-%d %H:%M")
-                    person = reminder.target_id if reminder.creator_id == user_id else reminder.creator_id
-                    lines.append(f"#{reminder.id} | {due} (unix {int(reminder.due_at)}) | <@{person}> | {reminder.message}")
+                    person_id = reminder.target_id if reminder.creator_id == user_id else reminder.creator_id
+                    hidden = hidden_by_guild[reminder.guild_id]
+                    person = "a member" if person_id != user_id and (hidden is None or person_id in hidden) else f"<@{person_id}>"
+                    lines.append(f"#{reminder.id} | {due} (unix {int(reminder.due_at)}) | {person} | {reminder.message}")
             return "\n".join(lines)
 
         @tool
