@@ -151,28 +151,54 @@ async def ws_guild_logs(
         await websocket.close(code=4003, reason="No access to this guild")
         return
     filters = {"guild_id": guild_id, "level": level}
-    await log_streamer.connect(websocket, filters)
-    try:
+
+    def still_allowed() -> bool:
+        """Whether the token is still valid and its holder may still read this guild's logs."""
+        current = verify_access_token(token)
+        return bool(current) and may_read_guild_logs(websocket.app, current, guild_id)
+
+    async def stream() -> bool:
+        """Replays and streams records; returns True when it stopped because access ended."""
+        await log_streamer.connect(websocket, filters)
         while True:
-            try:
-                data = await asyncio.wait_for(websocket.receive_text(), timeout=GUILD_LOG_RECHECK_SECONDS)
-            except asyncio.TimeoutError:
-                data = None
-            # The stream stops once the token expires or the viewer is no longer an administrator.
-            payload = verify_access_token(token)
-            if not payload or not may_read_guild_logs(websocket.app, payload, guild_id):
-                await log_streamer.disconnect(websocket)
-                await websocket.close(code=4003, reason="No access to this guild")
-                return
-            if data is None:
-                continue
+            data = await websocket.receive_text()
+            if not still_allowed():
+                return True
             try:
                 update = json.loads(data)
                 if "level" in update:
                     filters["level"] = update["level"]
             except (json.JSONDecodeError, TypeError):
                 pass
-    except WebSocketDisconnect:
+
+    async def watch() -> None:
+        """Returns once access has ended. It runs from the start, so a replay that stalls on a client
+        that stopped reading cannot postpone a revocation."""
+        while True:
+            await asyncio.sleep(GUILD_LOG_RECHECK_SECONDS)
+            if not still_allowed():
+                return
+
+    streaming = asyncio.create_task(stream())
+    watching = asyncio.create_task(watch())
+    revoked = False
+    try:
+        done, _ = await asyncio.wait({streaming, watching}, return_when=asyncio.FIRST_COMPLETED)
+        if watching in done:
+            revoked = True
+        elif not streaming.cancelled() and streaming.exception() is None:
+            revoked = streaming.result()
+        elif not isinstance(streaming.exception(), WebSocketDisconnect):
+            log.error("guild log stream ended with an error", exc_info=streaming.exception())
+    finally:
+        # Also when this handler is cancelled: stop the replay, and never stay subscribed.
+        for task in (streaming, watching):
+            task.cancel()
+        await asyncio.gather(streaming, watching, return_exceptions=True)
         await log_streamer.disconnect(websocket)
-    except Exception:
-        await log_streamer.disconnect(websocket)
+    if revoked:
+        try:
+            await asyncio.wait_for(websocket.close(code=4003, reason="No access to this guild"), timeout=5)
+        except Exception:
+            # The client already left or stopped reading; it is unsubscribed, so nothing more is sent.
+            log.error("could not close a revoked guild log stream", exc_info=True)
