@@ -74,6 +74,29 @@ class LogStreamer:
 
 log_streamer = LogStreamer()
 
+# How often an open guild log stream re-checks that its viewer may still read it.
+GUILD_LOG_RECHECK_SECONDS = 60
+
+
+def may_read_guild_logs(app: Any, payload: dict[str, Any], guild_id: str) -> bool:
+    """Whether a token's holder may stream a guild's logs: the bot owner, or a member who is an
+    administrator of that guild right now.
+
+    Guild logs carry the text of every message, private channels included, so being a member is not
+    enough. The token's admin list is up to an hour old, so the bot's current view of the member decides.
+    """
+    if payload.get("role") == "owner":
+        return True
+    if guild_id not in payload.get("admin_guild_ids", []):
+        return False
+    bot = getattr(getattr(app, "state", None), "bot", None)
+    try:
+        guild = bot.get_guild(int(guild_id))
+        member = guild.get_member(int(payload.get("sub", 0)))
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return member is not None and bool(member.guild_permissions.administrator)
+
 
 @router.websocket("/ws/admin/logs")
 async def ws_admin_logs(
@@ -116,7 +139,7 @@ async def ws_guild_logs(
     level: str | None = Query(default=None),
     token: str | None = Query(default=None),
 ) -> None:
-    """WebSocket endpoint for guild-specific log streaming."""
+    """WebSocket endpoint for guild-specific log streaming (the bot owner and the guild's administrators)."""
     if not token:
         await websocket.close(code=4001, reason="Missing token")
         return
@@ -124,14 +147,25 @@ async def ws_guild_logs(
     if not payload:
         await websocket.close(code=4003, reason="Unauthorized")
         return
-    if payload.get("role") != "owner" and guild_id not in payload.get("guild_ids", []):
+    if not may_read_guild_logs(websocket.app, payload, guild_id):
         await websocket.close(code=4003, reason="No access to this guild")
         return
     filters = {"guild_id": guild_id, "level": level}
     await log_streamer.connect(websocket, filters)
     try:
         while True:
-            data = await websocket.receive_text()
+            try:
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=GUILD_LOG_RECHECK_SECONDS)
+            except asyncio.TimeoutError:
+                data = None
+            # The stream stops once the token expires or the viewer is no longer an administrator.
+            payload = verify_access_token(token)
+            if not payload or not may_read_guild_logs(websocket.app, payload, guild_id):
+                await log_streamer.disconnect(websocket)
+                await websocket.close(code=4003, reason="No access to this guild")
+                return
+            if data is None:
+                continue
             try:
                 update = json.loads(data)
                 if "level" in update:
