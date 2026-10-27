@@ -9,11 +9,12 @@ The buttons keep working after a restart (persistent view, looked up by the mess
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
 import dateparser
 import discord
@@ -38,6 +39,8 @@ MAX_UPCOMING_PER_USER = 5
 MAX_UPCOMING_PER_GUILD = 25
 MAX_DELIVERY_ATTEMPTS = 3
 RETRY_DELAY_SECONDS = 60
+# How long a press on a just-announced event waits for its creation to store the message.
+CREATION_WAIT_SECONDS = 30
 MAX_SLEEP_SECONDS = 30
 # Embed field values are capped at 1024 characters; a mention is up to 22.
 FIELD_LIMIT = 1024
@@ -194,6 +197,8 @@ class EventsCog(commands.Cog):
         # Questions the AI posted that wait for a member's button: (guild_id, member_id) -> view.
         self._drafts: Dict[Tuple[int, int], EventDraftView] = {}
         self._answer_asks: Dict[Tuple[int, int], ConfirmView] = {}
+        # Channels where an event is being created -> futures that finish when that creation ends.
+        self._creations: Dict[Any, Set[asyncio.Future]] = {}
         self.hidden_ids: Callable[[int], Optional[Set[int]]] = self._read_hidden
 
     async def cog_load(self) -> None:
@@ -215,6 +220,46 @@ class EventsCog(commands.Cog):
 
     def _lock(self, event_id: int) -> asyncio.Lock:
         return self._locks.setdefault(event_id, asyncio.Lock())
+
+    @contextlib.contextmanager
+    def _creating(self, channel_id: Any) -> Iterator[None]:
+        """Marks an event as being created in ``channel_id`` until the block ends.
+
+        An announcement is live (buttons and all) before its event stores the message id, so a
+        press in that gap finds no event. While the mark is set, such a press waits for the
+        creation instead of treating the message as an orphan.
+
+        Args:
+            channel_id: The channel the event is announced in.
+
+        Yields:
+            Nothing; the mark is removed, and waiting presses released, when the block ends.
+        """
+        finished: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._creations.setdefault(channel_id, set()).add(finished)
+        try:
+            yield
+        finally:
+            running = self._creations[channel_id]
+            running.discard(finished)
+            if not running:
+                del self._creations[channel_id]
+            finished.set_result(None)
+
+    async def _event_of_message_being_created(self, channel_id: Any, message_id: int) -> Optional[Event]:
+        """Waits for the events being created in a channel, then looks up the event of a message.
+
+        Args:
+            channel_id: The channel of the pressed message.
+            message_id: The pressed message.
+
+        Returns:
+            The event once its creation stored the message, or None when none owns it.
+        """
+        running = set(self._creations.get(channel_id, ()))
+        if running:
+            await asyncio.wait(running, timeout=CREATION_WAIT_SECONDS)
+        return self.store.by_message(message_id)
 
     def _read_hidden(self, guild_id: int) -> Optional[Set[int]]:
         """Members hidden with /leaderboard optout, or None when the list cannot be read."""
@@ -294,11 +339,18 @@ class EventsCog(commands.Cog):
         guild_id = interaction.guild_id
         # Acknowledge at once: waiting for the lock (e.g. behind a reminder) must not outlast Discord's 3 seconds.
         await interaction.response.defer()
+        if event is None and message_id is not None:
+            event = await self._event_of_message_being_created(interaction.channel_id, message_id)
         if event is None:
             await interaction.followup.send(self._t(guild_id, "event_gone"), ephemeral=True)
             # No event belongs to this message (e.g. an announcement that could not be taken back
             # when its creation failed): its buttons can never work, so the first press removes them.
-            if message_id is not None:
+            # Decided after the last await: an event whose creation is still running owns its message.
+            if (
+                message_id is not None
+                and not self._creations.get(interaction.channel_id)
+                and self.store.by_message(message_id) is None
+            ):
                 try:
                     await interaction.edit_original_response(view=None)
                 except discord.HTTPException:
@@ -565,6 +617,11 @@ class EventsCog(commands.Cog):
 
     async def confirm_draft(self, interaction: discord.Interaction, view: EventDraftView) -> None:
         """Makes the drafted event and turns the draft message into the event's message."""
+        with self._creating(interaction.channel_id):
+            await self._confirm_draft(interaction, view)
+
+    async def _confirm_draft(self, interaction: discord.Interaction, view: EventDraftView) -> None:
+        """Does the work of ``confirm_draft`` while the channel is marked as having an event being created."""
         draft = view.draft
         if not view.finish():
             await interaction.response.send_message(self._t(draft.guild_id, "draft_done"), ephemeral=True)
@@ -621,6 +678,11 @@ class EventsCog(commands.Cog):
         limit: app_commands.Range[int, 0, MAX_CAPACITY] = 0,
         remind: app_commands.Range[int, 0, MAX_REMIND_MINUTES] = 15,
     ) -> None:
+        with self._creating(interaction.channel_id):
+            await self._create(interaction, title, time, limit, remind)
+
+    async def _create(self, interaction: discord.Interaction, title: str, time: str, limit: int, remind: int) -> None:
+        """Does the work of ``/event create`` while the channel is marked as having an event being created."""
         guild_id, now = interaction.guild_id, self._now()
         starts = self.parse_time(time)
         if starts is None:
