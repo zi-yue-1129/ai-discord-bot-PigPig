@@ -69,3 +69,7 @@ data/stats/
 # Dashboard session / refresh-token SQLite store
 data/dashboard/
 data/auth/
+# 本機除錯輸出（可能含成員資料，不要提交）
+payload_inspect.json
+final_output.txt
+/generated_image.png

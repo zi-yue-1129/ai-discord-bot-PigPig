@@ -72,6 +72,9 @@ from addons.tokens import tokens
 # Per-guild logger creation is now performed via get_logger(server_id, source, channel).
 
 
+DEFAULT_ALLOWED_MENTIONS = discord.AllowedMentions(everyone=False, roles=False, users=True, replied_user=True)
+
+
 class PigPig(commands.Bot):
     """Main Discord bot class with music, messaging, and logging features.
     
@@ -97,6 +100,9 @@ class PigPig(commands.Bot):
             *args: Variable length argument list passed to parent Bot class.
             **kwargs: Arbitrary keyword arguments passed to parent Bot class.
         """
+        # No message the bot sends may ping @everyone, @here or a role unless that send allows it itself.
+        # Text from members and the AI ends up in many messages, so this is the safe default for all of them.
+        kwargs.setdefault("allowed_mentions", DEFAULT_ALLOWED_MENTIONS)
         super().__init__(*args, **kwargs)
         func.set_bot(self)
         self.loggers = {}
