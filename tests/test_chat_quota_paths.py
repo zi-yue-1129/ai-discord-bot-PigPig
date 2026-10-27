@@ -169,3 +169,122 @@ async def test_summarize_counts_against_the_quota() -> None:
     await SummarizerCog.summarize.callback(cog, interaction)
 
     assert len(sent) == 1 and "Try again" in sent[0]
+
+
+class _Turns:
+    """A story manager whose turns can be held open, recording the order they start and end."""
+
+    def __init__(self) -> None:
+        self.events: List[str] = []
+        self.release: dict = {}
+
+    async def process_story_message(self, message: Any) -> None:
+        self.events.append(f"start {message.id}")
+        gate = self.release.get(message.id)
+        if gate is not None:
+            await gate.wait()
+        self.events.append(f"end {message.id}")
+
+
+def _story_cog(turns: _Turns) -> Any:
+    from cogs.story_manager import StoryManagerCog
+
+    async def no_recap(message: Any) -> None:
+        return None
+
+    cog = StoryManagerCog.__new__(StoryManagerCog)
+    cog.story_manager = turns
+    cog._turn_locks = {}
+    cog.maybe_post_daily_recap = no_recap
+    cog.logger = SimpleNamespace(warning=lambda *a, **k: None, error=lambda *a, **k: None, info=lambda *a, **k: None)
+    return cog
+
+
+def _numbered(channel: _Channel, message_id: int) -> _Message:
+    message = _Message(channel, mention=False)
+    message.id = message_id
+    return message
+
+
+@pytest.mark.asyncio
+async def test_story_turns_in_one_channel_run_one_at_a_time_in_order() -> None:
+    import asyncio
+
+    turns = _Turns()
+    turns.release[1] = asyncio.Event()
+    cog = _story_cog(turns)
+    channel = _Channel()
+
+    first = asyncio.create_task(cog.handle_story_message(_numbered(channel, 1)))
+    await asyncio.sleep(0.01)
+    second = asyncio.create_task(cog.handle_story_message(_numbered(channel, 2)))
+    await asyncio.sleep(0.01)
+    assert turns.events == ["start 1"], "the second turn waits for the first"
+    turns.release[1].set()
+    await asyncio.gather(first, second)
+
+    assert turns.events == ["start 1", "end 1", "start 2", "end 2"]
+
+
+@pytest.mark.asyncio
+async def test_a_turn_stuck_in_a_channel_does_not_hold_the_next_ones_forever(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    import cogs.story_manager as story_module
+
+    monkeypatch.setattr(story_module, "STORY_QUEUE_WAIT_SECONDS", 0.05)
+    turns = _Turns()
+    turns.release[1] = asyncio.Event()
+    cog = _story_cog(turns)
+    channel = _Channel()
+    stuck = asyncio.create_task(cog.handle_story_message(_numbered(channel, 1)))
+    await asyncio.sleep(0.01)
+    waiting = _numbered(channel, 2)
+
+    await asyncio.wait_for(cog.handle_story_message(waiting), 2)
+
+    assert turns.events == ["start 1"], "the waiting turn was dropped, not run"
+    assert waiting.reactions == ["⏳"]
+    turns.release[1].set()
+    await stuck
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [None, RuntimeError("history unreadable")], ids=["no-messages", "history-error"])
+async def test_a_summary_that_produces_nothing_gives_the_quota_back(failure: Any) -> None:
+    from cogs.summarizer import SummarizerCog
+
+    limiter = RateLimiter({"chat": LimitRule(1, 60)})
+    leaderboard = SimpleNamespace(store=SimpleNamespace(read_optouts=lambda guild_id: set()))
+    bot = SimpleNamespace(rate_limiter=limiter, get_cog=lambda name: leaderboard if name == "LeaderboardCog" else None)
+    cog = SummarizerCog.__new__(SummarizerCog)
+    cog.bot = bot
+    cog.lang_manager = None
+    followups: List[str] = []
+
+    async def no_op(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    async def followup_send(text: str = "", **kwargs: Any) -> None:
+        followups.append(text)
+
+    def history(limit: int) -> Any:
+        async def generator() -> Any:
+            if failure is not None:
+                raise failure
+            if False:
+                yield None
+
+        return generator()
+
+    interaction = SimpleNamespace(
+        guild_id=7, user=SimpleNamespace(id=1),
+        channel=SimpleNamespace(name="general", history=history),
+        response=SimpleNamespace(send_message=no_op, defer=no_op),
+        followup=SimpleNamespace(send=followup_send),
+    )
+
+    await SummarizerCog.summarize.callback(cog, interaction)
+
+    assert len(followups) == 1
+    assert limiter.hit("chat", 1) == 0, "nothing was summarised, so the member still has their use"

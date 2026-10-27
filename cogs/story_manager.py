@@ -22,6 +22,8 @@ from .system_prompt.manager import SystemPromptManager
 from function import func
 
 RECAP_DB_PATH = "data/story_recaps.db"
+# How long a story message waits for the turn before it in the same channel; after that it is dropped.
+STORY_QUEUE_WAIT_SECONDS = 120
 # Messages read back for a recap.
 RECAP_HISTORY = 40
 _WEBHOOK_ID = re.compile(r"/webhooks/(\d+)/")
@@ -453,8 +455,20 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
         try:
             await self.maybe_post_daily_recap(message)
             lock = self._turn_locks.setdefault(message.channel.id, asyncio.Lock())
-            async with lock:
+            try:
+                await asyncio.wait_for(lock.acquire(), timeout=STORY_QUEUE_WAIT_SECONDS)
+            except asyncio.TimeoutError:
+                # The turn before it has not finished in time: drop this one instead of piling up behind it.
+                self.logger.warning(f"story: dropped a message in channel {message.channel.id}, the previous turn is stuck")
+                try:
+                    await message.add_reaction("⏳")
+                except discord.HTTPException:
+                    self.logger.warning("story: could not mark the dropped message", exc_info=True)
+                return
+            try:
                 await self.story_manager.process_story_message(message)
+            finally:
+                lock.release()
             
         except Exception as e:
             self.logger.error(

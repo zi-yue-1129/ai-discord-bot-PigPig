@@ -870,3 +870,12 @@ async def test_cancelling_a_quiz_stops_its_answer_buttons(cog: GamesCog) -> None
         await task
 
     assert views[0].is_finished()
+
+
+def test_game_model_attempts_count_against_the_server_cap(cog: GamesCog) -> None:
+    cog.bot.rate_limiter = RateLimiter({"chat_server": LimitRule(max_requests=1, per_seconds=3600)})
+    cog.bot.rate_limiter.hit("chat", 99, GUILD_ID)
+
+    charge = cog._charge(10, GUILD_ID)
+
+    assert charge is not None and charge() > 0, "the server's shared budget is spent, other members' games included"
