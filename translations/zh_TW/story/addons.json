@@ -1,0 +1,16 @@
+{
+    "dice_invalid": "看不懂這個骰子寫法，試試 d20、2d6+3 或 4d6-1。",
+    "dice_too_many": "骰子太多了：最多 {max_dice} 顆，每顆最多 {max_sides} 面。",
+    "roll_result": "🎲 {user} 擲出 {result}",
+    "roll_reason": "（{reason}）",
+    "roll_in_story": "📖 這次的結果會影響故事接下來的發展。",
+    "recap_title": "📜 前情提要",
+    "no_story": "這個頻道目前沒有進行中的故事。",
+    "recap_empty": "故事才剛開始，還沒有可以提要的內容。",
+    "card_not_found": "找不到這個角色（只能選這個伺服器的公開角色或你自己建立的角色）。",
+    "card_unavailable": "生圖功能目前無法使用。",
+    "card_failed": "角色卡畫不出來，稍後再試。",
+    "card_rate_limited": "你的生圖次數用完了，{seconds} 秒後再試。",
+    "recap_no_history": "你沒有讀取這個頻道訊息紀錄的權限，所以不能看前情提要。",
+    "recap_sent_privately": "權限在產生提要時變了，前情提要改成只傳給你看。"
+}

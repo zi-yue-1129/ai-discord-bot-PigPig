@@ -18,10 +18,14 @@ import discord
 from discord.ext import commands
 
 from addons.logging import get_logger
+from addons.visibility import audience_can_read
 from cogs.memory.db.stats_storage import StatsStorage
 from function import func, ROOT_DIR
 
 logger = get_logger(server_id="system", source=__name__)
+
+# How often old activity history (weekly terms, reaction counts) is pruned while the bot runs.
+PRUNE_INTERVAL_SECONDS = 24 * 3600
 
 
 class StatsCog(commands.Cog):
@@ -44,6 +48,7 @@ class StatsCog(commands.Cog):
         self.bot = bot
         self.stats_storage: Optional[StatsStorage] = None
         self._migration_task: Optional[asyncio.Task] = None
+        self._prune_task: Optional[asyncio.Task] = None
 
         # Obtain DB connection from procedural_storage (same DB as users table)
         procedural_storage = getattr(bot, "procedural_storage", None)
@@ -69,12 +74,24 @@ class StatsCog(commands.Cog):
                 self._migrate_logs_background()
             )
             logger.info("Background log migration task scheduled.")
+            self._prune_task = asyncio.create_task(self._prune_periodically())
 
     async def cog_unload(self) -> None:
-        """Cancel background migration task on cog unload."""
+        """Cancel background migration and pruning tasks on cog unload."""
         if self._migration_task and not self._migration_task.done():
             self._migration_task.cancel()
             logger.info("Background log migration task cancelled.")
+        if self._prune_task and not self._prune_task.done():
+            self._prune_task.cancel()
+
+    async def _prune_periodically(self) -> None:
+        """Drops old weekly terms and reaction counts once a day while the bot runs.
+
+        The first prune happens at startup, in ``_migrate_logs_background``.
+        """
+        while True:
+            await asyncio.sleep(PRUNE_INTERVAL_SECONDS)
+            await self.stats_storage.prune_activity_history()
 
     @commands.Cog.listener()
     async def on_command(self, ctx: commands.Context) -> None:
@@ -158,15 +175,20 @@ class StatsCog(commands.Cog):
             content = message.content or ""
 
             # 1) Update cumulative stats in procedural.db
-            await asyncio.shield(
+            stats = await asyncio.shield(
                 self.stats_storage.upsert_user_stats(
                     user_id=user_id,
                     guild_id=guild_id,
                     message_content=content,
                     channel_id=str(message.channel.id),
                     timestamp=timestamp,
+                    # Decided now: whether the channel is public later says nothing about today.
+                    public=audience_can_read(message.channel),
                 )
             )
+            # Lets other cogs (achievements) react to the fresh numbers without re-reading them.
+            if stats and hasattr(self.bot, "dispatch"):
+                self.bot.dispatch("user_stats_updated", message, stats)
 
             # 2) Update event stats in stats.db for dashboard trends
             if hasattr(self.bot, "stats_collector"):

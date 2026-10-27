@@ -52,7 +52,8 @@
         },
         "details": {
             "chance": "回复概率：{chance}%",
-            "keywords": "额外关键字：{keywords}"
+            "keywords": "额外关键字：{keywords}",
+            "reaction_chance": "只贴表情：{chance}% 的主动回复只会加一个表情"
         }
     }
 }

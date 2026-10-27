@@ -52,7 +52,8 @@
         },
         "details": {
             "chance": "応答確率：{chance}%",
-            "keywords": "追加キーワード：{keywords}"
+            "keywords": "追加キーワード：{keywords}",
+            "reaction_chance": "リアクションのみ：自発的な返信の {chance}% は絵文字だけ"
         }
     }
 }

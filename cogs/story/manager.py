@@ -4,6 +4,8 @@ from addons.logging import get_logger
 log = get_logger(source=__name__, server_id="system")
 logger = log
 import random
+import asyncio
+import itertools
 from typing import Dict, List, Optional, Any, cast, TypeVar, Type
 import aiohttp
 from pydantic import BaseModel
@@ -37,6 +39,55 @@ _ALLOWED_MENTIONS = discord.AllowedMentions(
 
 T = TypeVar('T', bound=BaseModel)
 
+# /roll results kept for the next GM turn in a story channel.
+MAX_PENDING_DICE = 5
+
+
+# How long a GM turn waits for a /roll reply that is still being sent.
+ROLL_REPLY_WAIT_SECONDS = 5.0
+_ROLL_ORDER = itertools.count()
+
+
+class PendingRoll:
+    """A /roll result waiting for the next GM turn.
+
+    Each roll is its own object (two rolls with the same text are never mixed up), numbered in the
+    order rolled, and tagged with the story it belongs to (``generation``). A roll whose reply is
+    still being sent is used only once the reply went out: nobody may be told a roll they never saw.
+    """
+
+    __slots__ = ("text", "order", "generation", "delivered", "_settled")
+
+    def __init__(self, text: str, generation: int, delivered: bool) -> None:
+        self.text = text
+        self.order = next(_ROLL_ORDER)
+        self.generation = generation
+        self.delivered = delivered
+        self._settled = asyncio.Event()
+        if delivered:
+            self._settled.set()
+
+    @property
+    def settled(self) -> bool:
+        return self._settled.is_set()
+
+    @property
+    def failed(self) -> bool:
+        return self.settled and not self.delivered
+
+    def settle(self, delivered: bool) -> None:
+        """Records once whether the reply went out; later calls change nothing."""
+        if not self._settled.is_set():
+            self.delivered = delivered
+            self._settled.set()
+
+    async def wait(self, timeout: float) -> None:
+        """Waits up to ``timeout`` seconds for the reply to be settled (see :attr:`settled`)."""
+        try:
+            await asyncio.wait_for(self._settled.wait(), timeout)
+        except asyncio.TimeoutError:
+            pass
+
 
 class StoryManager:
     """
@@ -56,6 +107,10 @@ class StoryManager:
         self.state_manager = StoryStateManager(bot)
         self.language_manager: LanguageManager = cast(LanguageManager, self.bot.get_cog("LanguageManager"))
         self.interventions: Dict[int, str] = {}
+        # /roll results per story channel, used (and cleared) by the next GM turn.
+        self.dice_results: Dict[int, List[PendingRoll]] = {}
+        # Bumped whenever a channel's story ends or starts, so older rolls never come back.
+        self.dice_generation: Dict[int, int] = {}
 
     def _get_db(self, guild_id: int) -> StoryDB:
         """Gets or creates a database connection for a specific guild."""
@@ -156,6 +211,60 @@ class StoryManager:
         """Stores an intervention for a specific channel."""
         self.interventions[channel_id] = text
         self.logger.info(f"Intervention added for channel {channel_id}.")
+
+    def add_dice_result(self, channel_id: int, text: str, delivered: bool = True) -> PendingRoll:
+        """Remembers a /roll result for the channel's next GM turn (the latest few only).
+
+        With ``delivered=False`` the roll's reply is still being sent: settle it with
+        :meth:`confirm_dice_result` or :meth:`discard_dice_result`.
+        """
+        roll = PendingRoll(text, self.dice_generation.get(channel_id, 0), delivered)
+        results = self.dice_results.setdefault(channel_id, [])
+        results.append(roll)
+        del results[:-MAX_PENDING_DICE]
+        return roll
+
+    def confirm_dice_result(self, roll: PendingRoll) -> None:
+        """The roll's reply went out: a turn may use it."""
+        roll.settle(True)
+
+    def discard_dice_result(self, channel_id: int, roll: PendingRoll) -> None:
+        """The roll's reply never showed: no turn will use it."""
+        roll.settle(False)
+        results = self.dice_results.get(channel_id)
+        if results and any(pending is roll for pending in results):
+            results[:] = [pending for pending in results if pending is not roll]
+            if not results:
+                del self.dice_results[channel_id]
+
+    async def _take_dice_results(self, channel_id: int) -> List[PendingRoll]:
+        """The rolls for a turn starting now: the delivered ones, after waiting briefly for replies
+        still being sent. A roll whose reply is still not settled waits for a later turn, and
+        nothing is used if the story ended or restarted while waiting."""
+        generation = self.dice_generation.get(channel_id, 0)
+        rolls = self.dice_results.pop(channel_id, None) or []
+        await asyncio.gather(*(roll.wait(ROLL_REPLY_WAIT_SECONDS) for roll in rolls))
+        # Decided once, from each roll's own state after the wait (not from how the wait ended).
+        if self.dice_generation.get(channel_id, 0) != generation:
+            return []
+        self._return_dice_results(channel_id, [roll for roll in rolls if not roll.settled])
+        return [roll for roll in rolls if roll.settled and roll.delivered]
+
+    def _return_dice_results(self, channel_id: int, rolls: List[PendingRoll]) -> None:
+        """Puts back rolls a turn did not use, in the order they were rolled (the latest few only).
+        Rolls of an earlier story, or whose reply failed, are dropped."""
+        generation = self.dice_generation.get(channel_id, 0)
+        kept = [roll for roll in rolls if roll.generation == generation and not roll.failed]
+        if not kept:
+            return
+        current = self.dice_results.get(channel_id, [])
+        merged = sorted({id(roll): roll for roll in current + kept}.values(), key=lambda roll: roll.order)
+        self.dice_results[channel_id] = merged[-MAX_PENDING_DICE:]
+
+    def clear_dice_results(self, channel_id: int) -> None:
+        """Forgets the channel's pending rolls, so they never carry over into another story."""
+        self.dice_results.pop(channel_id, None)
+        self.dice_generation[channel_id] = self.dice_generation.get(channel_id, 0) + 1
 
     async def intervene(self, interaction: discord.Interaction):
         """
@@ -407,10 +516,15 @@ class StoryManager:
             f"V5 Orchestrator: Processing message in c:{channel_id} w:{world.world_name}"
         )
 
+        pending_rolls: List[PendingRoll] = []
+        rolls_used = True
         async with SafeTyping(message.channel):
             try:
                 # --- Step 1: Call GM Agent for a structured plan ---
                 intervention_text = self.interventions.pop(channel_id, None)
+                pending_rolls = await self._take_dice_results(channel_id)
+                rolls_used = not pending_rolls
+                dice_results = [roll.text for roll in pending_rolls] or None
                 if intervention_text:
                     self.logger.info(
                         f"Applying intervention for channel {channel_id}: {intervention_text}"
@@ -425,6 +539,7 @@ class StoryManager:
                     story_outlines=story_instance.outlines,
                     language=language,
                     intervention_text=intervention_text,
+                    dice_results=dice_results,
                 )
 
                 # Prepare dialogue history for the GM
@@ -461,12 +576,16 @@ class StoryManager:
                 # Use unified method to extract structured response
                 gm_plan = self._extract_structured_response(response, GMActionPlan, "GM Agent")
                 if not gm_plan:
+                    # No turn came of it: the rolls wait for the next one.
+                    self._return_dice_results(channel_id, pending_rolls)
+                    rolls_used = True
                     await message.reply(
                         self.language_manager.translate(str(guild_id), "story", "errors", "gm_plan_failed"),
                         allowed_mentions=_ALLOWED_MENTIONS
                     )
                     return
 
+                rolls_used = True
                 # --- Step 3: Execute the plan (NARRATE or DIALOGUE) ---
                 event_text_for_log = ""
                 latest_location = story_instance.current_location
@@ -673,6 +792,9 @@ class StoryManager:
                     db.save_story_instance(updated_instance)
 
             except Exception as e:
+                # A turn that failed before the GM planned it never used the rolls.
+                if not rolls_used:
+                    self._return_dice_results(channel_id, pending_rolls)
                 self.logger.error(
                     f"An unexpected error occurred in V5 story generation: {e}",
                     exc_info=True
@@ -977,6 +1099,8 @@ class StoryManager:
         """
         assert interaction.guild_id is not None, "interaction.guild_id must not be None"
         assert interaction.channel_id is not None, "interaction.channel_id must not be None"
+        # Rolls made before this story belong to no story of it.
+        self.clear_dice_results(cast(int, interaction.channel_id))
         db = self._get_db(cast(int, interaction.guild_id))
         world = db.get_world(world_name)
         if not world:

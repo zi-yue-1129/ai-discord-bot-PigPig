@@ -12,7 +12,7 @@ import sqlite3
 import asyncio
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Sequence, Set
 
 from .connection import DatabaseConnection
 from function import func
@@ -56,6 +56,12 @@ _DISCORD_EMOJI_RE = re.compile(r"<a?:\w+:\d+>")
 
 # Maximum number of words to keep in top_words to prevent unbounded growth
 _MAX_TOP_WORDS = 200
+# How many words (and emojis) per member and channel ``user_public_terms`` keeps after a prune.
+MAX_PUBLIC_TERMS = 200
+# New terms one message may add to its author's public counts (the most repeated first).
+MAX_NEW_PUBLIC_TERMS_PER_MESSAGE = 40
+# Longer "words" are spam (one long run of letters), not something people say.
+MAX_WORD_CHARS = 20
 
 # config-table key: first log day (UTC, YYYYMMDD) whose messages were counted live
 _LIVE_SINCE_KEY = "stats.live_since"
@@ -80,6 +86,9 @@ class StatsStorage:
         """
         self.db = db
         self.logger = logger
+        # Reaction changes are written one at a time, in the order the events arrived: a quick
+        # add then remove must not run its removal first (it would find nothing to take off).
+        self._reaction_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # user_stats CRUD
@@ -121,22 +130,35 @@ class StatsStorage:
         message_content: str,
         channel_id: str,
         timestamp: str,
-    ) -> None:
-        """Insert or update cumulative stats for a single message event."""
+        public: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """Insert or update cumulative stats for a single message event.
+
+        Args:
+            public: The channel is readable by everyone right now, so the message's words and
+                emojis may also go into ``user_public_terms`` (shown on profiles).
+
+        Returns:
+            The user's updated stats (as ``get_user_stats``) plus ``previous_active_at``,
+            the time of their message before this one (None for a first message); None
+            when the update failed.
+        """
         try:
-            await asyncio.to_thread(
+            return await asyncio.to_thread(
                 self._upsert_user_stats_sync,
                 user_id,
                 guild_id,
                 message_content,
                 channel_id,
                 timestamp,
+                public,
             )
         except Exception as e:
             await func.report_error(
                 e,
                 f"upsert_user_stats failed (user={user_id}, guild={guild_id})",
             )
+            return None
 
     def _upsert_user_stats_sync(
         self,
@@ -145,10 +167,14 @@ class StatsStorage:
         message_content: str,
         channel_id: str,
         timestamp: str,
-    ) -> None:
+        public: bool = False,
+    ) -> Dict[str, Any]:
         with self.db.get_connection() as conn:
-            _apply_message(conn, user_id, guild_id, message_content, channel_id, timestamp)
+            previous = _apply_message(conn, user_id, guild_id, message_content, channel_id, timestamp, public)
             conn.commit()
+        stats = self._get_user_stats_sync(user_id, guild_id) or {}
+        stats["previous_active_at"] = previous
+        return stats
 
     async def bulk_upsert_user_stats(self, records: List[Dict[str, Any]]) -> None:
         """Insert or update cumulative stats for a batch of message events."""
@@ -249,12 +275,47 @@ class StatsStorage:
             return live_since
 
 
+    async def get_guild_rankings(
+        self, guild_id: str, kind: str, today: Optional[date] = None
+    ) -> List[tuple[str, int]]:
+        """Ranks a guild's users by all-time messages or by current daily streak.
+
+        Args:
+            guild_id: The guild.
+            kind: ``"total"`` (all-time messages) or ``"streak"`` (consecutive active days,
+                counted only while the streak is alive: active today or yesterday).
+            today: The local date (defaults to today).
+
+        Returns:
+            ``(user_id, value)`` pairs, highest first; zero values are left out.
+        """
+        return await asyncio.to_thread(self._get_guild_rankings_sync, guild_id, kind, today or date.today())
+
+    def _get_guild_rankings_sync(self, guild_id: str, kind: str, today: date) -> List[tuple[str, int]]:
+        with self.db.get_connection() as conn:
+            if kind == "total":
+                rows = conn.execute(
+                    "SELECT user_id, total_messages AS value FROM user_stats WHERE guild_id = ? AND total_messages > 0 "
+                    "ORDER BY total_messages DESC, user_id",
+                    (guild_id,),
+                ).fetchall()
+            elif kind == "streak":
+                yesterday = (today - timedelta(days=1)).isoformat()
+                rows = conn.execute(
+                    "SELECT user_id, streak_days AS value FROM user_stats WHERE guild_id = ? AND streak_days > 0 "
+                    "AND streak_last_date >= ? ORDER BY streak_days DESC, user_id",
+                    (guild_id, yesterday),
+                ).fetchall()
+            else:
+                raise ValueError(f"Unknown ranking kind: {kind}")
+            return [(row["user_id"], row["value"]) for row in rows]
+
     # ------------------------------------------------------------------
-    # guild_weekly_terms / message_reactions
+    # channel_weekly_terms / message_reactions
     # ------------------------------------------------------------------
 
     async def get_weekly_terms(
-        self, guild_id: str, week: str, kind: str, limit: int = 10
+        self, guild_id: str, week: str, kind: str, limit: int = 10, channel_ids: Optional[Sequence[str]] = None
     ) -> List[tuple[str, int]]:
         """Returns a guild's most used words or emojis in one week.
 
@@ -263,20 +324,28 @@ class StatsStorage:
             week: The week's Monday as ``YYYY-MM-DD`` (see ``week_start``).
             kind: ``"word"`` or ``"emoji"``.
             limit: How many terms to return.
+            channel_ids: Only count these channels (e.g. the public ones); None counts every channel.
 
         Returns:
             ``(term, count)`` pairs, most used first.
         """
-        return await asyncio.to_thread(self._get_weekly_terms_sync, guild_id, week, kind, limit)
+        return await asyncio.to_thread(self._get_weekly_terms_sync, guild_id, week, kind, limit, channel_ids)
 
-    def _get_weekly_terms_sync(self, guild_id: str, week: str, kind: str, limit: int) -> List[tuple[str, int]]:
+    def _get_weekly_terms_sync(
+        self, guild_id: str, week: str, kind: str, limit: int, channel_ids: Optional[Sequence[str]]
+    ) -> List[tuple[str, int]]:
+        if channel_ids is not None and not channel_ids:
+            return []
+        query = "SELECT term, SUM(count) AS total FROM channel_weekly_terms WHERE guild_id = ? AND week_start = ? AND kind = ?"
+        params: List[Any] = [guild_id, week, kind]
+        if channel_ids is not None:
+            ids = [str(channel_id) for channel_id in channel_ids]
+            query += f" AND channel_id IN ({', '.join('?' * len(ids))})"
+            params += ids
+        query += " GROUP BY term ORDER BY total DESC, term LIMIT ?"
         with self.db.get_connection() as conn:
-            rows = conn.execute(
-                "SELECT term, count FROM guild_weekly_terms WHERE guild_id = ? AND week_start = ? AND kind = ? "
-                "ORDER BY count DESC, term LIMIT ?",
-                (guild_id, week, kind, limit),
-            ).fetchall()
-            return [(row["term"], row["count"]) for row in rows]
+            rows = conn.execute(query, (*params, limit)).fetchall()
+            return [(row["term"], row["total"]) for row in rows]
 
     async def record_reaction(
         self,
@@ -302,9 +371,10 @@ class StatsStorage:
                 as their reaction was never counted.
         """
         try:
-            await asyncio.to_thread(
-                self._record_reaction_sync, message_id, guild_id, channel_id, author_id, created_at, delta, reactor_id
-            )
+            async with self._reaction_lock:
+                await asyncio.to_thread(
+                    self._record_reaction_sync, message_id, guild_id, channel_id, author_id, created_at, delta, reactor_id
+                )
         except Exception as e:
             await func.report_error(e, f"record_reaction failed (message={message_id})")
 
@@ -364,6 +434,97 @@ class StatsStorage:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    async def reactions_by_author(
+        self, guild_id: str, since: float, until: float, channel_ids: Optional[Sequence[str]] = None
+    ) -> List[tuple[str, int]]:
+        """Sums the reactions each author's messages sent in a time range received, most first.
+
+        Args:
+            channel_ids: Only count messages in these channels; None counts every channel.
+        """
+        return await asyncio.to_thread(self._reactions_by_author_sync, guild_id, since, until, channel_ids)
+
+    def _reactions_by_author_sync(
+        self, guild_id: str, since: float, until: float, channel_ids: Optional[Sequence[str]] = None
+    ) -> List[tuple[str, int]]:
+        query = (
+            "SELECT author_id, SUM(count) AS total FROM message_reactions "
+            "WHERE guild_id = ? AND created_at >= ? AND created_at < ? AND count > 0 AND author_id IS NOT NULL"
+        )
+        params: List[Any] = [guild_id, since, until]
+        if channel_ids is not None:
+            ids = [str(channel_id) for channel_id in channel_ids]
+            if not ids:
+                return []
+            query += f" AND channel_id IN ({', '.join('?' * len(ids))})"
+            params += ids
+        with self.db.get_connection() as conn:
+            rows = conn.execute(query + " GROUP BY author_id ORDER BY total DESC, author_id", params).fetchall()
+            return [(row["author_id"], row["total"]) for row in rows]
+
+    async def get_regulars(self, guild_id: str, min_messages: int) -> List[Dict[str, Any]]:
+        """Returns users with at least ``min_messages`` messages, with ``user_id``, ``total_messages``
+        and ``last_active_at``, most messages first."""
+        return await asyncio.to_thread(self._get_regulars_sync, guild_id, min_messages)
+
+    def _get_regulars_sync(self, guild_id: str, min_messages: int) -> List[Dict[str, Any]]:
+        with self.db.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT user_id, total_messages, last_active_at FROM user_stats "
+                "WHERE guild_id = ? AND total_messages >= ? ORDER BY total_messages DESC, user_id",
+                (guild_id, min_messages),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def get_user_public_terms(
+        self, user_id: str, guild_id: str, kind: str, channel_ids: Sequence[str], limit: int = 10
+    ) -> List[tuple[str, int]]:
+        """A member's most used words or emojis from messages sent while their channel was public.
+
+        Args:
+            user_id: The member.
+            guild_id: The guild.
+            kind: ``"word"`` or ``"emoji"``.
+            channel_ids: Only count these channels (the ones still readable by everyone).
+            limit: How many terms to return.
+
+        Returns:
+            ``(term, count)`` pairs, most used first; empty when the lookup fails.
+        """
+        rows = await self.get_user_public_term_rows(user_id, guild_id, kind, channel_ids)
+        return sum_public_terms(rows, channel_ids, limit)
+
+    async def get_user_public_term_rows(
+        self, user_id: str, guild_id: str, kind: str, channel_ids: Sequence[str]
+    ) -> List[tuple[str, str, int]]:
+        """``(channel_id, term, count)`` rows behind ``get_user_public_terms``, one per channel.
+
+        Callers that await between this lookup and the reply re-filter the rows by channel
+        with ``sum_public_terms`` once they know which channels are still public.
+
+        Returns:
+            The rows; empty when the lookup fails or no channel is given.
+        """
+        try:
+            return await asyncio.to_thread(self._get_user_public_term_rows_sync, user_id, guild_id, kind, channel_ids)
+        except Exception as e:
+            await func.report_error(e, f"get_user_public_terms failed (user={user_id}, guild={guild_id})")
+            return []
+
+    def _get_user_public_term_rows_sync(
+        self, user_id: str, guild_id: str, kind: str, channel_ids: Sequence[str]
+    ) -> List[tuple[str, str, int]]:
+        ids = [str(channel_id) for channel_id in channel_ids]
+        if not ids:
+            return []
+        with self.db.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT channel_id, term, count FROM user_public_terms "
+                f"WHERE guild_id = ? AND user_id = ? AND kind = ? AND channel_id IN ({', '.join('?' * len(ids))})",
+                (guild_id, user_id, kind, *ids),
+            ).fetchall()
+            return [(row["channel_id"], row["term"], row["count"]) for row in rows]
+
     async def prune_activity_history(self, now: Optional[datetime] = None) -> None:
         """Deletes weekly term counts and reaction counts that are too old to be shown.
 
@@ -377,10 +538,27 @@ class StatsStorage:
 
     def _prune_activity_history_sync(self, now: datetime) -> None:
         oldest_week = (now - timedelta(days=WEEKLY_TERMS_KEEP_DAYS)).strftime("%Y-%m-%d")
+        # Weeks before last week are no longer recapped: terms used only once there are noise
+        # (and spam of many distinct words), so only the repeated ones are kept.
+        settled_week = week_start(now - timedelta(days=7))
         oldest_reaction = now.timestamp() - REACTIONS_KEEP_DAYS * 86400
         with self.db.get_connection() as conn:
-            conn.execute("DELETE FROM guild_weekly_terms WHERE week_start < ?", (oldest_week,))
+            conn.execute("DELETE FROM channel_weekly_terms WHERE week_start < ?", (oldest_week,))
+            conn.execute("DELETE FROM channel_weekly_terms WHERE week_start < ? AND count <= 1", (settled_week,))
             conn.execute("DELETE FROM message_reactions WHERE created_at < ?", (oldest_reaction,))
+            # A member's public words are kept per channel up to MAX_PUBLIC_TERMS each (most used first).
+            conn.execute(
+                """
+                DELETE FROM user_public_terms WHERE rowid IN (
+                    SELECT rowid FROM (
+                        SELECT rowid, ROW_NUMBER() OVER (
+                            PARTITION BY guild_id, user_id, channel_id, kind ORDER BY count DESC, term
+                        ) AS place FROM user_public_terms
+                    ) WHERE place > ?
+                )
+                """,
+                (MAX_PUBLIC_TERMS,),
+            )
             conn.commit()
 
 
@@ -417,19 +595,20 @@ def week_start(moment: datetime) -> str:
         moment: A datetime, already in the time zone the week is counted in.
 
     Returns:
-        The week's key in ``guild_weekly_terms``.
+        The week's key in ``channel_weekly_terms``.
     """
     return (moment.date() - timedelta(days=moment.weekday())).isoformat()
 
 
 def _add_weekly_terms(
-    conn: sqlite3.Connection, guild_id: str, week: str, emojis: List[str], words: List[str]
+    conn: sqlite3.Connection, guild_id: str, channel_id: str, week: str, emojis: List[str], words: List[str]
 ) -> None:
-    """Adds one message's emojis and words to its guild's counts for the week (without committing).
+    """Adds one message's emojis and words to its channel's counts for the week (without committing).
 
     Args:
         conn: Open connection to the procedural database.
         guild_id: Guild the message was sent in.
+        channel_id: Channel the message was sent in.
         week: The week's key (see ``week_start``).
         emojis: Emojis in the message.
         words: Segmented words in the message.
@@ -440,11 +619,77 @@ def _add_weekly_terms(
         return
     conn.executemany(
         """
-        INSERT INTO guild_weekly_terms (guild_id, week_start, kind, term, count) VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(guild_id, week_start, kind, term) DO UPDATE SET count = count + excluded.count
+        INSERT INTO channel_weekly_terms (guild_id, channel_id, week_start, kind, term, count) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(guild_id, week_start, kind, term, channel_id) DO UPDATE SET count = count + excluded.count
         """,
-        [(guild_id, week, kind, term, n) for kind, term, n in counts],
+        [(guild_id, str(channel_id), week, kind, term, n) for kind, term, n in counts],
     )
+
+
+def sum_public_terms(
+    rows: Sequence[tuple[str, str, int]], channel_ids: Sequence[Any], limit: int
+) -> List[tuple[str, int]]:
+    """Totals ``(channel_id, term, count)`` rows over ``channel_ids``: ``(term, count)``, most used first."""
+    allowed = {str(channel_id) for channel_id in channel_ids}
+    totals: Counter = Counter()
+    for channel_id, term, count in rows:
+        if str(channel_id) in allowed:
+            totals[term] += count
+    return sorted(totals.items(), key=lambda item: (-item[1], item[0]))[:limit]
+
+
+def _add_user_public_terms_isolated(
+    conn: sqlite3.Connection, guild_id: str, user_id: str, channel_id: str, emojis: List[str], words: List[str]
+) -> None:
+    """``_add_user_public_terms`` in its own savepoint: a failure there is logged and undone
+    without touching the message's other counts in the same transaction."""
+    conn.execute("SAVEPOINT public_terms")
+    try:
+        _add_user_public_terms(conn, guild_id, user_id, channel_id, emojis, words)
+    except sqlite3.Error as e:
+        conn.execute("ROLLBACK TO public_terms")
+        logger.warning("Could not count public words (user=%s, guild=%s): %s", user_id, guild_id, e)
+    finally:
+        conn.execute("RELEASE public_terms")
+
+
+def _add_user_public_terms(
+    conn: sqlite3.Connection, guild_id: str, user_id: str, channel_id: str, emojis: List[str], words: List[str]
+) -> None:
+    """Adds one public message's emojis and words to its author's public counts (without committing).
+
+    Each (member, channel, kind) keeps at most ``MAX_PUBLIC_TERMS`` terms with the Space-Saving
+    rule of ``_add_words``: when it is full, a new term replaces the least used one and inherits
+    its count, so a term used often enough always gets in instead of being pruned every day.
+    One message adds at most ``MAX_NEW_PUBLIC_TERMS_PER_MESSAGE`` new terms, so a wall of
+    distinct words cannot hold the write lock for long.
+    """
+    counts = [("emoji", term, n) for term, n in Counter(emojis).items()]
+    counts += [("word", term, n) for term, n in Counter(words).items()]
+    counts.sort(key=lambda count: -count[2])
+    scope = (guild_id, user_id, str(channel_id))
+    where = "guild_id = ? AND user_id = ? AND channel_id = ? AND kind = ?"
+    new_terms = 0
+    for kind, term, n in counts:
+        if conn.execute(
+            f"UPDATE user_public_terms SET count = count + ? WHERE {where} AND term = ?", (n, *scope, kind, term)
+        ).rowcount:
+            continue
+        if new_terms >= MAX_NEW_PUBLIC_TERMS_PER_MESSAGE:
+            continue
+        new_terms += 1
+        carried = 0
+        size = conn.execute(f"SELECT COUNT(*) FROM user_public_terms WHERE {where}", (*scope, kind)).fetchone()[0]
+        if size >= MAX_PUBLIC_TERMS:
+            least = conn.execute(
+                f"SELECT term, count FROM user_public_terms WHERE {where} ORDER BY count, term LIMIT 1", (*scope, kind)
+            ).fetchone()
+            conn.execute(f"DELETE FROM user_public_terms WHERE {where} AND term = ?", (*scope, kind, least[0]))
+            carried = least[1]
+        conn.execute(
+            "INSERT INTO user_public_terms (guild_id, user_id, channel_id, kind, term, count) VALUES (?, ?, ?, ?, ?, ?)",
+            (*scope, kind, term, carried + n),
+        )
 
 
 def _apply_message(
@@ -454,7 +699,8 @@ def _apply_message(
     message_content: str,
     channel_id: str,
     timestamp: str,
-) -> None:
+    public: bool = False,
+) -> Optional[str]:
     """Adds one message to a user's cumulative stats row (without committing).
 
     Args:
@@ -464,14 +710,35 @@ def _apply_message(
         message_content: Message text.
         channel_id: Channel the message was sent in.
         timestamp: ISO-8601 send time.
+        public: Whether the channel is readable by everyone now (see ``user_public_terms``).
+
+    Returns:
+        The user's ``last_active_at`` before this message (None for their first one).
     """
     local_time = _local_time(timestamp)
     hour_key = str(local_time.hour)
     today_str = local_time.strftime("%Y-%m-%d")
     emojis = _extract_emojis(message_content)
     words = _segment_words(message_content)
-    _add_weekly_terms(conn, guild_id, week_start(local_time), emojis, words)
+    _add_weekly_terms(conn, guild_id, channel_id, week_start(local_time), emojis, words)
+    previous = _update_user_row(conn, user_id, guild_id, channel_id, timestamp, hour_key, today_str, emojis, words)
+    if public and channel_id:
+        _add_user_public_terms_isolated(conn, guild_id, user_id, channel_id, emojis, words)
+    return previous
 
+
+def _update_user_row(
+    conn: sqlite3.Connection,
+    user_id: str,
+    guild_id: str,
+    channel_id: str,
+    timestamp: str,
+    hour_key: str,
+    today_str: str,
+    emojis: List[str],
+    words: List[str],
+) -> Optional[str]:
+    """Adds one message to the ``user_stats`` row; returns the previous ``last_active_at``."""
     existing = conn.execute(
         "SELECT * FROM user_stats WHERE user_id = ? AND guild_id = ?",
         (user_id, guild_id),
@@ -499,7 +766,7 @@ def _apply_message(
                 timestamp,
             ),
         )
-        return
+        return None
 
     row = dict(existing)
     active_hours = _safe_json_load(row.get("active_hours", "{}"))
@@ -547,6 +814,7 @@ def _apply_message(
             guild_id,
         ),
     )
+    return row.get("last_active_at")
 
 
 def _safe_json_load(raw: Any) -> Dict[str, int]:
@@ -581,8 +849,8 @@ def _extract_emojis(text: str) -> List[str]:
 def _segment_words(text: str) -> List[str]:
     """Segment text using jieba and filter stop-words / noise.
 
-    Returns a list of meaningful words (length >= 2, not pure digits,
-    not in the stop-word set).
+    Returns a list of meaningful words (2 to ``MAX_WORD_CHARS`` characters,
+    not pure digits, not in the stop-word set).
     """
     if not text:
         return []
@@ -601,7 +869,7 @@ def _segment_words(text: str) -> List[str]:
     words: List[str] = []
     for word in jieba.cut(cleaned):
         w = word.strip().lower()
-        if len(w) < 2:
+        if len(w) < 2 or len(w) > MAX_WORD_CHARS:
             continue
         if w.isdigit():
             continue

@@ -281,6 +281,11 @@ class PigPig(commands.Bot):
             music_cog = self.get_cog('YTMusic')
             if music_cog is not None and await music_cog.requests.handle(message):
                 return
+
+            # A word played in a running word chain is a game move, not a chat message.
+            games_cog = self.get_cog('GamesCog')
+            if games_cog is not None and await games_cog.handle_message(message):
+                return
             
             # Delegate message processing to MessageHandler
             # Check if message should be handled by bot (e.g., @mention or in specific channel)
@@ -309,15 +314,23 @@ class PigPig(commands.Bot):
                         is_reply_to_bot = True
 
                 is_mentioned = self.user.id in message.raw_mentions and not message.mention_everyone
-                wants_reply = is_mentioned or is_reply_to_bot or (
-                    auto_response_enabled and await channel_manager.should_auto_respond(message, guild_id)
+                directly_asked = is_mentioned or is_reply_to_bot
+                auto_reply = (
+                    not directly_asked
+                    and auto_response_enabled
+                    and await channel_manager.should_auto_respond(message, guild_id)
                 )
+                wants_reply = directly_asked or auto_reply
                 if is_allowed and wants_reply:
                     retry_after = self.rate_limiter.hit("chat", message.author.id)
                     if retry_after:
                         # Unprompted auto-replies are skipped quietly; a direct ask gets told why.
                         if is_mentioned or is_reply_to_bot:
                             await self._tell_rate_limited(message, "chat", retry_after)
+                        return
+                    # Some unprompted replies are just an emoji reaction (per-channel reaction chance);
+                    # a reaction counts as a reply for the rate limit above.
+                    if auto_reply and await channel_manager.react_instead(message, guild_id):
                         return
 
                     # Check if this is the first guild message after a version update.

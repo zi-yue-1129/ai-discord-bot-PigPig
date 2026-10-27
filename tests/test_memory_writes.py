@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 import pytest
 
-from cogs import userdata
 from cogs.memory.db.knowledge_storage import MAX_KNOWLEDGE_CHARS
 from cogs.userdata import UserDataCog
 from llm.tools.user_data import UserMemoryTools
+
+# The module the cog really runs in: ``from cogs import userdata`` can return an older copy
+# left on the package by a test file that ran earlier (the root conftest re-imports cogs modules).
+userdata = sys.modules[UserDataCog.__module__]
 
 TARGET = "111"
 ASKER = "222"
@@ -221,7 +225,11 @@ async def test_the_read_tool_reports_an_unknown_user_instead_of_the_asker() -> N
         return "data"
 
     cog = SimpleNamespace(user_manager=users, _read_user_data=read)
-    bot = SimpleNamespace(get_cog=lambda name: cog, get_user=lambda user_id: SimpleNamespace(id=user_id, name="n"))
+    # Someone else's memory is only read once the opt-out list can be read (it is empty here): without a
+    # readable list the tool refuses, which is covered in test_memory_privacy.py.
+    leaderboard = SimpleNamespace(store=SimpleNamespace(read_optouts=lambda guild_id: set()))
+    cogs = {"LeaderboardCog": leaderboard}
+    bot = SimpleNamespace(get_cog=lambda name: cogs.get(name, cog), get_user=lambda user_id: SimpleNamespace(id=user_id, name="n"))
     message = SimpleNamespace(author=SimpleNamespace(id=int(ASKER)), guild=SimpleNamespace(id=1))
     runtime = SimpleNamespace(bot=bot, message=message, logger=_Logger())
     (tool,) = [t for t in UserMemoryTools(runtime).get_tools() if t.name == "read_user_memory"]

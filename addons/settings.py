@@ -3,7 +3,9 @@ import yaml
 import asyncio
 from addons.logging import get_logger
 import os
-from typing import Optional
+import re
+from typing import Any, Optional
+from urllib.parse import urlsplit
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -68,6 +70,8 @@ class BaseConfig:
         self.rate_limits: dict = data.get("rate_limits", {}) or {}
         # Tuning for unprompted replies (see AutoResponseTuning in cogs/channel_manager.py).
         self.auto_response: dict = data.get("auto_response", {}) or {}
+        # Limits for community features (see CommunityLimits in cogs/community_lib/limits.py).
+        self.community: dict = data.get("community", {}) or {}
 
         # Dashboard web interface settings
         self.dashboard: dict = data.get("dashboard", {
@@ -160,6 +164,82 @@ class BaseConfig:
         self.logging: dict = merged
 
 
+# Provider prefixes that ``init_chat_model`` and the bot's own routing already give a meaning
+# ("openai:", "vllm:", ...). A named endpoint may not shadow one: the model string would then be
+# sent to the endpoint's host together with the built-in provider's credentials.
+_RESERVED_PROVIDER_NAMES = frozenset({
+    "openai", "azure_openai", "azure_ai", "anthropic", "google_genai", "google_vertexai",
+    "google_anthropic_vertex", "vertexai", "ollama", "deepseek", "vllm", "groq", "mistralai",
+    "cohere", "fireworks", "together", "huggingface", "bedrock", "bedrock_converse", "xai",
+    "perplexity", "nvidia", "ibm", "upstage", "litellm", "openrouter",
+})
+_ENDPOINT_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+_ENV_VARIABLE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _is_dialable_http_url(url: str) -> bool:
+    """Tells whether an HTTP client could connect to ``url``.
+
+    Args:
+        url: A configured ``base_url``.
+
+    Returns:
+        True for an http(s) URL with a host, no whitespace and a numeric port (if any).
+    """
+    if any(character.isspace() for character in url):
+        return False
+    try:
+        parts = urlsplit(url)
+        parts.port  # Raises ValueError for a non-numeric or out-of-range port.
+    except ValueError:
+        return False
+    return parts.scheme in ("http", "https") and bool(parts.hostname)
+
+
+def parse_openai_endpoints(raw: Any) -> dict[str, dict[str, str]]:
+    """Validates the ``openai_endpoints`` section of llm.yaml.
+
+    Args:
+        raw: The parsed YAML value. ``None`` (a key whose entries are all commented out)
+            means no endpoints.
+
+    Returns:
+        A mapping of endpoint name to ``{"base_url": ..., "api_key_env": ...}``.
+
+    Raises:
+        ValueError: If the section is not a mapping, a name is malformed or shadows a
+            built-in provider, or an endpoint lacks a usable ``base_url`` / ``api_key_env``.
+            Failing at load keeps a typo from surfacing later as a request-time error that
+            model fallback would hide.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"llm.yaml openai_endpoints must be a mapping of names, not {type(raw).__name__}")
+    endpoints: dict[str, dict[str, str]] = {}
+    for name, entry in raw.items():
+        if not isinstance(name, str) or not _ENDPOINT_NAME_PATTERN.fullmatch(name):
+            raise ValueError(
+                f"llm.yaml openai_endpoints name {name!r} must be letters, digits, '_' or '-' and start with a letter"
+            )
+        if name.lower() in _RESERVED_PROVIDER_NAMES:
+            raise ValueError(f"llm.yaml openai_endpoints name '{name}' is a built-in provider; pick another name")
+        if not isinstance(entry, dict):
+            raise ValueError(f"llm.yaml openai_endpoints '{name}' must be a mapping with base_url and api_key_env")
+        base_url = entry.get("base_url")
+        if not isinstance(base_url, str) or not _is_dialable_http_url(base_url):
+            raise ValueError(
+                f"llm.yaml openai_endpoints '{name}' needs a base_url like https://host[:port]/v1"
+            )
+        key_variable = entry.get("api_key_env")
+        if not isinstance(key_variable, str) or not _ENV_VARIABLE_PATTERN.fullmatch(key_variable):
+            raise ValueError(
+                f"llm.yaml openai_endpoints '{name}' needs api_key_env, the name of an environment variable"
+            )
+        endpoints[name] = {"base_url": base_url, "api_key_env": key_variable}
+    return endpoints
+
+
 class LLMConfig:
     """Configuration object mapped from config/llm.yaml"""
 
@@ -169,11 +249,22 @@ class LLMConfig:
         self.model_priorities: list = self.data.get("model_priorities", [])
         self.google_search_agent: str = self.data.get("google_search_agent", "gemini-2.0-flash")
         self.vllm_url: Optional[str] = self.data.get("vllm_url", self.data.get("ollama_url", "http://localhost:11434"))
+        # Named OpenAI-compatible servers: ``name: {base_url, api_key_env}``; a model string
+        # ``name:model`` in model_priorities is served by that server.
+        self.openai_endpoints: dict = parse_openai_endpoints(self.data.get("openai_endpoints"))
         # Ollama server URL (defaults to localhost:11434)
         self.ollama_url: Optional[str] = self.data.get("ollama_url", "http://localhost:11434")
         self.llm_call_timeout: float = float(self.data.get("llm_call_timeout", 60))
         # Most tokens one chat model call may generate (reasoning included); 0 means no cap.
         self.max_output_tokens: int = int(self.data.get("max_output_tokens", 8192))
+        # Optional tool groups and the channels they are limited to (see llm/tools_factory.py).
+        tool_groups = self.data.get("tool_groups") or {}
+        if not isinstance(tool_groups, dict):
+            logger.warning(
+                f"llm.yaml tool_groups must be a mapping of group names, not {type(tool_groups).__name__}; ignored"
+            )
+            tool_groups = {}
+        self.tool_groups: dict = tool_groups
         self.reasoning_optimization_prompt: str = self.data.get(
             "reasoning_optimization_prompt", 
             "\n\n[CRITICAL SYSTEM RULE]: Think efficiently and use minimal reasoning. Strict limit: keep any internal reasoning or <think> process extremely brief (under 3 sentences). Output final results and call tools immediately without extensive reflection."

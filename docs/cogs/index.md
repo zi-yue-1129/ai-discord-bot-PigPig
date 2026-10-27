@@ -18,11 +18,13 @@ The bot consists of 17 main cog modules plus several subdirectories containing s
 - **[music.md](music.md)** - YouTube music player with queue management
 - **[gen_img.md](gen_img.md)** - AI-powered image generation using Gemini and local models
 - **[gif_tools.md](gif_tools.md)** - GIF search and management using Tenor API
+- **[wheel.md](wheel.md)** - Decision wheel, including a wheel of nearby restaurants
 - **[summarizer.md](summarizer.md)** - AI-powered conversation summarization
 
 ### Utility & Productivity
 - **[math.md](math.md)** - Mathematical calculation engine using SymPy
 - **[remind.md](remind.md)** - Time-based reminder system with natural language parsing
+- **[events.md](events.md)** - Events members sign up for, with a waiting list and a reminder
 - **[schedule.md](schedule.md)** - Personal schedule management with YAML file support
 - **[internet_search.md](internet_search.md)** - Web search using Google Search API and web scraping
 

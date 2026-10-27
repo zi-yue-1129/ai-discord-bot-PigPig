@@ -20,6 +20,7 @@ from fastapi import Query
 from addons.logging import get_logger
 from addons.tokens import tokens
 from dashboard.middleware.permission import require_owner
+from dashboard.services.member_stats import delete_member_stats
 from function import ROOT_DIR
 
 log = get_logger(server_id="Bot", source=__name__)
@@ -91,10 +92,14 @@ async def list_guilds(
 _ALLOWED_CONFIGS = {"base", "llm", "memory", "music"}
 
 _CONFIG_ALLOWED_KEYS: dict[str, set[str]] = {
-    "base": {"prefix", "activity", "ipc_server", "version", "logging", "dashboard"},
+    "base": {
+        "prefix", "activity", "ipc_server", "version", "logging", "dashboard",
+        "rate_limits", "auto_response", "community",
+    },
     "llm": {
         "model_priorities", "google_search_agent",
         "llm_call_timeout", "reasoning_optimization_prompt", "ollama_url", "vllm_url",
+        "max_output_tokens", "openai_endpoints", "tool_groups",
     },
     "memory": {
         "enabled", "procedural_cache_ttl", "procedural_data_path", "episodic_data_path",
@@ -103,8 +108,12 @@ _CONFIG_ALLOWED_KEYS: dict[str, set[str]] = {
         "ollama_url", "vllm_url", "provider_options", "vector_search_k", "keyword_search_k",
         "fetch_batch_size", "process_batch_size",
         "message_threshold", "time_threshold", "processing_concurrency", "processing_delay",
+        "procedural_max_cache_size",
     },
-    "music": {"music_temp_base", "ffmpeg", "youtube_cookies_path"},
+    "music": {
+        "music_temp_base", "ffmpeg", "youtube_cookies_path",
+        "ai", "autoplay", "library", "lyrics", "sources", "streaming",
+    },
 }
 
 
@@ -157,6 +166,16 @@ async def write_config(
             detail=f"Unknown keys for config '{file}': {sorted(unknown)}. Allowed: {sorted(allowed)}",
         )
 
+    if file == "llm" and "openai_endpoints" in config_data:
+        # The bot refuses to start on a malformed section, so refuse to save one. Imported here
+        # because the settings module is replaced wholesale by some dashboard tests.
+        from addons.settings import parse_openai_endpoints
+
+        try:
+            parse_openai_endpoints(config_data["openai_endpoints"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     path = _config_path(file)
 
     # Merge: read existing config, overwrite only the submitted top-level keys.
@@ -194,11 +213,15 @@ async def write_config(
 
 
 def _mask_secrets(data: Any, depth: int = 0) -> None:
-    """Recursively mask values that look like API keys."""
+    """Recursively mask values that look like API keys.
+
+    Fields ending in ``_env`` hold the name of an environment variable, not a secret, so
+    they stay readable (masking them would corrupt the name when the page saves it back).
+    """
     if depth > 10 or not isinstance(data, dict):
         return
     for key, value in data.items():
-        if isinstance(value, str) and any(
+        if isinstance(value, str) and not key.lower().endswith("_env") and any(
             kw in key.lower() for kw in ("key", "secret", "token", "password")
         ):
             if len(value) > 8:
@@ -479,8 +502,7 @@ async def admin_delete_user_memory(
             async with aiosqlite.connect(str(_PROCEDURAL_DB)) as db:
                 c = await db.execute("DELETE FROM users WHERE discord_id = ?", (user_id,))
                 deleted["procedural_users"] = c.rowcount
-                c = await db.execute("DELETE FROM user_stats WHERE user_id = ?", (user_id,))
-                deleted["user_stats"] = c.rowcount
+                deleted.update(await delete_member_stats(db, user_id))
                 await db.commit()
         except Exception as exc:
             log.error(f"admin_delete_user_memory failed for {user_id}: {exc}")

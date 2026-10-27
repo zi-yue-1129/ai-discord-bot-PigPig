@@ -6,7 +6,7 @@ ipc_server:
   port: 8000
   enable: false
 
-version: "v3.6.0"
+version: "v3.7.0"
 
 # Per-user usage limits, set by the bot owner.
 # Each limit allows max_requests uses per per_seconds seconds; max_requests: 0 turns it off.
@@ -25,6 +25,44 @@ auto_response:
   relevance_cooldown_seconds: 15    # relevant mode: ask the model at most once per channel this often
   relevance_min_chars: 4            # relevant mode: shorter messages are never sent to the model
   relevance_history_messages: 8     # relevant mode: how many earlier messages the model reads
+
+# Community features (/community). Server admins turn each one on; these are the bot owner's limits.
+community:
+  default_timezone: ""        # e.g. "Asia/Taipei"; empty uses this machine's time zone. Servers can set their own.
+  welcome:
+    max_ai_per_hour: 20       # AI-written welcomes per server per hour; after that a fixed text is used
+    burst_threshold: 5        # this many joins within burst_seconds counts as a raid:
+    burst_seconds: 60         #   welcomes are then combined into one fixed-text message
+    batch_seconds: 5          # joins this close together share one welcome message
+  birthday:
+    use_ai: true              # false: birthday and anniversary messages use the fixed text
+    max_mentions: 20          # at most this many people are named in one celebration message
+    proposals_per_hour: 3     # birthdays one member may ask the AI to propose for others per hour (each pings them; 0: off)
+  weekly:
+    min_messages: 50          # weeks with fewer messages get no recap
+    use_ai: true              # false: no AI-written news paragraph, only the numbers
+    max_report_chars: 300     # length asked of the AI paragraph
+    missing_after_days: 30    # former regulars silent this long are listed as missing...
+    missing_min_messages: 50  # ...if they sent at least this many messages
+    missing_max: 3            # at most this many in one recap (0 turns the list off)
+  playing:                    # "what everyone is playing" (/community playing)
+    min_minutes: 10           # each member must have been playing the game this long
+    cooldown_hours: 3         # the same game is pointed out at most this often per server
+    max_per_day: 5            # posts per server in 24 hours (0 turns the feature off)
+    use_ai: true              # false: a fixed text instead of a message written by the model
+    max_mentions: 10          # at most this many people are named in one post
+    max_rooms: 3              # voice rooms the bot keeps open per server (0: no "open a voice room" button)
+    room_idle_minutes: 5      # a room nobody joined is deleted after this long
+  # Achievements members unlock from their message stats. Leave this out to use the built-in
+  # list; a list here replaces it. Each "when" stat is a minimum and all must be reached:
+  # total_messages, streak_days, gap_days (silence before a message), night_ratio (0-1 share
+  # of messages sent 0:00-4:59), membership_days (since the first message).
+  # achievements:
+  #   - id: msg_500
+  #     emoji: "🗣️"
+  #     name: "Five hundred"
+  #     description: "Send 500 messages"
+  #     when: {total_messages: 500}
 logging:
   # Console output settings
   console:

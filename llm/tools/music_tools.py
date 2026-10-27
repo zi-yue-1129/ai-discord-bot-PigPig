@@ -744,4 +744,7 @@ class MusicTools:
             remove_song_from_playlist, save_queue_as_playlist, get_music_history, get_music_settings,
         )
 
+        # The music group comes after the core tools and can be limited to some channels.
+        for music_tool in action_tools:
+            music_tool.metadata = {**(music_tool.metadata or {}), "tool_group": "music"}
         return list(action_tools)

@@ -126,8 +126,31 @@ model_priorities:
       - gemini-2.5-pro
 google_search_agent: gemini-3.1-flash-lite-preview
 vllm_url: "http://127.0.0.1:8181"
+
+# Other OpenAI-compatible servers. A model string "<name>:<model>" in model_priorities
+# (for example "steak:qwen") is served by the endpoint called <name>. The API key is read
+# from the environment variable named by api_key_env (put it in .env, not in this file).
+# A name may not be a built-in provider ("openai", "anthropic", "vllm", ...); the bot will not
+# start, and the dashboard will not save, a section with a missing or malformed field.
+# openai_endpoints:
+#   steak:
+#     base_url: "https://llm.example.com/v1"
+#     api_key_env: "STEAK_LLM_API_KEY"
 llm_call_timeout: 180
 # Most tokens one chat reply call may generate, reasoning included. A model stuck in a loop is
 # stopped by the server at this size. 0 removes the cap.
 max_output_tokens: 8192
 reasoning_optimization_prompt: "\n\n[CRITICAL SYSTEM RULE]: Think efficiently and use minimal reasoning. Strict limit: keep any internal reasoning or <think> process extremely brief (under 3 sentences). Output final results and call tools immediately without extensive reflection."
+# Optional AI tool groups: music, community, events, fun, games, playing. Each group is used in
+# every channel unless limited here (the core tools are always there). Per group:
+#   enabled: false        turns the group off everywhere (true/false, yes/no, on/off, 1/0)
+#   channels: [id, ...]   only in these channels (a thread follows its parent channel);
+#                         a single id also works; an empty list [] means no limit
+#   exclude_channels: [id, ...]  never in these channels (wins over channels)
+# Group names ignore case and spaces; unknown names are logged. A setting that cannot be read
+# (for example channels: abc) turns that group off and logs a warning.
+# Example:
+#   tool_groups:
+#     games:
+#       channels: [123456789012345678]
+tool_groups: {}

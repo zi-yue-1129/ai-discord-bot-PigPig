@@ -9,7 +9,7 @@ from __future__ import annotations
 import io
 import asyncio
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Set, TYPE_CHECKING
 
 import discord
 from langchain_core.tools.structured import StructuredTool
@@ -113,7 +113,7 @@ class UserStatsTools:
             Sends a PNG stats image (word cloud + activity chart) to the channel,
             and returns a brief text summary for use in conversation.
             Call this whenever a user asks about their stats, activity, message count,
-            word cloud, or usage history.
+            word cloud, usage history, server rank or badges.
 
             Args:
                 user_id: Optional Discord user ID. Defaults to message sender.
@@ -129,12 +129,26 @@ class UserStatsTools:
             if not message or not message.guild:
                 return "No server context available."
 
-            effective_id = user_id or str(message.author.id)
+            effective_id = str(user_id or message.author.id).strip()
+            if not effective_id.isdigit():
+                return f"{effective_id!r} is not a Discord user ID; ask for the member's numeric ID or mention."
             guild_id = str(message.guild.id)
+
+            # The reply is posted in the channel for everyone to see.
+            if _is_hidden(runtime, message.guild.id, effective_id):
+                if effective_id == str(message.author.id):
+                    return (
+                        "This user hid their stats with /leaderboard optout, so they are not shown in chat. "
+                        "Tell them they can still see their own stats privately with /profile."
+                    )
+                return "This member chose to hide their stats (/leaderboard optout). Do not share or guess them."
 
             stats = await storage.get_user_stats(effective_id, guild_id)
             if not stats:
                 return f"No stats found for user {effective_id} in this server."
+            also_visible = getattr(message.channel, "id", None)
+            terms = await fetch_public_terms(storage, message.guild, effective_id, also_visible)
+            all_time, stats = stats, public_view(message.guild, stats, terms, also_visible)
 
             display_name = f"User {effective_id}"
             avatar_url = None
@@ -161,6 +175,11 @@ class UserStatsTools:
                 "top_emojis_prefix": t("image", "top_emojis", emojis="").rstrip(),
             }
 
+            # Everything that awaits is read before the image goes out, so a member who hides themselves
+            # meanwhile is refused below with no image already posted. (Only the send itself, which can
+            # wait on Discord's rate limit, is left between the last check and the post.)
+            extras = await _profile_extras(runtime, message.guild, effective_id)
+
             # Generate and send the PNG image
             try:
                 loop = asyncio.get_running_loop()
@@ -172,12 +191,20 @@ class UserStatsTools:
                     avatar_url,
                     image_labels,
                 )
+                # Drawing the image awaited: if a channel in it stopped being public, or the member
+                # hid themselves meanwhile, send no image (the text below is checked again too).
+                if public_view(message.guild, all_time, terms, also_visible) != stats:
+                    raise _ChannelsChanged()
+                if _is_hidden(runtime, message.guild.id, effective_id):
+                    raise _ChannelsChanged()
                 await message.channel.send(
                     file=discord.File(
                         io.BytesIO(image_bytes),
                         filename=f"stats_{effective_id}.png",
                     )
                 )
+            except _ChannelsChanged:
+                pass
             except Exception as e:
                 try:
                     await func.report_error(e, "get_user_stats image send failed")
@@ -185,13 +212,160 @@ class UserStatsTools:
                     pass
                 _logger.error("get_user_stats image failed: %s", e)
 
+            # The member may have hidden themselves while the image was drawn or sent.
+            if _is_hidden(runtime, message.guild.id, effective_id):
+                return "This member chose to hide their stats (/leaderboard optout). Do not share or guess them."
             # Always return text summary regardless of image success/failure
-            return _format_text_card(display_name, stats, t)
+            card = _format_text_card(display_name, public_view(message.guild, all_time, terms, also_visible), t)
+            return "\n".join([card, *extras])
 
         _info_meta = {"target_agent_mode": "info"}
         return [
             StructuredTool.from_function(coroutine=get_user_stats, metadata=_info_meta),
         ]
+
+
+async def _profile_extras(runtime: Any, guild: Any, user_id: str) -> List[str]:
+    """The member's all-time rank and badges (as on /profile); empty when unavailable.
+
+    The rotating titles are left out: the weekly recap awards them from activity in every channel,
+    private ones included, and from songs requested anywhere.
+    """
+    bot = getattr(runtime, "bot", None)
+    cog = bot.get_cog("LeaderboardCog") if bot is not None else None
+    member = guild.get_member(int(user_id)) if cog is not None else None
+    if member is None:
+        return []
+    try:
+        return await cog.profile_extras(guild, member, titles=False)
+    except Exception:
+        _logger.error("get_user_stats: could not read the member's rank, titles and badges", exc_info=True)
+        return []
+
+
+class _ChannelsChanged(Exception):
+    """A channel stopped being public, or the member hid themselves, while the stats image was drawn."""
+
+
+def _is_hidden(runtime: Any, guild_id: int, user_id: str, db_path: Optional[str] = None) -> bool:
+    """Whether the member hid themselves from rankings and stats (``/leaderboard optout``).
+
+    Fails closed: when the opt-out list cannot be read, the member is treated as hidden.
+
+    Args:
+        db_path: The community database to read when the leaderboard cog is not loaded
+            (defaults to ``COMMUNITY_DB_PATH``).
+    """
+    try:
+        user = int(user_id)
+    except (TypeError, ValueError):
+        return True
+    hidden = hidden_member_ids(runtime, guild_id, db_path)
+    return hidden is None or user in hidden
+
+
+def hidden_member_ids(runtime: Any, guild_id: int, db_path: Optional[str] = None) -> Optional[Set[int]]:
+    """The members of ``guild_id`` who hid themselves with ``/leaderboard optout``.
+
+    Returns None when the opt-out list cannot be read; callers must then treat everyone as hidden.
+    The list is read without creating or migrating anything, so a lost or empty database file never
+    reads as "nobody is hidden".
+
+    Args:
+        db_path: The community database to read when the leaderboard cog is not loaded
+            (defaults to ``COMMUNITY_DB_PATH``).
+    """
+    bot = getattr(runtime, "bot", None)
+    cog = bot.get_cog("LeaderboardCog") if bot is not None else None
+    store = getattr(cog, "store", None)
+    try:
+        if store is None:
+            # The leaderboard cog is not loaded: read its opt-out list directly.
+            from cogs.community_lib.store import CommunityStore
+
+            if db_path is None:
+                from cogs.community import COMMUNITY_DB_PATH as db_path
+            store = CommunityStore(db_path)
+        hidden = store.read_optouts(int(guild_id))
+        if not isinstance(hidden, (set, frozenset)):
+            raise TypeError(f"opt-out list is {type(hidden).__name__}, not a set")
+        return {int(user_id) for user_id in hidden}
+    except Exception:
+        # Any failure (database locked, missing or not initialised, bad id) means we cannot tell who
+        # opted out; hiding everyone is the safe answer, so the tools carry on with that.
+        _logger.error("could not read the opt-out list; treating every member as hidden", exc_info=True)
+        return None
+
+
+# How many of a member's public words feed the word cloud, and how many emojis are listed.
+PUBLIC_WORDS = 60
+PUBLIC_EMOJIS = 8
+
+
+def _visible_channel_ids(guild: Any, also_visible: Optional[int]) -> List[str]:
+    from cogs.community_lib.recap import public_channel_ids
+
+    ids = public_channel_ids(guild)
+    if also_visible is not None and str(also_visible) not in ids:
+        ids.append(str(also_visible))
+    return ids
+
+
+def public_stats(guild: Any, stats: Dict[str, Any], also_visible: Optional[int] = None) -> Dict[str, Any]:
+    """The part of a member's all-time stats that may be shown to anyone in the server.
+
+    Channels are only listed when everyone can read them (``recap.is_public``), or when it is
+    ``also_visible`` (the channel the answer is posted in). The all-time word and emoji counts
+    are always left out: they record neither the channel nor whether it was public when the
+    words were written. ``with_public_terms`` adds the ones that can be shown.
+    """
+    public = set(_visible_channel_ids(guild, also_visible))
+    channels = stats.get("top_channels") or {}
+    return {
+        **stats,
+        "top_words": {},
+        "top_emojis": {},
+        "top_channels": {channel: count for channel, count in channels.items() if str(channel) in public},
+    }
+
+
+async def fetch_public_terms(storage: Any, guild: Any, user_id: str, also_visible: Optional[int] = None) -> Dict[str, Any]:
+    """The member's per-channel ``user_public_terms`` rows, for ``public_view``.
+
+    Only messages sent while their channel was readable by everyone were counted there.
+    """
+    lookup = getattr(storage, "get_user_public_term_rows", None)
+    if lookup is None:
+        return {}
+    ids = _visible_channel_ids(guild, also_visible)
+    guild_id = str(getattr(guild, "id", ""))
+    return {kind: await lookup(str(user_id), guild_id, kind, ids) for kind in ("word", "emoji")}
+
+
+def public_view(
+    guild: Any, stats: Dict[str, Any], terms: Dict[str, Any], also_visible: Optional[int] = None
+) -> Dict[str, Any]:
+    """``public_stats`` plus the words and emojis from ``terms`` in channels that are public now.
+
+    It does not await, so call it right before the reply: a channel made private after
+    ``fetch_public_terms`` is left out.
+    """
+    from cogs.memory.db.stats_storage import sum_public_terms
+
+    shown = public_stats(guild, stats, also_visible)
+    if terms:
+        ids = _visible_channel_ids(guild, also_visible)
+        shown["top_words"] = dict(sum_public_terms(terms.get("word", []), ids, PUBLIC_WORDS))
+        shown["top_emojis"] = dict(sum_public_terms(terms.get("emoji", []), ids, PUBLIC_EMOJIS))
+    return shown
+
+
+async def with_public_terms(
+    storage: Any, guild: Any, user_id: str, stats: Dict[str, Any], also_visible: Optional[int] = None
+) -> Dict[str, Any]:
+    """``fetch_public_terms`` then ``public_view``: what may be shown of the member's stats now."""
+    terms = await fetch_public_terms(storage, guild, user_id, also_visible)
+    return public_view(guild, stats, terms, also_visible)
 
 
 # ======================================================================

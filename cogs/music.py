@@ -514,8 +514,11 @@ class YTMusic(commands.Cog):
             self.state_manager.update_state(ctx.guild.id, current_message=message)
 
             voice_client.play(audio_source)
+            # Each repeat is a play of its own in the history.
+            self._record_play_event(ctx.guild.id, song, ctx, voice_client)
             self.state_manager.update_state(
-                ctx.guild.id, user_stopped=False, force_next=False, position=0.0, skip_votes=set(), playback_ctx=ctx
+                ctx.guild.id, user_stopped=False, force_next=False, position=0.0, skip_votes=set(), playback_ctx=ctx,
+                song_started_at=self._clock(),
             )
             self.state_manager.cancel_player_loop(ctx.guild.id)
             task = self.bot.loop.create_task(self._player_loop(ctx, song))
@@ -582,6 +585,26 @@ class YTMusic(commands.Cog):
             if state.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                 raise PlaybackAbortedError(f"{state.consecutive_failures} consecutive download failures")
 
+    def _record_play_event(self, guild_id: int, song: dict, ctx: Any = None, voice_client: Any = None) -> None:
+        """Logs one play of ``song`` for the play history (charts and recaps count every play).
+
+        The player's text channel and the voice channel are kept, so a chart can leave out songs
+        played where not everyone could hear or see them.
+        """
+        if not song.get('video_id'):
+            return
+        added_by = song.get('added_by')
+        autoplay = added_by == self.bot.user.id
+        song['play_event_id'] = self._taste_store.add_play_event(
+            guild_id,
+            song['video_id'],
+            song.get('title') or '',
+            requester_id=added_by if isinstance(added_by, int) and not autoplay else None,
+            autoplay=autoplay,
+            text_channel_id=_channel_id(ctx),
+            voice_channel_id=_channel_id(voice_client),
+        )
+
     async def _play_song(self, ctx: PlaybackContext, song: dict, voice_client: Any) -> None:
         """Play a song and update UI"""
         guild_id = ctx.guild.id
@@ -609,15 +632,7 @@ class YTMusic(commands.Cog):
         taste = self.taste_for(guild_id)
         if song.get('video_id'):
             taste.record_played(song['video_id'])
-            added_by = song.get('added_by')
-            autoplay = added_by == self.bot.user.id
-            song['play_event_id'] = self._taste_store.add_play_event(
-                guild_id,
-                song['video_id'],
-                song.get('title') or '',
-                requester_id=added_by if isinstance(added_by, int) and not autoplay else None,
-                autoplay=autoplay,
-            )
+            self._record_play_event(guild_id, song, ctx, voice_client)
         if song.get('added_by') != self.bot.user.id and song.get('author'):
             taste.record_request(song['author'])
 
@@ -1724,3 +1739,9 @@ async def setup(bot):
     cog = YTMusic(bot)
     await cog.setup_hook()  # Initialize async components
     await bot.add_cog(cog)
+
+
+def _channel_id(holder: Any) -> Optional[int]:
+    """The id of ``holder.channel`` (a playback context or voice client), or None when unknown."""
+    channel_id = getattr(getattr(holder, 'channel', None), 'id', None)
+    return channel_id if isinstance(channel_id, int) else None

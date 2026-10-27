@@ -37,10 +37,15 @@ CREATE TABLE IF NOT EXISTS play_events (
     autoplay INTEGER NOT NULL DEFAULT 0,
     played_at REAL NOT NULL,
     skipped INTEGER NOT NULL DEFAULT 0,
-    listened_seconds REAL
+    listened_seconds REAL,
+    text_channel_id INTEGER,
+    voice_channel_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_play_events_guild_time ON play_events (guild_id, played_at);
 """
+
+# Columns added to play_events after it was first released (name, type), added on open when missing.
+_PLAY_EVENT_COLUMNS = (("text_channel_id", "INTEGER"), ("voice_channel_id", "INTEGER"))
 
 # Played songs older than this are deleted (they only feed weekly and monthly charts).
 PLAY_EVENTS_KEEP_SECONDS = 180 * 24 * 3600
@@ -75,12 +80,32 @@ class TasteStore:
             connection = sqlite3.connect(self.path, timeout=10)
             try:
                 if not self._ready:
+                    # WAL: a long chart read on a worker thread never makes the player's writes wait.
+                    connection.execute("PRAGMA journal_mode=WAL")
                     connection.executescript(_SCHEMA)
+                    _add_missing_columns(connection)
                     self._ready = True
                 with connection:
                     yield connection
             finally:
                 connection.close()
+
+    @contextmanager
+    def _reader(self) -> Iterator[sqlite3.Connection]:
+        """Yields a connection for reading only, without the store's lock.
+
+        Chart reads run on worker threads and may be slow; holding the lock would make the
+        player's writes on the event loop wait for them. The database is in WAL mode, so the
+        read does not block writers in SQLite either.
+        """
+        if not self._ready:
+            with self._session():
+                pass
+        connection = sqlite3.connect(self.path, timeout=10)
+        try:
+            yield connection
+        finally:
+            connection.close()
 
     def load(self, guild_id: int, history_size: int) -> Tuple[List[str], Counter, Counter]:
         """Reads a guild's saved taste.
@@ -141,6 +166,8 @@ class TasteStore:
         requester_id: Optional[int],
         autoplay: bool,
         played_at: Optional[float] = None,
+        text_channel_id: Optional[int] = None,
+        voice_channel_id: Optional[int] = None,
     ) -> Optional[int]:
         """Logs that a song started playing and drops log entries past the kept period.
 
@@ -151,6 +178,8 @@ class TasteStore:
             requester_id: Who queued it (``None`` when unknown).
             autoplay: Whether autoplay picked it rather than a person.
             played_at: When it started (UNIX time; defaults to now).
+            text_channel_id: The channel the player posts in (where it was asked for).
+            voice_channel_id: The voice channel it plays in.
 
         Returns:
             The entry's ID (for ``mark_play_skipped``), or None when it could not be saved.
@@ -159,9 +188,10 @@ class TasteStore:
         try:
             with self._session() as connection:
                 cursor = connection.execute(
-                    "INSERT INTO play_events (guild_id, video_id, title, requester_id, autoplay, played_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (guild_id, video_id, title, requester_id, int(autoplay), played_at),
+                    "INSERT INTO play_events "
+                    "(guild_id, video_id, title, requester_id, autoplay, played_at, text_channel_id, voice_channel_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (guild_id, video_id, title, requester_id, int(autoplay), played_at, text_channel_id, voice_channel_id),
                 )
                 connection.execute(
                     "DELETE FROM play_events WHERE played_at < ?", (played_at - PLAY_EVENTS_KEEP_SECONDS,)
@@ -190,11 +220,35 @@ class TasteStore:
         Returns:
             ``(video_id, title, plays, skips)`` tuples, most played first.
         """
-        with self._session() as connection:
+        with self._reader() as connection:
             return connection.execute(
                 "SELECT video_id, MAX(title), COUNT(*) AS plays, SUM(skipped) FROM play_events "
                 "WHERE guild_id = ? AND played_at >= ? AND played_at < ? "
                 "GROUP BY video_id ORDER BY plays DESC, MAX(played_at) DESC LIMIT ?",
+                (guild_id, since, until, limit),
+            ).fetchall()
+
+    def plays_with_places(self, guild_id: int, since: float, until: float, limit: int = 20000) -> List[Tuple]:
+        """Returns a guild's played songs in a time range with who asked for them and where, newest first.
+
+        Returns:
+            ``(video_id, title, requester_id, skipped, text_channel_id, voice_channel_id)`` tuples;
+            the channels are None for songs logged before they were recorded.
+        """
+        with self._reader() as connection:
+            return connection.execute(
+                "SELECT video_id, title, requester_id, skipped, text_channel_id, voice_channel_id FROM play_events "
+                "WHERE guild_id = ? AND played_at >= ? AND played_at < ? ORDER BY played_at DESC LIMIT ?",
+                (guild_id, since, until, limit),
+            ).fetchall()
+
+    def top_requesters(self, guild_id: int, since: float, until: float, limit: int = 10) -> List[Tuple[int, int]]:
+        """Returns who requested the most songs in a guild in a time range, as ``(user_id, plays)``."""
+        with self._session() as connection:
+            return connection.execute(
+                "SELECT requester_id, COUNT(*) AS plays FROM play_events "
+                "WHERE guild_id = ? AND played_at >= ? AND played_at < ? AND requester_id IS NOT NULL AND autoplay = 0 "
+                "GROUP BY requester_id ORDER BY plays DESC, requester_id LIMIT ?",
                 (guild_id, since, until, limit),
             ).fetchall()
 
@@ -226,3 +280,11 @@ class TasteStore:
         except (sqlite3.Error, OSError):
             # The in-memory taste already has this change; only its persistence is lost.
             log.error(f"Could not save the autoplay taste to {self.path}", exc_info=True)
+
+
+def _add_missing_columns(connection: sqlite3.Connection) -> None:
+    """Adds the play log columns an older database file does not have yet."""
+    present = {row[1] for row in connection.execute("PRAGMA table_info(play_events)")}
+    for name, kind in _PLAY_EVENT_COLUMNS:
+        if name not in present:
+            connection.execute(f"ALTER TABLE play_events ADD COLUMN {name} {kind}")
