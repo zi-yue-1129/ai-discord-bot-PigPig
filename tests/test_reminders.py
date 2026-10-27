@@ -422,6 +422,29 @@ async def test_a_reminder_from_someone_else_goes_by_dm_once_the_target_is_hidden
 
 
 @pytest.mark.asyncio
+async def test_opting_out_while_the_reminder_is_being_written_keeps_it_out_of_the_channel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    channel = _Channel()
+    dm = _Dm()
+    hidden: set = set()
+    cog = _make_cog(tmp_path, channel, dm=dm, hidden=hidden)
+    _add(cog.store, due_at=NOW, creator=1, target=2)
+
+    async def compose_while_target_opts_out(orchestrator: Any, bot: Any, channel: Any, request: ReminderRequest) -> str:
+        hidden.add(2)
+        return "<@2> model words"
+
+    monkeypatch.setattr("cogs.remind.compose_reminder", compose_while_target_opts_out)
+
+    await cog._deliver_due(NOW)
+
+    assert channel.sent == []
+    assert [item["content"] for item in dm.sent] == ["<@2> model words"]
+    assert cog.store.pending() == []
+
+
+@pytest.mark.asyncio
 async def test_a_hidden_member_still_gets_their_own_reminder_in_the_channel(
     tmp_path: Path, writer_text: Dict[str, Any]
 ) -> None:
@@ -624,12 +647,27 @@ async def _set_for(cog: ReminderCog, channel: Any, creator: int, target: int, re
     )
 
 
-@pytest.fixture
-def asks(monkeypatch: pytest.MonkeyPatch) -> List[tuple]:
-    """Records the questions posted to the member a reminder is for instead of sending them."""
-    posted: List[tuple] = []
+class _Posted(List[tuple]):
+    """The questions posted so far; ``during_ask`` holds changes made while a question is being posted."""
 
-    async def fake_ask(channel: Any, content: Any, view: Any, allowed_mentions: Any = None) -> Any:
+    def __init__(self) -> None:
+        super().__init__()
+        self.during_ask: List[Any] = []
+
+
+@pytest.fixture
+def asks(monkeypatch: pytest.MonkeyPatch) -> _Posted:
+    """Records the questions posted to the member a reminder is for instead of sending them."""
+    posted = _Posted()
+    during_ask = posted.during_ask
+
+    async def fake_ask(
+        channel: Any, content: Any, view: Any, allowed_mentions: Any = None, still_allowed: Any = None
+    ) -> Any:
+        for change in during_ask:
+            change()
+        if still_allowed is not None and not await still_allowed():
+            return None
         posted.append((content, view, allowed_mentions))
         return view
 
@@ -675,6 +713,18 @@ async def test_a_repeating_reminder_for_yourself_needs_no_question(tmp_path: Pat
 @pytest.mark.asyncio
 async def test_a_hidden_member_cannot_be_asked_or_pinged_by_a_reminder(tmp_path: Path, asks: List[tuple]) -> None:
     cog = _make_cog(tmp_path, _Channel(), hidden={2})
+
+    reply = await _set_for(cog, _guild_channel([1, 2]), creator=1, target=2)
+
+    assert reply.startswith("commands/remind/responses/others_unavailable")
+    assert asks == [] and cog.store.pending() == []
+
+
+@pytest.mark.asyncio
+async def test_opting_out_while_the_question_is_being_posted_cancels_it(tmp_path: Path, asks: _Posted) -> None:
+    hidden: set = set()
+    cog = _make_cog(tmp_path, _Channel(), hidden=hidden)
+    asks.during_ask.append(lambda: hidden.add(2))
 
     reply = await _set_for(cog, _guild_channel([1, 2]), creator=1, target=2)
 

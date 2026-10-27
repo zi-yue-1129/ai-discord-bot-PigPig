@@ -197,6 +197,9 @@ class ReminderCog(commands.Cog):
                 await func.report_error(error, f"remind: composing reminder {reminder.id}")
         if not text:
             text = self._fallback_text(reminder, mention)
+        if channel is not None and await self._is_hidden_target_of_someone_else(reminder):
+            # Checked again: they may have opted out while the message was being written.
+            channel = None
 
         # Only the target may be pinged, whatever the reminder text or the model wrote.
         allowed = discord.AllowedMentions(everyone=False, roles=False, users=[discord.Object(id=reminder.target_id)])
@@ -387,9 +390,16 @@ class ReminderCog(commands.Cog):
             guild_id, "ask_prompt", target=f"<@{target_id}>", creator=f"<@{creator_id}>",
             time=f"<t:{int(due_at)}:f>", message=_shorten(message),
         ) + repeat_text
-        await ask(channel, content, view, allowed_mentions=discord.AllowedMentions(
+        async def target_still_askable() -> bool:
+            # The member may have opted out while the earlier question to them was being closed.
+            hidden_now = await hidden_in_guild_async(self.bot, int(guild_id))
+            return hidden_now is not None and target_id not in hidden_now
+
+        posted = await ask(channel, content, view, allowed_mentions=discord.AllowedMentions(
             everyone=False, roles=False, users=[discord.Object(id=target_id)]
-        ))
+        ), still_allowed=target_still_askable)
+        if posted is None:
+            return self._t(guild_id, "others_unavailable")
         return self._t(guild_id, "ask_sent", user=f"<@{target_id}>")
 
     @app_commands.command(name="remind", description="Sets a reminder")

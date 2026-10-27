@@ -105,12 +105,17 @@ async def ask(
     content: Union[str, Callable[[], str]],
     view: ConfirmView,
     allowed_mentions: Optional[discord.AllowedMentions] = None,
-) -> ConfirmView:
+    still_allowed: Optional[Callable[[], Awaitable[bool]]] = None,
+) -> Optional[ConfirmView]:
     """Posts ``view`` under ``content``, replacing the open question under its key.
 
     ``content`` may be a function, called only once the replaced question is closed, so the text
     reflects what may be shown at the moment it is posted. Nobody is pinged unless
     ``allowed_mentions`` names them.
+
+    ``still_allowed`` is awaited after the replaced question is closed and before anything is posted,
+    for a check that can go stale during that wait (such as the asked member opting out of being
+    named). When it returns False nothing is posted, the key is released, and None is returned.
     """
     previous = None
     if view.pending is not None:
@@ -119,6 +124,9 @@ async def ask(
     try:
         if previous is not None:
             await previous.replace()
+        if still_allowed is not None and not await still_allowed():
+            view._finish()
+            return None
         text = content() if callable(content) else content
         view.message = await channel.send(
             text, view=view, allowed_mentions=allowed_mentions or discord.AllowedMentions.none()

@@ -53,10 +53,11 @@ def _personality_text(bot: Any, guild_id: str, key: str, **kwargs: Any) -> str:
 
 def _preview(prompt: str) -> str:
     """The proposed personality as a quote, cut to fit one message."""
-    text = prompt.strip()
-    if len(text) > PREVIEW_CHARS:
-        text = text[:PREVIEW_CHARS].rstrip() + "…"
-    return "\n".join("> " + line for line in text.splitlines() or [""])
+    quoted = "\n".join("> " + line for line in prompt.strip().splitlines() or [""])
+    # Cut after quoting: every line gains a prefix, which also counts towards Discord's message limit.
+    if len(quoted) > PREVIEW_CHARS:
+        quoted = quoted[:PREVIEW_CHARS].rstrip() + "…"
+    return quoted
 
 
 def check_personality_permission(bot: Any, author: Any, guild: Any, channel: Any, scope: str) -> str | None:

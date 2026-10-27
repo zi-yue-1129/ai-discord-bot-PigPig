@@ -290,12 +290,27 @@ def _save_tool(
     return tool
 
 
-@pytest.fixture
-def asks(monkeypatch: pytest.MonkeyPatch) -> List[tuple]:
-    """Records the questions posted instead of sending them."""
-    posted: List[tuple] = []
+class _Posted(List[tuple]):
+    """The questions posted so far; ``during_ask`` holds changes made while a question is being posted."""
 
-    async def fake_ask(channel: Any, content: Any, view: Any, allowed_mentions: Any = None) -> Any:
+    def __init__(self) -> None:
+        super().__init__()
+        self.during_ask: List[Any] = []
+
+
+@pytest.fixture
+def asks(monkeypatch: pytest.MonkeyPatch) -> _Posted:
+    """Records the questions posted instead of sending them."""
+    posted = _Posted()
+    during_ask = posted.during_ask
+
+    async def fake_ask(
+        channel: Any, content: Any, view: Any, allowed_mentions: Any = None, still_allowed: Any = None
+    ) -> Any:
+        for change in during_ask:
+            change()
+        if still_allowed is not None and not await still_allowed():
+            return None
         posted.append((content, view, allowed_mentions))
         return view
 
@@ -369,6 +384,17 @@ async def test_a_save_that_may_not_share_its_result_never_returns_the_merged_mem
 
     assert "PRIVATE_FROM_GUILD_B" in shown, "the slash command still shows the member their own memory"
     assert "PRIVATE" not in hidden and hidden.startswith("commands/userdata/ask_others/saved")
+
+
+@pytest.mark.asyncio
+async def test_opting_out_while_the_question_is_being_posted_cancels_it(asks: _Posted) -> None:
+    hidden: set = set()
+    asks.during_ask.append(lambda: hidden.add(int(TARGET)))
+
+    result = await _save_tool([], hidden=hidden).ainvoke({"user_id": int(TARGET), "memory_to_save": "x"})
+
+    assert asks == [] and result.startswith("Refused")
+    assert TARGET not in result, "the answer must not name the member who just hid"
 
 
 @pytest.mark.asyncio

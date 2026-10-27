@@ -200,9 +200,16 @@ class UserMemoryTools:
             )
             preview = memory if len(memory) <= ASK_PREVIEW_CHARS else memory[:ASK_PREVIEW_CHARS].rstrip() + "…"
             content = _ask_text(guild_id, "prompt", target=f"<@{target_id}>", asker=f"<@{asker_id}>", memory=preview)
-            await ask(channel, content, view, allowed_mentions=discord.AllowedMentions(
+            async def target_still_askable() -> bool:
+                # The member may have opted out while the earlier question to them was being closed.
+                hidden_now = await hidden_in_guild_async(bot, guild.id)
+                return hidden_now is not None and target_id not in hidden_now
+
+            posted = await ask(channel, content, view, allowed_mentions=discord.AllowedMentions(
                 everyone=False, roles=False, users=[discord.Object(id=target_id)]
-            ))
+            ), still_allowed=target_still_askable)
+            if posted is None:
+                return f"Refused: {_ask_text(guild_id, 'unavailable')}"
             return (
                 "Asked the other member to accept. Nothing is saved unless they press Accept; "
                 "tell the user so."

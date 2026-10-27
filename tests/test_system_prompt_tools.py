@@ -294,3 +294,22 @@ class TestCheckPersonalityPermission:
             MockV.return_value.can_modify_channel_prompt.return_value = True
             error = check_personality_permission(MagicMock(), MagicMock(), MagicMock(), MagicMock(), "channel")
         assert error is None
+
+
+class TestPreview:
+    """The proposed personality is shown as a quote that must still fit one Discord message."""
+
+    def test_the_quote_marks_count_towards_the_limit(self):
+        from llm.tools.system_prompt_tools import PREVIEW_CHARS, _preview
+
+        many_short_lines = "\n".join("x" for _ in range(750))
+
+        preview = _preview(many_short_lines)
+
+        assert len(preview) <= PREVIEW_CHARS + 1, "every line gains a two-character quote prefix"
+        assert preview.endswith("…") and preview.startswith("> x")
+
+    def test_a_short_prompt_is_quoted_whole(self):
+        from llm.tools.system_prompt_tools import _preview
+
+        assert _preview("be kind\nbe brief") == "> be kind\n> be brief"

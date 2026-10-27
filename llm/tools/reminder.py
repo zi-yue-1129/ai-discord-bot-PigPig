@@ -210,6 +210,11 @@ class ReminderTools:
                 return "You have no pending reminders."
             # Members who hid with /leaderboard optout are not named to anyone else; when a server's
             # opt-out list cannot be read nobody is named.
+            # The answer is read in the server it is given in, so that server's list counts too.
+            answering_guild = getattr(getattr(runtime, "message", None), "guild", None)
+            hidden_here: Optional[Set[int]] = set()
+            if answering_guild is not None:
+                hidden_here = await hidden_in_guild_async(getattr(runtime, "bot", None), answering_guild.id)
             hidden_by_guild: Dict[str, Optional[Set[int]]] = {}
             for reminder in pending + from_others:
                 if reminder.guild_id not in hidden_by_guild:
@@ -232,7 +237,8 @@ class ReminderTools:
                     due = datetime.fromtimestamp(reminder.due_at).strftime("%Y-%m-%d %H:%M")
                     person_id = reminder.target_id if reminder.creator_id == user_id else reminder.creator_id
                     hidden = hidden_by_guild[reminder.guild_id]
-                    person = "a member" if person_id != user_id and (hidden is None or person_id in hidden) else f"<@{person_id}>"
+                    concealed = hidden is None or hidden_here is None or person_id in hidden or person_id in hidden_here
+                    person = "a member" if person_id != user_id and concealed else f"<@{person_id}>"
                     lines.append(f"#{reminder.id} | {due} (unix {int(reminder.due_at)}) | {person} | {reminder.message}")
             return "\n".join(lines)
 
