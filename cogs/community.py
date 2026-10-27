@@ -11,17 +11,20 @@ from __future__ import annotations
 
 import asyncio
 import random
+import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
+from addons.confirm import ConfirmView, ask, close_late
 from addons.logging import get_logger
 from addons.settings import base_config
 from addons.tokens import tokens
+from addons.visibility import can_read
 from function import func
 from llm.announcement_writer import compose_announcement
 
@@ -44,6 +47,10 @@ COMMUNITY_DB_PATH = "data/community.db"
 MESSAGE_LIMIT = 2000
 # A failed daily job or role removal waits longer after each failure, up to this long.
 MAX_RETRY_SECONDS = 3600
+# How long a birthday the AI proposed waits for its member to answer.
+PROPOSAL_SECONDS = 3600
+# Birthday proposals that may wait for an answer at once in one server (one per asker).
+MAX_BIRTHDAY_PROPOSALS_PER_GUILD = 5
 # A birthday role must not carry any of these: the bot hands it out without a moderator.
 _UNSAFE_ROLE_PERMISSIONS = discord.Permissions.elevated() | discord.Permissions(
     mute_members=True, deafen_members=True, move_members=True, manage_nicknames=True, mention_everyone=True
@@ -66,6 +73,112 @@ _WEEKDAYS = [
     app_commands.Choice(name=name, value=index)
     for index, name in enumerate(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"])
 ]
+
+
+class BirthdayProposalView(discord.ui.View):
+    """Save and Decline buttons under a birthday the AI proposed; only the member it is for may press them."""
+
+    def __init__(
+        self, cog: "CommunityCog", guild_id: int, asker_id: int, target_id: int, month: int, day: int,
+        timeout: float = PROPOSAL_SECONDS,
+    ) -> None:
+        super().__init__(timeout=timeout)
+        self.cog = cog
+        self.guild_id = guild_id
+        self.asker_id = asker_id
+        self.target_id = target_id
+        self.month = month
+        self.day = day
+        self.message: Any = None
+        # Set before the first await of a press, so a second press can never answer twice.
+        self.done = False
+        for item, key in zip(self.children, ("birthday_proposal_save", "birthday_proposal_decline")):
+            item.label = cog._t(guild_id, key)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.target_id:
+            await interaction.response.send_message(self.cog._t(self.guild_id, "birthday_proposal_not_yours"), ephemeral=True)
+            return False
+        return True
+
+    def _finish(self) -> bool:
+        """Marks the proposal answered; False when it already was."""
+        if self.done:
+            return False
+        self.done = True
+        self.stop()
+        self.cog._birthday_proposals.pop((self.guild_id, self.target_id), None)
+        return True
+
+    @discord.ui.button(emoji="🎂", label="Save", style=discord.ButtonStyle.success)
+    async def save(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not self._finish():
+            await interaction.response.send_message(self.cog._t(self.guild_id, "birthday_proposal_done"), ephemeral=True)
+            return
+        # Acknowledged before the database is touched: a locked database must not outlast Discord's 3 seconds.
+        await interaction.response.defer()
+
+        def work() -> Optional[bool]:
+            # On a worker thread, and never creating the file: a database lost meanwhile stays lost.
+            store = self.cog.store
+            if not self.cog.database_ready(self.guild_id):
+                return None
+            store.set_birthday(self.guild_id, self.target_id, self.month, self.day, create=False)
+            # Saying yes is the member asking for it themselves, so proposals are welcome again.
+            store.block_birthday_proposals(self.guild_id, self.target_id, False, create=False)
+            return store.get_settings(self.guild_id, create=False).birthday_enabled
+
+        # One answer at a time per member, so an older Save can never undo a newer Decline.
+        async with self.cog._member_lock(self.guild_id, self.target_id):
+            enabled = await self.cog._off_loop(work)
+        if enabled is None:
+            await interaction.edit_original_response(content=self.cog._t(self.guild_id, "birthday_unavailable"), view=None)
+            return
+        text = self.cog._t(
+            self.guild_id, "birthday_proposal_saved", target=f"<@{self.target_id}>", month=self.month, day=self.day
+        )
+        if not enabled:
+            text += "\n" + self.cog._t(self.guild_id, "birthday_feature_off")
+        await interaction.edit_original_response(content=text, view=None)
+
+    @discord.ui.button(emoji="✖️", label="Decline", style=discord.ButtonStyle.secondary)
+    async def decline(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not self._finish():
+            await interaction.response.send_message(self.cog._t(self.guild_id, "birthday_proposal_done"), ephemeral=True)
+            return
+        await interaction.response.defer()
+
+        def work() -> Optional[bool]:
+            if not self.cog.database_ready(self.guild_id):
+                return None
+            if self.asker_id != self.target_id:
+                self.cog.store.block_birthday_proposals(self.guild_id, self.target_id, True, create=False)
+            return True
+
+        async with self.cog._member_lock(self.guild_id, self.target_id):
+            answered = await self.cog._off_loop(work)
+        if answered is None:
+            await interaction.edit_original_response(content=self.cog._t(self.guild_id, "birthday_unavailable"), view=None)
+            return
+        if self.asker_id == self.target_id:
+            # Turning down one's own request changes nothing for other people's proposals.
+            text = self.cog._t(self.guild_id, "birthday_proposal_declined_self")
+        else:
+            text = self.cog._t(self.guild_id, "birthday_proposal_declined", target=f"<@{self.target_id}>")
+        await interaction.edit_original_response(content=text, view=None)
+
+    async def close(self, key: str) -> None:
+        """Ends the proposal unanswered: "birthday_proposal_expired" or "birthday_proposal_replaced"."""
+        if not self._finish() or self.message is None:
+            return
+        try:
+            await self.message.edit(content=self.cog._t(self.guild_id, key), view=None)
+        except discord.HTTPException:
+            pass
+
+    async def on_timeout(self) -> None:
+        # Not answering is not a decline: later proposals are still asked.
+        await self.close("birthday_proposal_expired")
 
 
 class CommunityCog(commands.Cog):
@@ -96,6 +209,12 @@ class CommunityCog(commands.Cog):
         self._flushes: Dict[int, asyncio.Task] = {}
         # key -> (failures so far, time of the next try); see _may_retry and _failed.
         self._retries: Dict[Tuple[Any, ...], Tuple[int, float]] = {}
+        # (guild_id, member_id) -> the birthday proposal waiting for that member's answer.
+        self._birthday_proposals: Dict[Tuple[int, int], BirthdayProposalView] = {}
+        self._removal_asks: Dict[Tuple[int, int], ConfirmView] = {}
+        # (guild_id, asker_id) -> when they last had the AI propose a birthday for someone else.
+        self._proposal_times: Dict[Tuple[int, int], List[float]] = {}
+        self._member_locks: Dict[Tuple[int, int], asyncio.Lock] = {}
 
     async def cog_load(self) -> None:
         self.lang_manager = LanguageManager.get_instance(self.bot)
@@ -274,7 +393,7 @@ class CommunityCog(commands.Cog):
                 if settings.birthday_role_id:
                     await self._run_job(
                         guild.id, "birthday_role", today,
-                        lambda: self._give_birthday_role(guild, settings.birthday_role_id, self._birthday_members(guild, local), local),
+                        lambda: self._give_todays_birthday_role(guild, settings.birthday_role_id, local),
                     )
             if settings.anniversary_enabled:
                 await self._run_job(guild.id, "anniversary", today, lambda: self.celebrate_anniversaries(guild, settings, local))
@@ -321,9 +440,27 @@ class CommunityCog(commands.Cog):
         self._retries[key] = (failures, self._now() + wait)
         return failures
 
-    def _birthday_members(self, guild: discord.Guild, local: datetime) -> List[discord.Member]:
-        """The members (not bots) whose birthday is on ``local``'s day, up to the mention limit."""
-        ids = birthdays_on(local.date(), self.store.birthdays(guild.id))
+    async def _hidden_members(self, guild: discord.Guild) -> Set[int]:
+        """The members of ``guild`` hidden with ``/leaderboard optout``, read off the event loop.
+
+        Raises:
+            sqlite3.Error: The list cannot be read; the job that asked fails and is retried.
+        """
+        return await asyncio.to_thread(self.store.read_optouts, guild.id)
+
+    async def _give_todays_birthday_role(self, guild: discord.Guild, role_id: int, local: datetime) -> bool:
+        """``_give_birthday_role`` for the members whose birthday is on ``local``'s day (hidden ones left out)."""
+        return await self._give_birthday_role(guild, role_id, await self._birthday_members(guild, local), local)
+
+    async def _birthday_members(self, guild: discord.Guild, local: datetime) -> List[discord.Member]:
+        """The members (not bots) whose birthday is on ``local``'s day, up to the mention limit.
+
+        Members hidden with ``/leaderboard optout`` are left out, so they are neither named in the
+        greeting nor marked by the birthday role. When the opt-out list cannot be read this raises,
+        and the job is retried: nobody is named while it is unknown who is hidden.
+        """
+        hidden = await self._hidden_members(guild)
+        ids = [user_id for user_id in birthdays_on(local.date(), self.store.birthdays(guild.id)) if user_id not in hidden]
         members = [m for m in (guild.get_member(user_id) for user_id in ids) if m is not None and not m.bot]
         return members[: self.limits.birthday_max_mentions]
 
@@ -332,7 +469,7 @@ class CommunityCog(commands.Cog):
 
         With nowhere to post yet it also gives False, so a channel set later that day still gets it.
         """
-        members = self._birthday_members(guild, local)
+        members = await self._birthday_members(guild, local)
         if not members:
             return True
         channel = self._channel_for(guild, settings)
@@ -410,7 +547,8 @@ class CommunityCog(commands.Cog):
     async def celebrate_anniversaries(self, guild: discord.Guild, settings: GuildSettings, local: datetime) -> bool:
         """Posts one message for every member who joined on this day in an earlier year; False when it could not be posted."""
         zone = local.tzinfo
-        found = [(m, anniversary_years(local.date(), m.joined_at, zone)) for m in guild.members if not m.bot]
+        hidden = await self._hidden_members(guild)  # hidden members are not named; unreadable: the job is retried
+        found = [(m, anniversary_years(local.date(), m.joined_at, zone)) for m in guild.members if not m.bot and m.id not in hidden]
         found = [(m, years) for m, years in found if years > 0][: self.limits.birthday_max_mentions]
         if not found:
             return True
@@ -443,7 +581,7 @@ class CommunityCog(commands.Cog):
         Raises:
             discord.HTTPException: The recap could not be posted (so the scheduler retries it).
         """
-        recap = await RecapBuilder(self.bot, self.limits).build(guild, start, end, self.store.optouts(guild.id))
+        recap = await RecapBuilder(self.bot, self.limits).build(guild, start, end, await self._hidden_members(guild))
         if recap is None:
             return None
         if preview_channel is None and recap.total < self.limits.weekly_min_messages:
@@ -504,6 +642,9 @@ class CommunityCog(commands.Cog):
             weekly_day=self._t(guild.id, f"weekday_{settings.weekly_day}"),
             weekly_hour=settings.weekly_hour,
             weekly_channel=channel(settings.weekly_channel_id),
+            playing=on_off(settings.playing_enabled),
+            playing_channel=channel(settings.playing_channel_id),
+            playing_min=settings.playing_min_players,
         )
 
     @community.command(name="status", description="Show which community features are on")
@@ -705,6 +846,36 @@ class CommunityCog(commands.Cog):
             text += "\n" + self._t(interaction.guild_id, "no_channel")
         await interaction.response.send_message(text, ephemeral=True)
 
+    @community.command(name="playing", description="Point out when several members play the same game")
+    @app_commands.describe(
+        enabled="Turn it on or off",
+        channel="Where to post (defaults to the announcement channel)",
+        min_players="How many members must play the same game (default 3)",
+    )
+    async def playing_command(
+        self,
+        interaction: discord.Interaction,
+        enabled: bool,
+        channel: Optional[discord.TextChannel] = None,
+        min_players: Optional[app_commands.Range[int, 2, 25]] = None,
+    ) -> None:
+        if not await self._can_manage(interaction):
+            return
+        changes: Dict[str, Any] = {"playing_enabled": enabled}
+        if channel is not None:
+            changes["playing_channel_id"] = channel.id
+        if min_players is not None:
+            changes["playing_min_players"] = min_players
+        settings = self.store.update_settings(interaction.guild_id, **changes)
+        if enabled:
+            text = self._t(interaction.guild_id, "playing_on", count=settings.playing_min_players)
+            target = self._channel_for(interaction.guild, settings, settings.playing_channel_id)
+            if target is None:
+                text += "\n" + self._t(interaction.guild_id, "no_channel")
+        else:
+            text = self._t(interaction.guild_id, "playing_off")
+        await interaction.response.send_message(text, ephemeral=True)
+
     @community.command(name="weekly_preview", description="Preview this week's recap so far (only you see it)")
     async def weekly_preview(self, interaction: discord.Interaction) -> None:
         if not await self._can_manage(interaction):
@@ -729,10 +900,163 @@ class CommunityCog(commands.Cog):
             await interaction.response.send_message(self._t(interaction.guild_id, "invalid_date"), ephemeral=True)
             return
         self.store.set_birthday(interaction.guild_id, interaction.user.id, month, day)
+        # Setting it themselves counts as asking again: other people may propose a birthday for them once more.
+        self.store.block_birthday_proposals(interaction.guild_id, interaction.user.id, False)
         text = self._t(interaction.guild_id, "birthday_saved", month=month, day=day)
         if not self.store.get_settings(interaction.guild_id).birthday_enabled:
             text += "\n" + self._t(interaction.guild_id, "birthday_feature_off")
         await interaction.response.send_message(text, ephemeral=True)
+
+    async def propose_birthday(self, channel: Any, asker: Any, target: Any, month: int, day: int) -> str:
+        """Posts a birthday the AI proposed for ``target``, with Save and Decline buttons only they may press.
+
+        Nothing is saved until they press Save. Once they decline a proposal someone else made, later
+        proposals from other people are turned away here until they ask for one themselves (in chat or
+        with /birthday set). Members hidden with /leaderboard optout are never asked on someone else's
+        behalf, and a hidden asker is not named. The database is only read here, never created.
+
+        Returns:
+            "proposed", or a problem: "invalid_date", "bot", "cannot_see", "blocked", "pending", "busy"
+            (too many open proposals on the server) or "unavailable" (the database cannot be read).
+        """
+        if not is_valid_birthday(month, day):
+            return "invalid_date"
+        if getattr(target, "bot", False):
+            return "bot"
+        guild_id = channel.guild.id
+        key = (guild_id, target.id)
+        if key in self._birthday_proposals:
+            return "pending"
+        # can_read also knows that a private thread reaches only its members.
+        if not can_read(channel, target):
+            return "cannot_see"
+        try:
+            hidden = self.store.read_optouts(guild_id)
+            self.store.read_birthday(guild_id, target.id)
+            # Never a connection that could create the file: the database may vanish between reads.
+            blocked = asker.id != target.id and self.store.birthday_proposals_blocked(guild_id, target.id, create=False)
+        except sqlite3.Error:
+            return "unavailable"
+        if asker.id != target.id and (target.id in hidden or blocked):
+            return "blocked"
+        if asker.id != target.id and not self._may_propose(guild_id, asker.id):
+            # Each proposal pings someone: replacing an open one must not allow pinging more often.
+            return "rate_limited"
+        # One open proposal per asker (a new one replaces it) and a few per server.
+        previous = next(
+            (view for (guild, _), view in self._birthday_proposals.items() if guild == guild_id and view.asker_id == asker.id),
+            None,
+        )
+        open_here = sum(1 for (guild, _) in self._birthday_proposals if guild == guild_id)
+        if previous is None and open_here >= MAX_BIRTHDAY_PROPOSALS_PER_GUILD:
+            return "busy"
+        view = BirthdayProposalView(self, guild_id, asker.id, target.id, month, day)
+        # Reserved before the await, so two quick requests cannot both ping the member.
+        self._birthday_proposals[key] = view
+
+        def proposal_text(hidden: Set[int]) -> str:
+            if asker.id == target.id:
+                return self._t(guild_id, "birthday_proposal_self", target=target.mention, month=month, day=day)
+            shown_asker = self._t(guild_id, "someone") if asker.id in hidden else asker.mention
+            return self._t(guild_id, "birthday_proposal", target=target.mention, asker=shown_asker, month=month, day=day)
+
+        text = proposal_text(hidden)
+        try:
+            if previous is not None:
+                await previous.close("birthday_proposal_replaced")
+                # That edit took a while: who is hidden is read again before anyone is named.
+                try:
+                    hidden = self.store.read_optouts(guild_id)
+                except sqlite3.Error:
+                    view._finish()
+                    return "unavailable"
+                if asker.id != target.id and target.id in hidden:
+                    view._finish()
+                    return "blocked"
+                text = proposal_text(hidden)
+            # Only the member being asked is pinged.
+            view.message = await channel.send(text, view=view, allowed_mentions=discord.AllowedMentions(users=[target]))
+        except BaseException:
+            # Also when the task is cancelled, so the member's place is never left reserved.
+            view._finish()
+            raise
+        if view.done:
+            # Replaced while it was being sent: its buttons would never work.
+            await close_late(view.message, self._t(guild_id, "birthday_proposal_replaced"))
+        return "proposed"
+
+    def _may_propose(self, guild_id: int, asker_id: int) -> bool:
+        """Counts a proposal for someone else; False once ``asker_id`` used up the hour's allowance."""
+        now = self._now()
+        # Forget everyone whose last proposal is over an hour old, so the record stays small.
+        self._proposal_times = {
+            other: times for other, times in self._proposal_times.items() if times and now - times[-1] < 3600
+        }
+        key = (guild_id, asker_id)
+        recent = [sent for sent in self._proposal_times.get(key, []) if now - sent < 3600]
+        if len(recent) >= self.limits.birthday_proposals_per_hour:
+            self._proposal_times[key] = recent
+            return False
+        self._proposal_times[key] = recent + [now]
+        return True
+
+    def _member_lock(self, guild_id: int, member_id: int) -> asyncio.Lock:
+        """Orders the answers to birthday proposals for one member (taken in the order presses arrive)."""
+        return self._member_locks.setdefault((guild_id, member_id), asyncio.Lock())
+
+    async def _off_loop(self, work: Callable[[], Any]) -> Any:
+        """Runs a database step on a worker thread; None when the database is missing or fails."""
+        try:
+            return await asyncio.to_thread(work)
+        except sqlite3.Error:
+            self.logger.warning("community: a birthday button could not reach the database", exc_info=True)
+            return None
+
+    def database_ready(self, guild_id: int) -> bool:
+        """Whether the community database exists and its opt-out list can be read, checked read-only.
+
+        Called before any write the AI's buttons make, so a missing database is never created as an
+        empty file (an empty opt-out list would read as "nobody is hidden").
+        """
+        try:
+            self.store.read_optouts(guild_id)
+        except sqlite3.Error:
+            return False
+        return True
+
+    async def propose_birthday_removal(self, channel: Any, member: Any) -> str:
+        """Asks ``member`` to confirm deleting their saved birthday (the AI's ``remove_my_birthday``).
+
+        The database is only read here (never created); nothing is deleted until they press Confirm.
+
+        Returns:
+            "asked", "none" (no birthday saved) or "unavailable" (the database cannot be read).
+        """
+        guild_id = channel.guild.id
+        try:
+            # The opt-out list too: the question names the member, which fails closed like everything else.
+            self.store.read_optouts(guild_id)
+            if self.store.read_birthday(guild_id, member.id) is None:
+                return "none"
+        except sqlite3.Error:
+            return "unavailable"
+
+        async def on_confirm() -> str:
+            def work() -> Optional[bool]:
+                if not self.database_ready(guild_id):
+                    return None
+                return self.store.remove_birthday(guild_id, member.id, create=False)
+
+            removed = await self._off_loop(work)
+            if removed is None:
+                return self._t(guild_id, "birthday_unavailable")
+            return f"<@{member.id}> " + self._t(guild_id, "birthday_removed" if removed else "birthday_none")
+
+        view = ConfirmView(
+            member.id, lambda key: self._t(guild_id, key), on_confirm, self._removal_asks, (guild_id, member.id)
+        )
+        await ask(channel, self._t(guild_id, "removal_prompt", member=f"<@{member.id}>"), view)
+        return "asked"
 
     @birthday.command(name="remove", description="Remove your saved birthday from this server")
     async def birthday_remove(self, interaction: discord.Interaction) -> None:
@@ -745,9 +1069,12 @@ class CommunityCog(commands.Cog):
         guild = interaction.guild
         settings = self.store.get_settings(guild.id)
         today = self._local_now(settings).date()
+        # Members hidden with /leaderboard optout are left out, except the one asking (the reply is ephemeral).
+        hidden = self.store.optouts(guild.id) - {interaction.user.id}
         rows = [
             (guild.get_member(user_id), when)
             for user_id, when in upcoming_birthdays(today, self.store.birthdays(guild.id), self.UPCOMING_DAYS)
+            if user_id not in hidden
         ]
         lines = [
             self._t(guild.id, "upcoming_line", date=f"{when.month}/{when.day}", name=member.display_name)

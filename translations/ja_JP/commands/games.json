@@ -42,6 +42,18 @@
         "song_answer": "正解は **[{title}]({url})**",
         "song_winner": "{user} が {seconds} 秒で正解！",
         "song_nobody": "だれも当てられませんでした！",
-        "song_interrupted": "音楽の再生が始まったため、曲当てはここで終了します。"
+        "song_interrupted": "音楽の再生が始まったため、曲当てはここで終了します。",
+        "offer": "🎮 {user} が{game}を始めようとしています。「スタート」を押すと始まります（{seconds} 秒以内、押せるのは {user} だけです）。",
+        "offer_start": "スタート",
+        "offer_cancel": "キャンセル",
+        "offer_not_yours": "このボタンはゲームを頼んだ人だけが押せます。",
+        "offer_started": "🎮 {user} が{game}を始めました！",
+        "offer_cancelled": "このゲームはキャンセルされました。",
+        "offer_expired": "このゲームの誘いはもう無効です。",
+        "offer_limit": "このサーバーには返事待ちのゲームの誘いがいくつもあります。先にそちらを片付けてください。",
+        "game_quiz": "サーバークイズ",
+        "game_chain": "しりとり",
+        "game_guess_song": "イントロクイズ",
+        "offer_denied": "このチャンネルでは今ゲームを始められません（発言とコマンドの使用が必要です）。"
     }
 }

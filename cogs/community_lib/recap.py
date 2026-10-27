@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 import discord
 
 from addons.logging import get_logger
+from addons.visibility import audience_can_read
 from cogs.memory.db.stats_storage import MAX_WORD_CHARS, week_start
 
 from .limits import CommunityLimits
@@ -67,6 +68,20 @@ class Recap:
     missing: List[Tuple[Any, int]] = field(default_factory=list)
 
 
+def _total_without(rows: Sequence[Tuple[Any, int]], hidden: Set[int]) -> int:
+    """The sum of ``(user_id, count)`` rows, leaving out the hidden members' (a row whose id is no
+    number cannot be told apart and is counted)."""
+    total = 0
+    for user_id, count in rows:
+        try:
+            if int(user_id) in hidden:
+                continue
+        except (TypeError, ValueError):
+            pass
+        total += int(count)
+    return total
+
+
 def _visible(guild: Any, rows: Sequence[Tuple[Any, int]], hidden: Set[int], limit: Optional[int] = None) -> List[Tuple[Any, int]]:
     """Turns ``(user_id, value)`` rows into ``(member, value)`` for current, human, not hidden members."""
     found = []
@@ -85,18 +100,12 @@ def _visible(guild: Any, rows: Sequence[Tuple[Any, int]], hidden: Set[int], limi
 
 
 def is_public(guild: Any, channel: Any) -> bool:
-    """Whether every member (the @everyone role) can see ``channel`` and read its history.
+    """Whether every member can see ``channel`` and read its history (see ``audience_can_read``).
 
-    A private thread is never public: its permissions are inherited from its (maybe public)
-    parent, but only the people added to it can read it.
+    ``@everyone`` must be allowed, and no role or member overwrite may deny it; private threads
+    and anything that cannot be established count as not public.
     """
-    if getattr(channel, "type", None) == discord.ChannelType.private_thread:
-        return False
-    try:
-        permissions = channel.permissions_for(guild.default_role)
-    except (AttributeError, TypeError, discord.ClientException):
-        return False  # e.g. a thread whose parent channel is not cached: left out, never leaked
-    return bool(permissions.view_channel and permissions.read_message_history)
+    return audience_can_read(channel)
 
 
 def public_channel_ids(guild: Any) -> List[str]:
@@ -146,12 +155,14 @@ class RecapBuilder:
         recap = Recap(week=week_start(start), start=start, end=end)
 
         per_user = await collector.message_counts_by_user(gid, since, until)
-        recap.total = sum(count for _, count in per_user)
-        recap.previous_total = sum(
-            count for _, count in await collector.message_counts_by_user(gid, since - 7 * 86400, until - 7 * 86400)
+        # What hidden members wrote is not counted either: the total would give them away.
+        recap.total = _total_without(per_user, hidden)
+        recap.previous_total = _total_without(
+            await collector.message_counts_by_user(gid, since - 7 * 86400, until - 7 * 86400), hidden
         )
         recap.talkers = _visible(guild, per_user, hidden, TOP_TALKERS)
-        for channel_id, count in await collector.message_counts_by_channel(gid, since, until):
+        # The per-channel counts leave hidden members out as well, or total and channels would differ by them.
+        for channel_id, count in await collector.message_counts_by_channel(gid, since, until, [str(user_id) for user_id in hidden]):
             channel = guild.get_channel(int(channel_id)) if str(channel_id).isdigit() else None
             if channel is not None and is_public(guild, channel):
                 recap.channels.append((channel, count))

@@ -236,3 +236,38 @@ async def test_episodic_cancellation_propagates(monkeypatch):
 
     with pytest.raises(asyncio.CancelledError):
         await manager.get_context(_make_message())
+
+
+async def _fetched_ids(monkeypatch, hidden):
+    """The ids whose personal memory is fetched when ``hidden`` members of guild 42 opted out (None:
+    the list cannot be read). ``hidden_in_guild_async`` itself is covered in test_memory_privacy.py: the
+    langchain stubs of this module cannot import the tool module it reads the list with."""
+    monkeypatch.setattr(context_manager, "func", types.SimpleNamespace(report_error=_noop_report_error))
+
+    async def read_hidden(bot, guild_id):
+        return hidden
+
+    monkeypatch.setattr(context_manager, "hidden_in_guild_async", read_hidden)
+    stm = [_BaseMessage(content="UserID:789 said hello"), _BaseMessage(content="UserID:790 said hi")]
+    procedural_provider = StubProceduralProvider()
+    manager = ContextManager(StubShortTermProvider(messages=stm), procedural_provider, episodic_provider=None, bot=object())
+    message = _make_message("123")
+    message.guild = types.SimpleNamespace(id=42)
+
+    await manager.get_context(message)
+
+    return {uid for call in procedural_provider.all_calls for uid in call}
+
+
+@pytest.mark.asyncio
+async def test_a_hidden_members_personal_memory_is_not_put_in_front_of_others(monkeypatch):
+    fetched = await _fetched_ids(monkeypatch, {789})
+
+    assert fetched == {"123", "790"}
+
+
+@pytest.mark.asyncio
+async def test_no_other_personal_memory_is_used_while_the_opt_out_list_cannot_be_read(monkeypatch):
+    fetched = await _fetched_ids(monkeypatch, None)
+
+    assert fetched == {"123"}  # the asker's own memory is still used

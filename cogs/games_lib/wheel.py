@@ -17,9 +17,15 @@ _SEPARATORS = re.compile(r"[,，、;；|｜\n]")
 
 def parse_options(text: str) -> List[str]:
     """The distinct options in ``text`` (comma, 、, ; or | separated), in the order typed."""
+    return clean_options(_SEPARATORS.split(text or ""))
+
+
+def clean_options(raw_options: Sequence[str]) -> List[str]:
+    """The distinct options of a list that is already split (an option may contain commas), in order."""
     options: List[str] = []
     seen = set()
-    for raw in _SEPARATORS.split(text or ""):
+    for raw in raw_options:
+        raw = str(raw or "")
         option = " ".join(raw.split())[:MAX_OPTION_LENGTH]
         if option and option.casefold() not in seen:
             seen.add(option.casefold())

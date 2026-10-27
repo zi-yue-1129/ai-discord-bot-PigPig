@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Community cog makes the bot part of the server: it welcomes new members, celebrates birthdays and yearly join anniversaries, and posts a weekly recap. Every feature is **off** until a server admin turns it on with `/community`. The bot owner sets the limits in the `community:` block of `base.yaml`.
+The Community cog makes the bot part of the server: it welcomes new members, celebrates birthdays and yearly join anniversaries, and posts a weekly recap, and notices when several members play the same game. Every feature is **off** until a server admin turns it on with `/community`. The bot owner sets the limits in the `community:` block of `base.yaml`.
 
 Messages are written by the model in the bot's own voice (the server's persona). Whenever the model is unavailable, over its budget, or the server is being raided, a fixed translated text is posted instead, so nothing is lost. Only the people being welcomed or celebrated can be pinged; `@everyone` and role pings are always blocked.
 
@@ -19,6 +19,7 @@ Messages are written by the model in the bot's own voice (the server's persona).
 | `/community anniversaries enabled` | Celebrates members who joined on this day in an earlier year (at the same hour) |
 | `/community weekly enabled [channel] [day] [hour]` | Posts the weekly recap (default Sunday 20:00, local) |
 | `/community weekly_preview` | Shows this week's recap so far, only to you |
+| `/community playing enabled [channel] [min_players]` | Points out when at least `min_players` members (default 3) play the same game; see [What everyone is playing](#what-everyone-is-playing) |
 | `/community achievements mode` | How unlocked achievements are announced: `off` (default), `reply` (🏆 reaction and a short reply) or `channel` (announcement channel). See [Leaderboards & Achievements](leaderboard.md) |
 
 ## Member commands (`/birthday`)
@@ -27,9 +28,20 @@ Messages are written by the model in the bot's own voice (the server's persona).
 |---|---|
 | `/birthday set month day` | Saves your birthday **on this server only** (no year asked) |
 | `/birthday remove` | Removes it |
-| `/birthday upcoming` | Lists birthdays in the next 30 days |
+| `/birthday upcoming` | Lists birthdays in the next 30 days (privately), leaving out members hidden with `/leaderboard optout` other than yourself |
 
 Feb 29 birthdays and join dates are celebrated on Feb 28 in common years.
+
+### Birthdays the AI proposes
+
+When someone asks the AI to remember a birthday (their own or another member's), `propose_birthday()` posts a question in the channel that pings only that member, with **Save** and **Decline** buttons only they can press. Nothing is saved until they press Save.
+
+- If they decline a proposal someone else made, later proposals from other people are turned away without pinging them (`birthday_declines`). The block is lifted when they ask for one themselves and press Save, or use `/birthday set`. Declining their own request changes nothing.
+- A proposal that nobody answers expires after an hour (`PROPOSAL_SECONDS`) and is not a decline.
+- Each member may have the AI propose birthdays for other people at most `birthday.proposals_per_hour` times an hour (owner setting, default 3; each one pings someone, and replacing an open question still counts). Asking for oneself does not count.
+- One question per member at a time, one open question per asker (a new one replaces it) and at most 5 per server (`MAX_BIRTHDAY_PROPOSALS_PER_GUILD`). Bots, members who cannot read the channel (for a private thread: who are not in it) and, on someone else's behalf, members hidden with `/leaderboard optout` are not asked. A hidden asker is not named in the question, and the model's replies never name the member.
+- The community database is only read when proposing. The Save, Decline and removal Confirm buttons answer Discord first, then check it and write on a worker thread with a connection that cannot create the file (`create=False`), so a missing database is never created as an empty file. Who is hidden is read again after a replaced proposal is closed, right before the new one is posted.
+- The buttons are not persistent: after a restart an open question's buttons no longer answer, and nothing was saved.
 
 ## Welcomes
 
@@ -40,7 +52,7 @@ Feb 29 birthdays and join dates are celebrated on Feb 28 in common years.
 
 ## Daily messages
 
-A background check runs every 5 minutes. Once the server's local hour reaches the configured hour, today's birthday and anniversary messages are posted, once per day (recorded in `job_runs`, so a restart neither repeats nor loses them). Several people on the same day share one message, naming at most `max_mentions` of them.
+A background check runs every 5 minutes. Once the server's local hour reaches the configured hour, today's birthday and anniversary messages are posted, once per day (recorded in `job_runs`, so a restart neither repeats nor loses them). Several people on the same day share one message, naming at most `max_mentions` of them. Members hidden with `/leaderboard optout` are neither named in the birthday and anniversary messages nor given the birthday role; when the opt-out list cannot be read, the job fails and is retried instead of naming anyone.
 
 A job that fails (Discord error, no channel to post in yet) is retried while it is still due, waiting 5 minutes and then twice as long each time, up to an hour; it is only recorded as done once it succeeds. The wait is kept in memory, so after a restart a failing job is tried once right away.
 
@@ -61,7 +73,19 @@ Once a week, at the configured day and hour, one embed sums up the week (Monday 
 
 Only channels everyone can read (`@everyone` can view the channel and read its history) count toward the busiest channels, hot words, top emojis and the quote of the week; private channels never show up in the recap. Threads count when they are public and in the bot's cache: an archived thread is left out (its words and quotes are dropped, never leaked).
 
-Members who opted out with `/leaderboard optout` are never named, quoted or given a title. Weeks with fewer than `min_messages` messages are skipped. If the bot was down at the scheduled time, the recap is still posted within 24 hours, once (`job_runs`).
+Members who opted out with `/leaderboard optout` are never named, quoted or given a title, and what they wrote is not counted in the totals or in the per-channel counts. Weeks with fewer than `min_messages` messages are skipped. If the bot was down at the scheduled time, the recap is still posted within 24 hours, once (`job_runs`).
+
+## What everyone is playing
+
+When at least `min_players` members have each been playing the same game for `min_minutes` (from their Discord presence; only games count, not Spotify, streams or custom statuses), and they are not already all in one voice channel, the bot posts one line in the chosen channel naming them, e.g. "A, B and C are all playing Valorant. Want to team up in voice?". Games are matched by name, ignoring case and spacing.
+
+- Only members who can see that channel are named and counted, and members who opted out with `/leaderboard optout` never are. Bots never count.
+- The same game is pointed out at most once every `cooldown_hours` per server, and a server gets at most `max_per_day` posts in 24 hours. A post that could not be sent is tried again after 10 minutes.
+- The line is written by the model in the server persona (the game's name is passed as data, never as instructions), or a fixed text when `use_ai` is off or the model fails. Only the named players are pinged.
+- Players are checked again right before the post is sent (still playing, can see the channel, not opted out); the written text is replaced by the fixed one when someone dropped out, and nothing is posted when too few are left. The minimum is counted over everyone who qualifies; the post names the first `max_mentions` of them. Game names are shown without links (invites such as `discord.gg/…` included), mentions, line breaks or formatting, after folding look-alike characters (such as `＠`) and removing invisible ones; a bare domain like `agar.io` keeps its name but its dots can't form a link, and link previews are off. A written post that misses a player's mention (after it is cut to length), mentions anyone else, or contains a link or domain is replaced by the fixed text. Right before sending, the settings are read again: nothing is posted if the feature was turned off or its channel changed, the daily cap was reached or lowered, the game is in its cooldown, fewer players qualify than `min_players` now asks for, or they have meanwhile joined one voice channel. A post is recorded just before it is sent, so it counts for the cooldown and the daily cap even if the database fails afterwards.
+- When the bot has **Manage Channels** where the post goes, it carries an **Open a voice room** button for members who can see the channel and are not timed out. It creates one temporary voice channel per post (once: a closed room is not opened again, and nothing opens once the feature is off), next to the post's channel and open to the same people (it inherits a synced category's permissions, or copies the channel's own). A server has at most `max_rooms` such rooms at once. A room is deleted as soon as the last person leaves, or after `room_idle_minutes` if nobody joined. The button stops working after `cooldown_hours` (at least 10 minutes), and opens nothing while `max_per_day` is 0. A post claims its room in the database before the room is created (together with the room limit, counting rooms other posts are opening), so it opens at most one room and the limit holds, also across a reload of the cog; unloading the cog waits for a room being opened, a creation Discord refused frees its claim at once, one that timed out keeps it until it is stale (Discord may have made the room anyway: a room is named after its game and ends in the claim's token, ` · #a1b2c3d4e5f60718` (16 characters), so when its event arrives, when the request gives up, and before a claim is freed, the bot looks for a channel carrying the token of a claim that is still open and records it. Only a channel made after the claim (Discord's clock and the bot's may differ by up to 10 seconds) is taken in: one without the token, with the token of a claim that is gone, with a token two open claims share, with a post that has its room on record already, or an older channel that was renamed is left alone and never deleted. A claim whose room was marked used but could not be recorded keeps its token, so a reloaded cog still finds the room; the token is taken away as soon as that room is closed or found gone (a write that fails is retried by the regular check), and the claims of a server that is unavailable are neither freed nor dropped with their old posts until it is back (nothing of it is cached to look through); the other servers' claims are freed as usual. The token appears only in the name of the bot's own room, so the one way to pass for it is a member who can manage channels and sees that name before the bot's own scan does; nothing is ever deleted that such a member could not delete themselves. A claim whose room exists but could not be recorded is neither freed nor dropped with its old post until it can be), a press whose claim was taken over meanwhile deletes its own room, a post is marked used for good as soon as its room exists, a press while the room is still being opened is told to try again in a minute, and one left by a stopped bot (also from an older database) is freed after three minutes, on load or by the regular check. A post recorded for a send that never finished stops counting after 10 minutes, also after a restart. The post points to its room as soon as the room exists. A room that could neither be recorded nor deleted again is kept in memory (it still uses up its post and counts towards `max_rooms`) and deleted by the next cleanup. Posts are kept for two days, or longer when `cooldown_hours` is longer; `cooldown_hours` is capped at 720.
+
+Presences are only kept in memory (who plays which game since when); nothing about them is written to disk. The bot already needs the presences intent for its member lookup tool.
 
 ## Owner settings (`base.yaml`)
 
@@ -76,6 +100,7 @@ community:
   birthday:
     use_ai: true
     max_mentions: 20
+    proposals_per_hour: 3
   weekly:
     min_messages: 50
     use_ai: true
@@ -83,11 +108,19 @@ community:
     missing_after_days: 30
     missing_min_messages: 50
     missing_max: 3
+  playing:
+    min_minutes: 10
+    cooldown_hours: 3
+    max_per_day: 5            # 0 turns the feature off
+    use_ai: true
+    max_mentions: 10
+    max_rooms: 3              # 0: no voice room button
+    room_idle_minutes: 5
 ```
 
 ## Storage
 
-`data/community.db` (SQLite): `guild_settings`, `birthdays` (per server), `job_runs`, `birthday_roles`, and for the leaderboard cog `optouts`, `user_achievements`, `achievement_checked`, `titles`. Columns added later (such as `achievement_mode`) are added to older files on first use.
+`data/community.db` (SQLite): `guild_settings`, `birthdays` (per server), `job_runs`, `birthday_roles`, `birthday_declines` (members who turned away proposed birthdays), and for the leaderboard cog `optouts`, `user_achievements`, `achievement_checked`, `titles`, plus `playing_posts` (posts of the last two days, for the cooldown, the daily cap and the button) and `temp_voice_rooms` (rooms the bot opened and still has to delete). Columns added later (such as `achievement_mode`) are added to older files on first use.
 
 ## Code
 
@@ -97,4 +130,7 @@ community:
 - `cogs/community_lib/joins.py` — `JoinTracker` (batching, raids, AI budget)
 - `cogs/community_lib/limits.py` — `CommunityLimits` from `base.yaml`
 - `cogs/community_lib/recap.py` — weekly recap timing, numbers and layout
+- `cogs/playing.py` — `PlayingCog` (what everyone is playing, voice rooms)
+- `cogs/community_lib/playing.py` — `PlayingTracker` (who plays which game, from presences)
+- `addons/presence.py` — `current_game`, shared with the member lookup tool
 - `llm/announcement_writer.py` — `compose_announcement`, shared by community messages

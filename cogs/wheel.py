@@ -8,7 +8,7 @@ restaurant search as ``/search type:eat`` and ends on that restaurant's card.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, List, Optional, Set
+from typing import Any, Awaitable, Callable, List, Optional, Set, Tuple
 
 import discord
 from discord import app_commands
@@ -49,6 +49,14 @@ class WheelCog(commands.Cog):
 
     async def _spin(self, interaction: discord.Interaction, title: str, options: List[str]) -> int:
         """Shows the spin on the (deferred) response and returns the picked index."""
+
+        async def show(embed: discord.Embed) -> None:
+            await interaction.edit_original_response(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+        return await self._turn(show, interaction.guild_id, title, options)
+
+    async def _turn(self, show: Callable[[discord.Embed], Awaitable[None]], guild_id: Any, title: str, options: List[str]) -> int:
+        """Shows each frame of a spin with ``show`` and returns the picked index."""
         frames = wheel.spin(options)
         for position, pointer in enumerate(frames):
             final = position == len(frames) - 1
@@ -58,17 +66,48 @@ class WheelCog(commands.Cog):
                 colour=discord.Colour.gold() if final else discord.Colour.blurple(),
             )
             if final:
-                embed.set_footer(text=self._t(interaction.guild_id, "result", option=options[pointer]))
-            await interaction.edit_original_response(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                embed.set_footer(text=self._t(guild_id, "result", option=options[pointer]))
+            await show(embed)
             if not final:
                 await asyncio.sleep(self.frame_seconds)
         return frames[-1]
 
     def _claim(self, interaction: discord.Interaction) -> bool:
-        if interaction.channel_id in self._spinning:
+        return self._claim_channel(interaction.channel_id)
+
+    def _claim_channel(self, channel_id: int) -> bool:
+        if channel_id in self._spinning:
             return False
-        self._spinning.add(interaction.channel_id)
+        self._spinning.add(channel_id)
         return True
+
+    async def spin_in_channel(self, channel: Any, guild_id: Any, member: Any, options: List[str]) -> Tuple[Optional[str], Optional[str]]:
+        """Spins ``options`` in a new message in ``channel`` for ``member`` (the AI's ``spin_wheel`` tool).
+
+        Returns:
+            ``(picked option, None)``, or ``(None, problem)`` with "too_few" or "busy".
+        """
+        # Already a list: an option such as "Paris, Texas" stays one option. Only a single string
+        # (the model sent everything as one item) is split like typed text.
+        choices = wheel.parse_options(options[0]) if len(options) == 1 else wheel.clean_options(options)
+        if len(choices) < wheel.MIN_OPTIONS:
+            return None, "too_few"
+        if not self._claim_channel(channel.id):
+            return None, "busy"
+        posted: List[Any] = []
+
+        async def show(embed: discord.Embed) -> None:
+            quiet = discord.AllowedMentions.none()
+            if posted:
+                await posted[0].edit(embed=embed, allowed_mentions=quiet)
+            else:
+                posted.append(await channel.send(embed=embed, allowed_mentions=quiet))
+
+        try:
+            pick = await self._turn(show, guild_id, self._t(guild_id, "title", user=member.display_name), choices)
+        finally:
+            self._spinning.discard(channel.id)
+        return choices[pick], None
 
     @group.command(name="spin", description="Pick one of your options at random")
     @app_commands.describe(options="Options separated by commas, e.g. hot pot, ramen, curry")

@@ -105,6 +105,28 @@ def create_tables(conn: sqlite3.Connection) -> None:
     cursor.execute("DROP TABLE IF EXISTS guild_weekly_terms")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_channel_weekly_terms_week ON channel_weekly_terms (week_start)")
 
+    # Each member's words and emojis, per channel, counted only for messages sent while the
+    # channel was readable by everyone. user_stats.top_words cannot say that (it has no
+    # channel and no history of permissions), so profiles and word clouds use this instead.
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_public_terms (
+            guild_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            kind TEXT NOT NULL, -- 'word' or 'emoji'
+            term TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (guild_id, user_id, kind, term, channel_id)
+        );
+        """
+    )
+    # Writes look up one (member, channel, kind) scope and its least used term.
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_user_public_terms_scope "
+        "ON user_public_terms (guild_id, user_id, channel_id, kind, count)"
+    )
+
     # Net reaction count per message, for "most reacted message" style rankings
     cursor.execute(
         """

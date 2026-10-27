@@ -20,7 +20,7 @@ from discord.ext import commands
 from addons.logging import get_logger
 from addons.settings import base_config
 from function import func
-from llm.tools.user_stats import _format_text_card, _make_t
+from llm.tools.user_stats import _format_text_card, _make_t, fetch_public_terms, public_view
 
 from .community import COMMUNITY_DB_PATH
 from .community_lib.achievements import (
@@ -32,7 +32,7 @@ from .community_lib.achievements import (
 )
 from .community_lib.dates import local_now
 from .community_lib.limits import CommunityLimits
-from .community_lib.recap import TITLES, public_channel_ids
+from .community_lib.recap import TITLES
 from .community_lib.store import CommunityStore
 from .language_manager import LanguageManager
 
@@ -302,21 +302,35 @@ class LeaderboardCog(commands.Cog):
         stats = await storage.get_user_stats(str(member.id), str(guild.id)) if storage else None
         if not stats:
             return self._r(guild.id, "no_stats", name=member.display_name)
-        lines = [_format_text_card(member.display_name, _public_stats(guild, stats), _make_t(self.bot, str(guild.id)))]
+        terms = await fetch_public_terms(storage, guild, str(member.id))
+        extras = await self.profile_extras(guild, member)
+        # Built after the last await, so a channel made private meanwhile is left out.
+        shown = public_view(guild, stats, terms)
+        lines = [_format_text_card(member.display_name, shown, _make_t(self.bot, str(guild.id)))]
+        return "\n".join(lines + extras)
+
+    async def profile_extras(self, guild: discord.Guild, member: Any, titles: bool = True) -> List[str]:
+        """The profile lines after the stats card: all-time rank (unless hidden), titles and badges.
+
+        Args:
+            titles: Include the rotating titles. The weekly recap awards them from activity in
+                every channel (and from the music log), so answers posted for everyone leave them out.
+        """
+        lines = []
         if not self.store.is_opted_out(guild.id, member.id):
             ranked = await self.rankings(guild, "messages", "all") or []
             place = next((place for place, (m, _) in enumerate(ranked, start=1) if m.id == member.id), None)
             if place is not None:
                 lines.append(self._r(guild.id, "profile_rank", rank=place, total=len(ranked)))
-        titles = self.store.titles_of(guild.id, member.id)
-        if titles:
-            names = self._r(guild.id, "list_joiner").join(self._title(guild.id, title_id) for title_id in titles)
+        held = self.store.titles_of(guild.id, member.id) if titles else []
+        if held:
+            names = self._r(guild.id, "list_joiner").join(self._title(guild.id, title_id) for title_id in held)
             lines.append(self._r(guild.id, "profile_titles", titles=names))
         unlocked = [self._by_id[i] for i, _ in self.store.achievements(guild.id, member.id) if i in self._by_id]
         if unlocked:
             badges = " ".join(a.emoji for a in unlocked)
             lines.append(self._r(guild.id, "profile_badges", badges=badges, done=len(unlocked), total=len(self.achievements)))
-        return "\n".join(lines)
+        return lines
 
     @app_commands.command(name="achievements", description="Show which achievements a member has unlocked")
     @app_commands.describe(user="Whose achievements to show (defaults to you)")
@@ -343,22 +357,6 @@ class LeaderboardCog(commands.Cog):
             else:
                 lines.append(f"🔒 {self._label(guild_id, achievement)} — {description}")
         return "\n".join(lines)
-
-
-def _public_stats(guild: Any, stats: Dict[str, Any]) -> Dict[str, Any]:
-    """The part of a member's all-time stats that may be shown to anyone in the server.
-
-    The all-time word and emoji counts do not say which channel they came from, so they are
-    left out; channels are only listed when everyone can read them.
-    """
-    public = set(public_channel_ids(guild))
-    channels = stats.get("top_channels") or {}
-    return {
-        **stats,
-        "top_words": {},
-        "top_emojis": {},
-        "top_channels": {channel: count for channel, count in channels.items() if str(channel) in public},
-    }
 
 
 async def setup(bot: commands.Bot) -> None:

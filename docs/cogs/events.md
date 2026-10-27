@@ -23,6 +23,16 @@ Events are stored in `data/events.db` (`events` and `event_signups`), so they an
 
 Limits: an event can be at most 180 days ahead, a member can have 5 upcoming events and a server 25.
 
+## Events the AI proposes
+
+The AI's `create_event` tool calls `post_draft`: it checks the title, limit, reminder and time like `/event create` and posts a proposal with Confirm and Cancel buttons. Only the host (the person who asked) can press them, within 3 minutes (`DRAFT_SECONDS`). Nothing is saved until Confirm, and `confirm_draft` checks the time and the per-member and per-server limits again; a second press is refused. If saving the host's sign-up or posting the event fails, the event is deleted again, so no event without a message counts against the limits. Each member has at most one open proposal (a new one, even for the same event, replaces it and the old one says so), and a server at most 5 (`MAX_PENDING_DRAFTS_PER_GUILD`) from different members.
+
+The `join_event` tool calls `propose_answer`: it posts a question (pinging nobody) with Confirm and Cancel buttons from `addons/confirm.py` that only the asker can press, within 3 minutes, and one open question per member. Confirm runs `answer_for_member`, the same locked sign-up path as the buttons, only for events of this server that have not started, in channels the member can read (checked again once the event's lock is held). If linking the confirmed event to its message fails, the event is deleted and the message says it could not be made. The question names the event by title only in the event's own channel, otherwise by number and link; a member who lands on the waiting list is not told their place in that public reply.
+
+## Hidden members
+
+The event message never names or counts members hidden with `/leaderboard optout`: they are left out of the going, waiting and maybe lists and their counts, and a hidden host is shown as "a member". The "moved up from the waiting list" post leaves hidden members out too (they still move up), and is not sent while the opt-out list cannot be read. The opt-out list is read (read-only) whenever the message is drawn; while it cannot be read the message of an open event is not updated (the answer is still saved), and a new or cancelled event's message shows nobody.
+
 ## The reminder
 
 At `starts − remind` minutes the bot posts in the event's channel, mentioning everyone going (not the waiting list or maybes). Only those members can be pinged by it: `@everyone`, roles and other mentions in the title are never pinged. Long lists are split into several messages under Discord's 2000-character limit. Where someone who can see the channel may not read its history, the reminder (and the waiting-list message) names the event only by number with a link, not by title.

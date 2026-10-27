@@ -20,6 +20,7 @@ from fastapi import Query
 from addons.logging import get_logger
 from addons.tokens import tokens
 from dashboard.middleware.permission import require_owner
+from dashboard.services.member_stats import delete_member_stats
 from function import ROOT_DIR
 
 log = get_logger(server_id="Bot", source=__name__)
@@ -98,7 +99,7 @@ _CONFIG_ALLOWED_KEYS: dict[str, set[str]] = {
     "llm": {
         "model_priorities", "google_search_agent",
         "llm_call_timeout", "reasoning_optimization_prompt", "ollama_url", "vllm_url",
-        "max_output_tokens", "openai_endpoints",
+        "max_output_tokens", "openai_endpoints", "tool_groups",
     },
     "memory": {
         "enabled", "procedural_cache_ttl", "procedural_data_path", "episodic_data_path",
@@ -164,6 +165,16 @@ async def write_config(
             status_code=400,
             detail=f"Unknown keys for config '{file}': {sorted(unknown)}. Allowed: {sorted(allowed)}",
         )
+
+    if file == "llm" and "openai_endpoints" in config_data:
+        # The bot refuses to start on a malformed section, so refuse to save one. Imported here
+        # because the settings module is replaced wholesale by some dashboard tests.
+        from addons.settings import parse_openai_endpoints
+
+        try:
+            parse_openai_endpoints(config_data["openai_endpoints"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     path = _config_path(file)
 
@@ -491,8 +502,7 @@ async def admin_delete_user_memory(
             async with aiosqlite.connect(str(_PROCEDURAL_DB)) as db:
                 c = await db.execute("DELETE FROM users WHERE discord_id = ?", (user_id,))
                 deleted["procedural_users"] = c.rowcount
-                c = await db.execute("DELETE FROM user_stats WHERE user_id = ?", (user_id,))
-                deleted["user_stats"] = c.rowcount
+                deleted.update(await delete_member_stats(db, user_id))
                 await db.commit()
         except Exception as exc:
             log.error(f"admin_delete_user_memory failed for {user_id}: {exc}")

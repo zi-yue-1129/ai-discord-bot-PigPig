@@ -219,6 +219,161 @@ def _extract_tools_from_module(mod: Any, runtime: "OrchestratorRequest") -> List
     return tools
 
 
+# Tool groups (``metadata["tool_group"]``). The core tools are always loaded; every other group
+# can be limited to some channels in llm.yaml (``tool_groups``) and its tools only come when the
+# cog behind them is there (each tool class returns no tools otherwise). The list is sorted by
+# group in this order, then by name: the core tools are always the same prefix, and a channel gets
+# the same list on every call, so the model provider can reuse its cached prompt prefix.
+CORE_TOOL_GROUP = "core"
+TOOL_GROUP_ORDER: tuple = (CORE_TOOL_GROUP, "music", "community", "events", "fun", "games", "playing")
+
+
+def tool_group(t: Any) -> str:
+    """The tool's group from its metadata; tools without one are core tools."""
+    metadata = getattr(t, "metadata", None)
+    group = metadata.get("tool_group") if isinstance(metadata, dict) else None
+    return str(group).lower() if group else CORE_TOOL_GROUP
+
+
+def _group_rank(group: str) -> tuple:
+    """Known groups in ``TOOL_GROUP_ORDER``; unknown ones after them, by name."""
+    try:
+        return (TOOL_GROUP_ORDER.index(group), "")
+    except ValueError:
+        return (len(TOOL_GROUP_ORDER), group)
+
+
+def sort_tools(tools: List[Any]) -> List[Any]:
+    """Orders tools by group, then by name, so the same tools always come in the same order."""
+    return sorted(tools, key=lambda t: (_group_rank(tool_group(t)), str(getattr(t, "name", ""))))
+
+
+def _channel_ids(channel: Any) -> set:
+    """The channel's id and, for a thread, its parent's: a thread follows its channel's settings."""
+    ids = set()
+    for value in (getattr(channel, "id", None), getattr(channel, "parent_id", None)):
+        if value is not None:
+            ids.add(str(value))
+    return ids
+
+
+_TRUE_WORDS = frozenset({"true", "yes", "on", "1"})
+_FALSE_WORDS = frozenset({"false", "no", "off", "0"})
+_warned: set = set()
+
+
+def _warn_once(text: str) -> None:
+    """Logs a settings problem once, not on every message."""
+    if text not in _warned:
+        _warned.add(text)
+        logger.warning(text)
+
+
+def _id_set(values: Any) -> Optional[set]:
+    """Channel ids from a list or a single id; None when the value cannot be read."""
+    if values is None:
+        return set()
+    if not isinstance(values, (list, tuple, set)):
+        values = [values]
+    ids = set()
+    for value in values:
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
+            return None
+        text = str(value).strip()
+        if text:
+            if not text.isdigit():
+                return None
+            ids.add(text)
+    return ids
+
+
+def _flag(value: Any) -> Optional[bool]:
+    """``enabled`` as a bool (true/false, yes/no, on/off, 1/0); None when it is none of these."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        word = value.strip().lower()
+        if word in _TRUE_WORDS:
+            return True
+        if word in _FALSE_WORDS:
+            return False
+    return None
+
+
+def normalize_tool_groups(raw: Any) -> dict:
+    """The owner's ``tool_groups`` with group names lowercased and trimmed.
+
+    Unknown group names are kept (a tool may use its own group) but logged, since they are most
+    likely typos. Two names for the same group (``Games`` and ``games``) cannot both apply, so the
+    group gets settings that turn it off.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        _warn_once(f"llm.yaml tool_groups must be a mapping of group names, not {type(raw).__name__}; ignored")
+        return {}
+    groups: dict = {}
+    for key, rules in raw.items():
+        name = str(key).strip().lower()
+        if name in groups:
+            _warn_once(f"llm.yaml tool_groups names the group {name!r} twice; the group is turned off")
+            groups[name] = {"enabled": False}
+            continue
+        if name not in TOOL_GROUP_ORDER:
+            _warn_once(f"llm.yaml tool_groups: unknown group {key!r} (known: {', '.join(TOOL_GROUP_ORDER[1:])})")
+        groups[name] = rules
+    return groups
+
+
+def group_allowed(group: str, channel: Any, settings: Optional[dict]) -> bool:
+    """Whether the bot owner's ``tool_groups`` settings let ``group`` be used in ``channel``.
+
+    A group with no settings is used everywhere; core tools always are. ``enabled: false`` turns a
+    group off, ``channels`` limits it to those channel ids (an empty list means no limit) and
+    ``exclude_channels`` keeps it out of them. A single id works like a one-item list. Settings
+    that cannot be read turn the group off (with a warning): the owner meant to limit it.
+    """
+    if group == CORE_TOOL_GROUP:
+        return True
+    if not isinstance(settings, dict) or group not in settings:
+        return True
+    rules = settings[group]
+    if rules is None:
+        return True
+    if not isinstance(rules, dict):
+        _warn_once(f"llm.yaml tool_groups.{group} must be a mapping; the group is turned off")
+        return False
+    enabled = _flag(rules.get("enabled", True))
+    if enabled is None:
+        _warn_once(f"llm.yaml tool_groups.{group}.enabled must be true or false; the group is turned off")
+        return False
+    if not enabled:
+        return False
+    excluded = _id_set(rules.get("exclude_channels"))
+    only = _id_set(rules.get("channels"))
+    for label, ids in (("exclude_channels", excluded), ("channels", only)):
+        if ids is None:
+            _warn_once(f"llm.yaml tool_groups.{group}.{label} must be channel ids; the group is turned off")
+            return False
+    here = _channel_ids(channel)
+    if here & excluded:
+        return False
+    return not only or bool(here & only)
+
+
+def _tool_group_settings() -> dict:
+    try:
+        from addons.settings import llm_config
+
+        settings = getattr(llm_config, "tool_groups", None)
+    except Exception as e:
+        _report_async(e, "llm.tools: reading tool_groups")
+        return {}
+    return normalize_tool_groups(settings)
+
+
 def _get_user_permissions(user: discord.Member, guid: discord.Guild) -> dict:
     """Retrieve Discord user permission info from the project's PermissionValidator.
     
@@ -264,6 +419,12 @@ def get_tools(
         1. metadata["target_agent_mode"]
         2. direct attribute on tool instance
         3. attribute on original callable
+
+    Grouping and order (``metadata["tool_group"]``, see ``TOOL_GROUP_ORDER``):
+    - Tools without a group are core tools and are always returned.
+    - Other groups can be limited to some channels by the bot owner (``tool_groups`` in llm.yaml).
+    - The result is sorted by group, then by name, so core tools always come first and a channel
+      gets the same list every time, which keeps the provider's prompt cache valid.
 
     Args:
         user: The Discord user.
@@ -312,11 +473,16 @@ def get_tools(
     # Filter based on user permissions
     perms = _get_user_permissions(user, guid)
     result: List[Any] = []
+    group_settings = _tool_group_settings()
+    channel = getattr(getattr(runtime, "message", None), "channel", None)
 
     for t in collected:
         try:
             # Only accept objects decorated with @tool or instances of BaseTool
             if not (_is_decorated_tool(t) or isinstance(t, BaseTool)):
+                continue
+
+            if not group_allowed(tool_group(t), channel, group_settings):
                 continue
 
             required = getattr(t, "required_permission", None)
@@ -390,6 +556,9 @@ def get_tools(
                 e, f"llm.tools: filtering tool {getattr(t, 'name', repr(t))}"
             )
     
+    # Core tools first, then the other groups in a fixed order (see TOOL_GROUP_ORDER).
+    result = sort_tools(result)
+
     try:
         return cast(List[BaseTool], result)
     except Exception as e:
@@ -397,4 +566,4 @@ def get_tools(
         return result  # type: ignore
 
 
-__all__ = ["get_tools"]
+__all__ = ["get_tools", "group_allowed", "normalize_tool_groups", "sort_tools", "tool_group", "CORE_TOOL_GROUP", "TOOL_GROUP_ORDER"]

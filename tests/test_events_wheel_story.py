@@ -335,6 +335,7 @@ def _events_cog(store: EventStore, channel: FakeChannel) -> EventsCog:
     cog = EventsCog(bot, store=store)
     cog.lang_manager = FakeLang()
     cog._now = lambda: NOW
+    cog.hidden_ids = lambda guild_id: set()
     return cog
 
 

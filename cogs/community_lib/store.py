@@ -7,7 +7,10 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Set, Tuple, Union
+
+# How long a read-only opt-out check waits for a locked database before it counts as unreadable.
+OPTOUT_READ_TIMEOUT = 5.0
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS guild_settings (
@@ -26,7 +29,10 @@ CREATE TABLE IF NOT EXISTS guild_settings (
     weekly_enabled INTEGER NOT NULL DEFAULT 0,
     weekly_channel_id INTEGER,
     weekly_day INTEGER NOT NULL DEFAULT 6,
-    weekly_hour INTEGER NOT NULL DEFAULT 20
+    weekly_hour INTEGER NOT NULL DEFAULT 20,
+    playing_enabled INTEGER NOT NULL DEFAULT 0,
+    playing_channel_id INTEGER,
+    playing_min_players INTEGER NOT NULL DEFAULT 3
 );
 CREATE TABLE IF NOT EXISTS birthdays (
     guild_id INTEGER NOT NULL,
@@ -73,12 +79,37 @@ CREATE TABLE IF NOT EXISTS achievement_checked (
     user_id INTEGER NOT NULL,
     PRIMARY KEY (guild_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS playing_posts (
+    message_id INTEGER PRIMARY KEY,
+    guild_id INTEGER NOT NULL,
+    channel_id INTEGER NOT NULL,
+    game_key TEXT NOT NULL,
+    game TEXT NOT NULL,
+    posted_at REAL NOT NULL,
+    voice_channel_id INTEGER,
+    room_claimed_at REAL,
+    sent INTEGER NOT NULL DEFAULT 1,
+    room_token TEXT,
+    room_used_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_playing_posts_guild ON playing_posts (guild_id, posted_at);
+CREATE TABLE IF NOT EXISTS temp_voice_rooms (
+    channel_id INTEGER PRIMARY KEY,
+    guild_id INTEGER NOT NULL,
+    created_at REAL NOT NULL,
+    post_message_id INTEGER
+);
 CREATE TABLE IF NOT EXISTS birthday_roles (
     guild_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
     role_id INTEGER NOT NULL,
     remove_at REAL NOT NULL,
     PRIMARY KEY (guild_id, user_id, role_id)
+);
+CREATE TABLE IF NOT EXISTS birthday_declines (
+    guild_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, user_id)
 );
 """
 
@@ -92,6 +123,14 @@ _ADDED_COLUMNS = [
     ("guild_settings", "weekly_channel_id", "INTEGER"),
     ("guild_settings", "weekly_day", "INTEGER NOT NULL DEFAULT 6"),
     ("guild_settings", "weekly_hour", "INTEGER NOT NULL DEFAULT 20"),
+    ("guild_settings", "playing_enabled", "INTEGER NOT NULL DEFAULT 0"),
+    ("guild_settings", "playing_channel_id", "INTEGER"),
+    ("guild_settings", "playing_min_players", "INTEGER NOT NULL DEFAULT 3"),
+    ("temp_voice_rooms", "post_message_id", "INTEGER"),
+    ("playing_posts", "room_claimed_at", "REAL"),
+    ("playing_posts", "sent", "INTEGER NOT NULL DEFAULT 1"),
+    ("playing_posts", "room_token", "TEXT"),
+    ("playing_posts", "room_used_at", "REAL"),
 ]
 
 
@@ -118,6 +157,9 @@ class GuildSettings:
         weekly_channel_id: Channel for the recap; None uses the announcement channel.
         weekly_day: Local weekday the recap is posted (0 Monday ... 6 Sunday).
         weekly_hour: Local hour (0-23) the recap is posted.
+        playing_enabled: Whether the bot points out when several members play the same game.
+        playing_channel_id: Where those posts go; None uses the announcement channel.
+        playing_min_players: How many members must play the same game.
     """
 
     guild_id: int
@@ -136,10 +178,19 @@ class GuildSettings:
     weekly_channel_id: Optional[int] = None
     weekly_day: int = 6
     weekly_hour: int = 20
+    playing_enabled: bool = False
+    playing_channel_id: Optional[int] = None
+    playing_min_players: int = 3
 
 
 _COLUMNS = [f.name for f in fields(GuildSettings)]
 _BOOL_COLUMNS = {f.name for f in fields(GuildSettings) if f.type in ("bool", bool)}
+
+
+def _chunks(ids: List[int], size: int = 500) -> Iterator[List[int]]:
+    """``ids`` in pieces small enough to be SQL parameters (SQLite limits how many one statement takes)."""
+    for start in range(0, len(ids), size):
+        yield ids[start:start + size]
 
 
 class CommunityStore:
@@ -155,8 +206,22 @@ class CommunityStore:
         self._ready = False
 
     @contextmanager
-    def _session(self) -> Iterator[sqlite3.Connection]:
-        """Yields a connection (folder and tables created the first time) that commits and closes."""
+    def _session(self, create: bool = True) -> Iterator[sqlite3.Connection]:
+        """Yields a connection (folder and tables created the first time) that commits and closes.
+
+        With ``create=False`` the file is opened read-write but never created or migrated: a missing
+        file or table raises ``sqlite3.Error`` (for writes that must not bring back a lost database).
+        """
+        if not create:
+            with self._lock:
+                uri = f"{self.path.resolve().as_uri()}?mode=rw"
+                connection = sqlite3.connect(uri, uri=True, timeout=10)
+                try:
+                    with connection:
+                        yield connection
+                finally:
+                    connection.close()
+            return
         with self._lock:
             if not self._ready:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -172,12 +237,31 @@ class CommunityStore:
                 connection.close()
 
     # ------------------------------------------------------------ settings
-    def get_settings(self, guild_id: int) -> GuildSettings:
-        """Returns a guild's settings (defaults when it has none)."""
-        with self._session() as connection:
+    def get_settings(self, guild_id: int, create: bool = True) -> GuildSettings:
+        """Returns a guild's settings (defaults when it has none); see ``_session`` for ``create``."""
+        with self._session(create) as connection:
             row = connection.execute(
                 f"SELECT {', '.join(_COLUMNS)} FROM guild_settings WHERE guild_id = ?", (guild_id,)
             ).fetchone()
+        if row is None:
+            return GuildSettings(guild_id=guild_id)
+        values = {name: (bool(value) if name in _BOOL_COLUMNS else value) for name, value in zip(_COLUMNS, row)}
+        return GuildSettings(**values)
+
+    def read_settings(self, guild_id: int) -> GuildSettings:
+        """Like ``get_settings`` but read-only and without the store's lock, for worker threads.
+
+        A slow read there must not make the event loop wait for the lock. Never creates or
+        migrates the file: a missing file or table raises ``sqlite3.Error``.
+        """
+        uri = f"{self.path.resolve().as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=OPTOUT_READ_TIMEOUT)
+        try:
+            row = connection.execute(
+                f"SELECT {', '.join(_COLUMNS)} FROM guild_settings WHERE guild_id = ?", (guild_id,)
+            ).fetchone()
+        finally:
+            connection.close()
         if row is None:
             return GuildSettings(guild_id=guild_id)
         values = {name: (bool(value) if name in _BOOL_COLUMNS else value) for name, value in zip(_COLUMNS, row)}
@@ -212,18 +296,252 @@ class CommunityStore:
             ]
         return [self.get_settings(guild_id) for guild_id in ids]
 
-    # ------------------------------------------------------------ birthdays
-    def set_birthday(self, guild_id: int, user_id: int, month: int, day: int) -> None:
-        """Saves (or replaces) a member's birthday in one guild."""
+    def guilds_with_playing(self) -> List[GuildSettings]:
+        """Returns the settings of every guild with "what everyone is playing" on."""
         with self._session() as connection:
+            ids = [guild_id for (guild_id,) in connection.execute("SELECT guild_id FROM guild_settings WHERE playing_enabled = 1")]
+        return [self.get_settings(guild_id) for guild_id in ids]
+
+    # ------------------------------------------------------------ playing
+    def add_playing_post(
+        self, guild_id: int, channel_id: int, message_id: int, game_key: str, game: str, now: float, sent: bool = True
+    ) -> None:
+        """Records a post about members playing ``game`` (for the cooldown, the daily cap and its button).
+
+        ``sent=False`` records it just before it is sent; :meth:`move_playing_post` marks it sent.
+        """
+        with self._session() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO playing_posts (message_id, guild_id, channel_id, game_key, game, posted_at, sent)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (message_id, guild_id, channel_id, game_key, game, now, int(sent)),
+            )
+
+    def forget_unsent_playing_posts(self, before: float) -> None:
+        """Drops posts recorded before ``before`` for a send that never finished."""
+        with self._session() as connection:
+            connection.execute("DELETE FROM playing_posts WHERE sent = 0 AND posted_at < ?", (before,))
+
+    def last_playing_post(self, guild_id: int, game_key: str) -> Optional[float]:
+        """When the guild last got a post about this game, or None."""
+        with self._session() as connection:
+            row = connection.execute(
+                "SELECT MAX(posted_at) FROM playing_posts WHERE guild_id = ? AND game_key = ?", (guild_id, game_key)
+            ).fetchone()
+        return row[0] if row and row[0] is not None else None
+
+    def count_playing_posts(self, guild_id: int, since: float) -> int:
+        with self._session() as connection:
+            return int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM playing_posts WHERE guild_id = ? AND posted_at >= ?", (guild_id, since)
+                ).fetchone()[0]
+            )
+
+    def playing_post(self, message_id: int) -> Optional[Dict[str, Any]]:
+        """The post with this message, as a dict of its columns, or None."""
+        with self._session() as connection:
+            row = connection.execute(
+                "SELECT message_id, guild_id, channel_id, game_key, game, posted_at, voice_channel_id,"
+                " room_claimed_at, room_used_at FROM playing_posts WHERE message_id = ?",
+                (message_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        keys = (
+            "message_id", "guild_id", "channel_id", "game_key", "game", "posted_at", "voice_channel_id",
+            "room_claimed_at", "room_used_at",
+        )
+        return dict(zip(keys, row))
+
+    def move_playing_post(self, old_message_id: int, message_id: int) -> None:
+        """Gives a post recorded before it was sent its real message id, and marks it sent."""
+        with self._session() as connection:
+            connection.execute(
+                "UPDATE playing_posts SET message_id = ?, sent = 1 WHERE message_id = ?", (message_id, old_message_id)
+            )
+
+    def forget_playing_post(self, message_id: int) -> None:
+        with self._session() as connection:
+            connection.execute("DELETE FROM playing_posts WHERE message_id = ?", (message_id,))
+
+    def claim_playing_post(
+        self, message_id: int, rooms_open: int, max_rooms: int, now: float, token: Optional[str] = None
+    ) -> bool:
+        """Marks a post as opening its room (``voice_channel_id`` -1 until the room is known), under
+        ``token``, which only the press that made the claim knows.
+
+        Returns False when the post already opened one (or is opening one), or when ``rooms_open``
+        plus the rooms other posts of the guild are opening right now reach ``max_rooms``: one
+        statement decides both.
+        """
+        with self._session() as connection:
+            cursor = connection.execute(
+                "UPDATE playing_posts SET voice_channel_id = -1, room_claimed_at = ?, room_token = ?"
+                " WHERE message_id = ? AND voice_channel_id IS NULL AND room_used_at IS NULL AND ? + ("
+                "  SELECT COUNT(*) FROM playing_posts AS other"
+                "  WHERE other.guild_id = playing_posts.guild_id AND other.voice_channel_id = -1"
+                "  AND other.message_id NOT IN (SELECT post_message_id FROM temp_voice_rooms WHERE post_message_id IS NOT NULL)"
+                " ) < ?",
+                (now, token, message_id, rooms_open, max_rooms),
+            )
+            return cursor.rowcount == 1
+
+    def confirm_playing_room(self, message_id: int, token: Optional[str], now: float) -> bool:
+        """Marks a post used for good once its room exists; nothing ever clears this.
+
+        Returns False when the claim is no longer ``token``'s (it was freed and claimed again).
+        """
+        with self._session() as connection:
+            cursor = connection.execute(
+                "UPDATE playing_posts SET room_used_at = ?"
+                " WHERE message_id = ? AND room_token IS ? AND voice_channel_id = -1 AND room_used_at IS NULL",
+                (now, message_id, token),
+            )
+            return cursor.rowcount == 1
+
+    def open_claims(self, guild_id: int) -> List[Tuple[int, str, Optional[float], Optional[float]]]:
+        """``(message_id, token, claimed_at, used_at)`` of the guild's claims whose room is not on record.
+
+        A claim that was marked used (its room exists) but whose room could not be recorded is
+        included: its token is all that is left to find the room by.
+        """
+        with self._session() as connection:
+            return connection.execute(
+                "SELECT message_id, room_token, room_claimed_at, room_used_at FROM playing_posts"
+                " WHERE guild_id = ? AND voice_channel_id = -1 AND room_token IS NOT NULL",
+                (guild_id,),
+            ).fetchall()
+
+    def mark_playing_post_sent(self, message_id: int) -> None:
+        with self._session() as connection:
+            connection.execute("UPDATE playing_posts SET sent = 1 WHERE message_id = ?", (message_id,))
+
+    def release_stale_claims(self, before: float, keep: Iterable[int] = (), guild_ids: Optional[Iterable[int]] = None) -> None:
+        """Frees claims made before ``before`` (or at an unknown time) that never got a room, except
+        the posts in ``keep``; with ``guild_ids``, only the claims of those servers."""
+        keep = set(keep)
+        only = None if guild_ids is None else set(guild_ids)
+        with self._session() as connection:
+            stale = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT message_id, guild_id FROM playing_posts"
+                    " WHERE voice_channel_id = -1 AND (room_claimed_at IS NULL OR room_claimed_at < ?)"
+                    " AND message_id NOT IN (SELECT post_message_id FROM temp_voice_rooms WHERE post_message_id IS NOT NULL)",
+                    (before,),
+                )
+                if row[0] not in keep and (only is None or row[1] in only)
+            ]
+            for chunk in _chunks(stale):
+                connection.execute(
+                    "UPDATE playing_posts SET voice_channel_id = NULL, room_token = NULL"
+                    f" WHERE message_id IN ({','.join('?' * len(chunk))})",
+                    chunk,
+                )
+
+    def forget_claim_tokens(self, message_ids: Iterable[int]) -> None:
+        """Takes the token away from used claims whose room was closed without the post ever pointing
+        to it, so that no channel can be taken for that room afterwards."""
+        for chunk in _chunks(list(message_ids)):
+            with self._session() as connection:
+                connection.execute(
+                    "UPDATE playing_posts SET room_token = NULL"
+                    f" WHERE voice_channel_id = -1 AND room_used_at IS NOT NULL AND message_id IN ({','.join('?' * len(chunk))})",
+                    chunk,
+                )
+
+    def post_of_temp_voice(self, channel_id: int) -> Optional[int]:
+        """The post a recorded room was opened from, or None."""
+        with self._session() as connection:
+            row = connection.execute("SELECT post_message_id FROM temp_voice_rooms WHERE channel_id = ?", (channel_id,)).fetchone()
+        return row[0] if row else None
+
+    def playing_rooms(self, guild_id: Optional[int] = None) -> List[Tuple[int, int, float]]:
+        """``(guild_id, channel_id, claimed_at)`` for every room a post points to."""
+        query = "SELECT guild_id, voice_channel_id, COALESCE(room_claimed_at, posted_at) FROM playing_posts WHERE voice_channel_id > 0"
+        with self._session() as connection:
+            if guild_id is None:
+                return connection.execute(query).fetchall()
+            return connection.execute(query + " AND guild_id = ?", (guild_id,)).fetchall()
+
+    def release_playing_post(self, message_id: int, token: Optional[str] = None) -> None:
+        """Takes back ``token``'s claim, whose room could not be created (or was taken back)."""
+        with self._session() as connection:
+            connection.execute(
+                "UPDATE playing_posts SET voice_channel_id = NULL, room_token = NULL"
+                " WHERE message_id = ? AND voice_channel_id = -1 AND room_token IS ?",
+                (message_id, token),
+            )
+
+    def set_playing_voice(self, message_id: int, voice_channel_id: int) -> None:
+        with self._session() as connection:
+            connection.execute(
+                "UPDATE playing_posts SET voice_channel_id = ? WHERE message_id = ?", (voice_channel_id, message_id)
+            )
+
+    def forget_playing_posts(self, before: float, keep: Iterable[int] = ()) -> None:
+        """Drops posts older than ``before`` (they no longer count for anything), except the posts in
+        ``keep`` and those with a claim that is not closed: their room still has to be found or deleted."""
+        keep = set(keep)
+        with self._session() as connection:
+            old = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT message_id FROM playing_posts WHERE posted_at < ?"
+                    " AND NOT (voice_channel_id = -1 AND room_token IS NOT NULL)",
+                    (before,),
+                )
+                if row[0] not in keep
+            ]
+            for chunk in _chunks(old):
+                connection.execute(f"DELETE FROM playing_posts WHERE message_id IN ({','.join('?' * len(chunk))})", chunk)
+
+    def add_temp_voice(self, guild_id: int, channel_id: int, now: float, post_message_id: Optional[int] = None) -> None:
+        """Remembers a voice room the bot made (and the post it was opened from), so it is deleted once empty."""
+        with self._session() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO temp_voice_rooms (channel_id, guild_id, created_at, post_message_id) VALUES (?, ?, ?, ?)",
+                (channel_id, guild_id, now, post_message_id),
+            )
+
+    def temp_voice_for_post(self, post_message_id: int) -> Optional[int]:
+        """The recorded room a post opened, or None."""
+        with self._session() as connection:
+            row = connection.execute(
+                "SELECT channel_id FROM temp_voice_rooms WHERE post_message_id = ?", (post_message_id,)
+            ).fetchone()
+        return row[0] if row else None
+
+    def temp_voice_rooms(self, guild_id: Optional[int] = None) -> List[Tuple[int, int, float]]:
+        """Returns ``(guild_id, channel_id, created_at)`` for the bot's voice rooms (of one guild, if given)."""
+        with self._session() as connection:
+            if guild_id is None:
+                return connection.execute("SELECT guild_id, channel_id, created_at FROM temp_voice_rooms").fetchall()
+            return connection.execute(
+                "SELECT guild_id, channel_id, created_at FROM temp_voice_rooms WHERE guild_id = ?", (guild_id,)
+            ).fetchall()
+
+    def is_temp_voice(self, channel_id: int) -> bool:
+        with self._session() as connection:
+            return connection.execute("SELECT 1 FROM temp_voice_rooms WHERE channel_id = ?", (channel_id,)).fetchone() is not None
+
+    def forget_temp_voice(self, channel_id: int) -> None:
+        with self._session() as connection:
+            connection.execute("DELETE FROM temp_voice_rooms WHERE channel_id = ?", (channel_id,))
+
+    # ------------------------------------------------------------ birthdays
+    def set_birthday(self, guild_id: int, user_id: int, month: int, day: int, create: bool = True) -> None:
+        """Saves (or replaces) a member's birthday in one guild; see ``_session`` for ``create``."""
+        with self._session(create) as connection:
             connection.execute(
                 "INSERT OR REPLACE INTO birthdays (guild_id, user_id, month, day) VALUES (?, ?, ?, ?)",
                 (guild_id, user_id, month, day),
             )
 
-    def remove_birthday(self, guild_id: int, user_id: int) -> bool:
+    def remove_birthday(self, guild_id: int, user_id: int, create: bool = True) -> bool:
         """Deletes a member's birthday in one guild; returns whether one was saved."""
-        with self._session() as connection:
+        with self._session(create) as connection:
             cursor = connection.execute("DELETE FROM birthdays WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
             return cursor.rowcount > 0
 
@@ -235,6 +553,19 @@ class CommunityStore:
             ).fetchone()
         return (row[0], row[1]) if row else None
 
+    def read_birthday(self, guild_id: int, user_id: int) -> Optional[Tuple[int, int]]:
+        """Like ``get_birthday`` but read-only: a missing file or table raises ``sqlite3.Error``
+        instead of being created (a new empty file would read as "nobody opted out")."""
+        uri = f"{self.path.resolve().as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=OPTOUT_READ_TIMEOUT)
+        try:
+            row = connection.execute(
+                "SELECT month, day FROM birthdays WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
+            ).fetchone()
+        finally:
+            connection.close()
+        return (row[0], row[1]) if row else None
+
     def birthdays(self, guild_id: int) -> List[Tuple[int, int, int]]:
         """Returns every ``(user_id, month, day)`` saved in a guild."""
         with self._session() as connection:
@@ -243,6 +574,24 @@ class CommunityStore:
             ).fetchall()
 
     # ------------------------------------------------------------ job runs
+    def block_birthday_proposals(self, guild_id: int, user_id: int, blocked: bool, create: bool = True) -> None:
+        """Turns away (or allows again) birthdays other people propose for a member through the AI."""
+        with self._session(create) as connection:
+            if blocked:
+                connection.execute(
+                    "INSERT OR IGNORE INTO birthday_declines (guild_id, user_id) VALUES (?, ?)", (guild_id, user_id)
+                )
+            else:
+                connection.execute("DELETE FROM birthday_declines WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
+
+    def birthday_proposals_blocked(self, guild_id: int, user_id: int, create: bool = True) -> bool:
+        """Whether a member declined a proposed birthday and has not asked for one since."""
+        with self._session(create) as connection:
+            row = connection.execute(
+                "SELECT 1 FROM birthday_declines WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
+            ).fetchone()
+            return row is not None
+
     def has_run(self, guild_id: int, job: str, period: str) -> bool:
         """Whether a job was already marked done for a period (see ``claim_run``)."""
         with self._session() as connection:
@@ -281,6 +630,20 @@ class CommunityStore:
 
     def is_opted_out(self, guild_id: int, user_id: int) -> bool:
         return user_id in self.optouts(guild_id)
+
+    def read_optouts(self, guild_id: int) -> Set[int]:
+        """Like ``optouts`` but read-only, for privacy checks that must fail closed.
+
+        Never creates or migrates the file: a missing file, a missing ``optouts`` table or a file that is not
+        a database raises ``sqlite3.Error`` instead of reading as "nobody opted out".
+        """
+        uri = f"{self.path.resolve().as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=OPTOUT_READ_TIMEOUT)
+        try:
+            rows = connection.execute("SELECT user_id FROM optouts WHERE guild_id = ?", (guild_id,)).fetchall()
+        finally:
+            connection.close()
+        return {user_id for (user_id,) in rows}
 
     # ------------------------------------------------------------ achievements
     def unlock(self, guild_id: int, user_id: int, achievement_ids: List[str], now: float) -> List[str]:
@@ -394,3 +757,9 @@ def _add_missing_columns(connection: sqlite3.Connection) -> None:
         existing = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
         if column not in existing:
             connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            if (table, column) == ("playing_posts", "room_used_at"):
+                # Posts that already opened a room (as far as an older file shows) stay used.
+                connection.execute(
+                    "UPDATE playing_posts SET room_used_at = posted_at WHERE voice_channel_id IS NOT NULL"
+                    " OR message_id IN (SELECT post_message_id FROM temp_voice_rooms WHERE post_message_id IS NOT NULL)"
+                )

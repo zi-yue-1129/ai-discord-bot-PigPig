@@ -405,3 +405,27 @@ async def test_full_tool_loading():
 - `threading`: Thread-safe caching
 - `function.func`: Centralized error reporting
 - `llm.schema.OrchestratorRequest`: Runtime context type
+## Tool Groups
+
+Tools can name a group in their metadata (`metadata={"tool_group": "events"}`). A tool without one is a core tool.
+
+- **Core tools** are always loaded.
+- **Other groups** (`music`, `community`, `events`, `fun`, `games`, `playing`) are loaded in every channel unless the bot owner limits them in `llm.yaml`:
+
+  ```yaml
+  tool_groups:
+    games:
+      channels: [123456789012345678]   # only here (a thread follows its parent channel)
+    music:
+      exclude_channels: [234567890123456789]
+    fun:
+      enabled: false                   # nowhere
+  ```
+
+- `channels` and `exclude_channels` take a list of channel ids or a single id. An empty `channels: []` means no limit. `exclude_channels` wins over `channels`.
+- `enabled` accepts `true/false`, `yes/no`, `on/off` and `1/0`.
+- Group names ignore case and surrounding spaces (`Games :` is `games`). Unknown names are logged once as a warning (most likely a typo).
+- Settings that cannot be read (a non-mapping group, `enabled: maybe`, `channels: abc`) turn that group **off** and log a warning once, since the owner meant to limit it. A `tool_groups` value that is not a mapping is ignored with a warning.
+- A tool class whose cog or feature is missing returns no tools, so its group is simply absent.
+
+`get_tools()` sorts the result by group (core first, then `TOOL_GROUP_ORDER`, unknown groups last by name), then by tool name. The same channel therefore always gets the same tool list in the same order, and the core tools are always its prefix. Model providers cache the prompt prefix, so a stable list lets them reuse it; never choose tools per message (by keywords, for example), since that changes the list on every call.
