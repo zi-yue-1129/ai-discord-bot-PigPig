@@ -252,5 +252,20 @@
     "validation": {
         "module_empty": "モジュール名は空にできません。",
         "prompt_empty": "プロンプト内容は空にできません。"
+    },
+    "ai_confirm": {
+        "prompt": "{member}、{scope}の性格を次のように変更しますか？",
+        "scope_channel": "このチャンネル",
+        "scope_server": "サーバー全体",
+        "saved": "性格を更新しました。",
+        "failed": "性格を保存できませんでした。何も変わっていません。",
+        "no_permission": "この性格を変更する権限がなくなりました。何も変わっていません。",
+        "ask_confirm": "確認",
+        "ask_cancel": "キャンセル",
+        "ask_not_yours": "質問されたメンバーだけが回答できます。",
+        "ask_done": "この質問にはすでに回答済みです。",
+        "ask_cancelled": "キャンセルしました。何も変わっていません。",
+        "ask_expired": "時間内に回答がなかったため、何も変わっていません。",
+        "ask_replaced": "新しい提案に置き換えられました。何も変わっていません。"
     }
 }

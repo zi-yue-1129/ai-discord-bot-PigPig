@@ -18,6 +18,14 @@ rate_limits:
   image:               # image generation, from /generate_image or from the AI
     max_requests: 20
     per_seconds: 86400
+  ask_others:          # asking another member to accept a reminder or a memory someone set for them (pings them)
+    max_requests: 3
+    per_seconds: 3600
+
+# Reminders (/remind and the AI's set_reminder).
+reminders:
+  max_pending_per_user: 20     # pending reminders one member may have set
+  max_pending_from_others: 3   # accepted reminders others may have pending for one member (0: only for yourself)
 
 # Unprompted replies in /auto_response channels.
 auto_response:
