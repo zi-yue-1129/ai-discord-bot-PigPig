@@ -41,6 +41,7 @@
             "prompt": "{target}，{asker} 想讓我記住關於你的這件事：{memory}\n要存進你的個人記憶嗎？",
             "sent": "已請對方確認，對方按下接受後才會記住。",
             "too_often": "你最近已經請太多人確認了，請 {wait} 秒後再試。",
+            "unavailable": "只能向這個伺服器的成員提議記住與他們有關的事。",
             "saved": "已記住。",
             "ask_confirm": "接受",
             "ask_cancel": "拒絕",

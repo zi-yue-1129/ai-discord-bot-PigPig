@@ -41,6 +41,7 @@
             "prompt": "{target}，{asker} 想让我记住关于你的这件事：{memory}\n要存进你的个人记忆吗？",
             "sent": "已请对方确认，对方按下接受后才会记住。",
             "too_often": "你最近已经请太多人确认了，请 {wait} 秒后再试。",
+            "unavailable": "只能向这个服务器的成员提议记住与他们有关的事。",
             "saved": "已记住。",
             "ask_confirm": "接受",
             "ask_cancel": "拒绝",

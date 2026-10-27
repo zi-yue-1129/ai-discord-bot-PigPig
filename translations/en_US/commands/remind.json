@@ -18,6 +18,7 @@
         "list_from": "(set by {user})",
         "others_off": "Reminders can only be set for yourself here.",
         "others_not_member": "Reminders can only be set for members of this server.",
+        "others_unavailable": "Reminders can only be set for members of this server.",
         "others_limit": "This member already has {limit} reminders set by others. Wait until one is sent or cancelled.",
         "ask_prompt": "{target}, {creator} would like to remind you at {time}: {message}",
         "ask_sent": "Asked {user} to accept; the reminder is set only once they do.",

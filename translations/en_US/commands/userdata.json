@@ -41,6 +41,7 @@
             "prompt": "{target}, {asker} would like me to remember this about you: {memory}\nSave it to your personal memory?",
             "sent": "Asked them to accept; it is remembered only once they do.",
             "too_often": "You have asked people to accept too often lately. Try again in {wait}s.",
+            "unavailable": "A memory about someone else can only be proposed to a member of this server.",
             "saved": "Remembered.",
             "ask_confirm": "Accept",
             "ask_cancel": "Decline",

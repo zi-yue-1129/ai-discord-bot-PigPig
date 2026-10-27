@@ -339,8 +339,18 @@ class _Dm:
         self.sent.append({"content": content, **kwargs})
 
 
-def _make_cog(tmp_path: Path, channel: Optional[_Channel], dm: Optional[_Dm] = None) -> ReminderCog:
+def _make_cog(
+    tmp_path: Path, channel: Optional[_Channel], dm: Optional[_Dm] = None, hidden: Optional[set] = frozenset()
+) -> ReminderCog:
+    """A reminder cog. ``hidden`` is the /leaderboard optout list (None: it cannot be read)."""
     dm = dm or _Dm()
+
+    def read_optouts(guild_id: int) -> set:
+        if hidden is None:
+            raise sqlite3.OperationalError("database is locked")
+        return set(hidden)
+
+    leaderboard = SimpleNamespace(store=SimpleNamespace(read_optouts=read_optouts))
     users = {
         1: SimpleNamespace(id=1, display_name="Al", mention="<@1>", send=dm.send),
         2: SimpleNamespace(id=2, display_name="Bo", mention="<@2>", send=dm.send),
@@ -351,6 +361,7 @@ def _make_cog(tmp_path: Path, channel: Optional[_Channel], dm: Optional[_Dm] = N
 
     bot = SimpleNamespace(
         user=SimpleNamespace(id=BOT_ID),
+        get_cog=lambda name: leaderboard if name == "LeaderboardCog" else None,
         get_channel=lambda channel_id: channel if channel_id == 70 else None,
         get_user=lambda user_id: users.get(user_id),
         fetch_user=fetch_user,
@@ -560,6 +571,8 @@ async def test_too_many_pending_reminders_are_refused(tmp_path: Path) -> None:
 
 
 class _Guild:
+    id = 7
+
     def __init__(self, member_ids: List[int]) -> None:
         self.member_ids = member_ids
 
@@ -626,6 +639,35 @@ async def test_a_repeating_reminder_for_yourself_needs_no_question(tmp_path: Pat
 
     assert reply.startswith("commands/remind/responses/confirm_setup") and asks == []
     assert cog.store.pending()[0].repeat == "daily"
+
+
+@pytest.mark.asyncio
+async def test_a_hidden_member_cannot_be_asked_or_pinged_by_a_reminder(tmp_path: Path, asks: List[tuple]) -> None:
+    cog = _make_cog(tmp_path, _Channel(), hidden={2})
+
+    reply = await _set_for(cog, _guild_channel([1, 2]), creator=1, target=2)
+
+    assert reply.startswith("commands/remind/responses/others_unavailable")
+    assert asks == [] and cog.store.pending() == []
+
+
+@pytest.mark.asyncio
+async def test_nobody_is_asked_while_the_opt_out_list_is_unreadable(tmp_path: Path, asks: List[tuple]) -> None:
+    cog = _make_cog(tmp_path, _Channel(), hidden=None)
+
+    reply = await _set_for(cog, _guild_channel([1, 2]), creator=1, target=2)
+
+    assert reply.startswith("commands/remind/responses/others_unavailable")
+    assert asks == [] and cog.store.pending() == []
+
+
+@pytest.mark.asyncio
+async def test_a_hidden_member_can_still_remind_themselves(tmp_path: Path, asks: List[tuple]) -> None:
+    cog = _make_cog(tmp_path, _Channel(), hidden={2})
+
+    reply = await _set_for(cog, _guild_channel([2]), creator=2, target=2)
+
+    assert reply.startswith("commands/remind/responses/confirm_setup") and asks == []
 
 
 @pytest.mark.asyncio

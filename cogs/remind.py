@@ -34,6 +34,7 @@ from .remind_lib.store import REPEAT_CHOICES, Reminder, ReminderStore, next_occu
 from function import func
 from addons.confirm import ConfirmView, ask
 from addons.rate_limiter import format_wait
+from llm.memory.privacy import hidden_in_guild_async
 from addons.settings import base_config
 from addons.logging import get_logger
 from llm.reminder_writer import LATE_THRESHOLD_SECONDS, ReminderRequest, compose_reminder
@@ -335,6 +336,10 @@ class ReminderCog(commands.Cog):
         problem = self._problem_for_others(channel, creator_id, target_user)
         if problem is not None:
             return self._limit_text(guild_id, problem)
+        # A member who hid with /leaderboard optout is never pinged or named by third parties.
+        hidden = await hidden_in_guild_async(self.bot, int(guild_id))
+        if hidden is None or target_user.id in hidden:
+            return self._t(guild_id, "others_unavailable")
         # Each question pings the member, so how often one person may ask is limited (owner's rate_limits).
         limiter = getattr(self.bot, "rate_limiter", None)
         if limiter is not None:

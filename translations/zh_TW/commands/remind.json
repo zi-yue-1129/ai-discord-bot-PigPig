@@ -18,6 +18,7 @@
         "list_from": "（{user} 設的）",
         "others_off": "這個機器人只能替自己設提醒。",
         "others_not_member": "只能替這個伺服器的成員設提醒。",
+        "others_unavailable": "只能替這個伺服器的成員設提醒。",
         "others_limit": "這位成員已經有 {limit} 個別人設的提醒了，請等其中一個送出或被取消。",
         "ask_prompt": "{target}，{creator} 想在 {time} 提醒你：{message}",
         "ask_sent": "已請 {user} 確認，對方按下接受後提醒才會設定。",

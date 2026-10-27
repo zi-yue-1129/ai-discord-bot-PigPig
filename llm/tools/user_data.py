@@ -53,6 +53,8 @@ ASK_PREVIEW_CHARS = 500
 _ASK_FALLBACK = {
     "prompt": "{target}, {asker} would like me to remember this about you: {memory}\nSave it to your personal memory?",
     "too_often": "You have asked people to accept too often lately. Try again in {wait}s.",
+    "unavailable": "A memory about someone else can only be proposed to a member of this server.",
+    "saved": "Remembered.",
     "ask_confirm": "Accept",
     "ask_cancel": "Decline",
     "ask_not_yours": "Only the member being asked can answer.",
@@ -162,10 +164,13 @@ class UserMemoryTools:
             guild = getattr(message, "guild", None)
             channel = getattr(message, "channel", None)
             target = guild.get_member(target_id) if guild is not None else None
-            if target is None or channel is None:
-                return "Refused: a memory about someone else can only be proposed to a member of this server."
+            guild_id = str(guild.id) if guild is not None else "0"
+            # A member who hid with /leaderboard optout is never pinged or named by third parties, and
+            # the refusal reads exactly like "not a member" so it does not reveal who hid.
+            hidden = await hidden_in_guild_async(get_bot(), guild.id) if guild is not None else None
+            if target is None or channel is None or hidden is None or target_id in hidden:
+                return f"Refused: {_ask_text(guild_id, 'unavailable')}"
             asker_id = message.author.id
-            guild_id = str(guild.id)
             # Each question pings the member, so how often one person may ask is limited (owner's rate_limits).
             limiter = getattr(get_bot(), "rate_limiter", None)
             if limiter is not None:
@@ -180,6 +185,7 @@ class UserMemoryTools:
                 result = await cog._save_user_data(
                     str(target_id), getattr(target, "name", f"User_{target_id}"), memory, message,
                     nickname=getattr(target, "display_name", None),
+                    share_result=False,
                 )
                 await _invalidate_procedural_cache(target_id)
                 return f"<@{target_id}> {result}"
