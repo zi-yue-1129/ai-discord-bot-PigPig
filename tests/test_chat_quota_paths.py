@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any, List
 
 import pytest
 
+import cogs.story_manager as story_module
 from addons.rate_limiter import LimitRule, RateLimiter
 from bot import PigPig
+from cogs.story_manager import StoryManagerCog
+from cogs.summarizer import SummarizerCog
 
 BOT_ID = 900
 
@@ -146,8 +150,6 @@ async def test_story_messages_count_against_the_quota() -> None:
 
 @pytest.mark.asyncio
 async def test_summarize_counts_against_the_quota() -> None:
-    from cogs.summarizer import SummarizerCog
-
     bot = SimpleNamespace(rate_limiter=RateLimiter({"chat": LimitRule(1, 60)}))
     cog = SummarizerCog.__new__(SummarizerCog)
     cog.bot = bot
@@ -187,8 +189,6 @@ class _Turns:
 
 
 def _story_cog(turns: _Turns) -> Any:
-    from cogs.story_manager import StoryManagerCog
-
     async def no_recap(message: Any) -> None:
         return None
 
@@ -208,8 +208,6 @@ def _numbered(channel: _Channel, message_id: int) -> _Message:
 
 @pytest.mark.asyncio
 async def test_story_turns_in_one_channel_run_one_at_a_time_in_order() -> None:
-    import asyncio
-
     turns = _Turns()
     turns.release[1] = asyncio.Event()
     cog = _story_cog(turns)
@@ -228,10 +226,6 @@ async def test_story_turns_in_one_channel_run_one_at_a_time_in_order() -> None:
 
 @pytest.mark.asyncio
 async def test_a_turn_stuck_in_a_channel_does_not_hold_the_next_ones_forever(monkeypatch: pytest.MonkeyPatch) -> None:
-    import asyncio
-
-    import cogs.story_manager as story_module
-
     monkeypatch.setattr(story_module, "STORY_QUEUE_WAIT_SECONDS", 0.05)
     turns = _Turns()
     turns.release[1] = asyncio.Event()
@@ -252,8 +246,6 @@ async def test_a_turn_stuck_in_a_channel_does_not_hold_the_next_ones_forever(mon
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [None, RuntimeError("history unreadable")], ids=["no-messages", "history-error"])
 async def test_a_summary_that_produces_nothing_gives_the_quota_back(failure: Any) -> None:
-    from cogs.summarizer import SummarizerCog
-
     limiter = RateLimiter({"chat": LimitRule(1, 60)})
     leaderboard = SimpleNamespace(store=SimpleNamespace(read_optouts=lambda guild_id: set()))
     bot = SimpleNamespace(rate_limiter=limiter, get_cog=lambda name: leaderboard if name == "LeaderboardCog" else None)
