@@ -126,6 +126,16 @@ model_priorities:
       - gemini-2.5-pro
 google_search_agent: gemini-3.1-flash-lite-preview
 vllm_url: "http://127.0.0.1:8181"
+
+# Other OpenAI-compatible servers. A model string "<name>:<model>" in model_priorities
+# (for example "steak:qwen") is served by the endpoint called <name>. The API key is read
+# from the environment variable named by api_key_env (put it in .env, not in this file).
+# A name may not be a built-in provider ("openai", "anthropic", "vllm", ...); the bot will not
+# start, and the dashboard will not save, a section with a missing or malformed field.
+# openai_endpoints:
+#   steak:
+#     base_url: "https://llm.example.com/v1"
+#     api_key_env: "STEAK_LLM_API_KEY"
 llm_call_timeout: 180
 # Most tokens one chat reply call may generate, reasoning included. A model stuck in a loop is
 # stopped by the server at this size. 0 removes the cap.

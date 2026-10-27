@@ -166,6 +166,16 @@ async def write_config(
             detail=f"Unknown keys for config '{file}': {sorted(unknown)}. Allowed: {sorted(allowed)}",
         )
 
+    if file == "llm" and "openai_endpoints" in config_data:
+        # The bot refuses to start on a malformed section, so refuse to save one. Imported here
+        # because the settings module is replaced wholesale by some dashboard tests.
+        from addons.settings import parse_openai_endpoints
+
+        try:
+            parse_openai_endpoints(config_data["openai_endpoints"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     path = _config_path(file)
 
     # Merge: read existing config, overwrite only the submitted top-level keys.
