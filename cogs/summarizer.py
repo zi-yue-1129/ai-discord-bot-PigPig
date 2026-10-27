@@ -3,6 +3,7 @@ import re
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, Optional, Set
+from addons.rate_limiter import format_wait
 from addons.logging import get_logger
 
 import discord
@@ -91,8 +92,21 @@ class SummarizerCog(commands.Cog):
             if localized_desc and localized_desc != "summarize":
                 self.summarize.description = localized_desc
 
+        # A summary is a model call over many messages, so it counts like a chat message.
+        limiter = getattr(self.bot, "rate_limiter", None)
+        retry_after, use = limiter.take("chat", interaction.user.id, interaction.guild_id) if limiter else (0, None)
+        if retry_after:
+            wait = format_wait(retry_after)
+            text = (
+                self.lang_manager.translate(guild_id, "errors", "rate_limited", retry_after=wait)
+                if self.lang_manager else f"⏳ You're going a bit fast. Try again in {wait}s."
+            )
+            await interaction.response.send_message(text, ephemeral=True)
+            return
+
         await interaction.response.defer(ephemeral=only_me, thinking=True)
         limit = max(1, min(limit, MAX_SUMMARY_MESSAGES))
+        summary_sent = False
 
         try:
             log.info(f"Starting message fetch for channel {interaction.channel.name if hasattr(interaction.channel, 'name') else 'unknown'}, limit: {limit}.")
@@ -210,6 +224,7 @@ class SummarizerCog(commands.Cog):
                 
             main_embed.set_footer(text=footer_text)
             await interaction.followup.send(embed=main_embed)
+            summary_sent = True
             
             if len(summary_chunks) > 1:
                 log.info(f"Summary long, splitting into {len(summary_chunks)} messages.")
@@ -241,6 +256,10 @@ class SummarizerCog(commands.Cog):
             error_kind = type(e).__name__
             error_text = self.lang_manager.translate(guild_id, "commands", "summarize", "responses", "error", error=error_kind) if self.lang_manager else f"Error: {error_kind}"
             await interaction.followup.send(error_text, ephemeral=True)
+        finally:
+            if not summary_sent and limiter is not None:
+                # No summary was produced (empty channel, timeout, error), so it does not cost a use.
+                limiter.refund(use)
 
 
 async def setup(bot: commands.Bot):

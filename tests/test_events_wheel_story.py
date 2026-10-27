@@ -224,7 +224,7 @@ async def test_food_wheel_charges_the_search_and_ends_on_the_restaurant_card(mon
     search = SimpleNamespace(db=db, recommender=recommender, provider=Provider())
     bot = SimpleNamespace(
         get_cog=lambda name: search if name == "InternetSearchCog" else None,
-        rate_limiter=SimpleNamespace(hit=lambda bucket, user_id: hits.append(bucket) or 0),
+        rate_limiter=SimpleNamespace(hit=lambda bucket, user_id, guild_id=None: hits.append(bucket) or 0),
     )
     cog = WheelCog(bot)
     cog.lang_manager = FakeLang()
@@ -244,7 +244,7 @@ async def test_food_wheel_charges_the_search_and_ends_on_the_restaurant_card(mon
 async def test_food_wheel_respects_the_quota() -> None:
     bot = SimpleNamespace(
         get_cog=lambda name: SimpleNamespace(db=1, recommender=1, provider=1),
-        rate_limiter=SimpleNamespace(hit=lambda bucket, user_id: 12.5),
+        rate_limiter=SimpleNamespace(hit=lambda bucket, user_id, guild_id=None: 12.5),
     )
     cog = WheelCog(bot)
     cog.lang_manager = FakeLang()
@@ -569,7 +569,7 @@ async def test_the_daily_recap_is_posted_once_on_a_new_day(monkeypatch: pytest.M
     monkeypatch.setitem(StoryManagerCog._recap_text.__globals__, "write_recap", fake_write)
     hits: list = []
     cog = _story_cog(
-        _instance(), orchestrator=object(), rate_limiter=SimpleNamespace(hit=lambda bucket, user_id: hits.append(user_id) or 0)
+        _instance(), orchestrator=object(), rate_limiter=SimpleNamespace(hit=lambda bucket, user_id, guild_id=None: hits.append(user_id) or 0)
     )
     channel = FakeChannel()
     channel.history_messages = [
@@ -602,7 +602,7 @@ async def test_a_recap_falls_back_to_the_saved_summary_when_the_quota_is_used_up
         raise QuotaExhausted(30)
 
     monkeypatch.setitem(StoryManagerCog._recap_text.__globals__, "write_recap", out_of_quota)
-    cog = _story_cog(_instance(), orchestrator=object(), rate_limiter=SimpleNamespace(hit=lambda b, u: 30))
+    cog = _story_cog(_instance(), orchestrator=object(), rate_limiter=SimpleNamespace(hit=lambda b, u, g=None: 30))
     interaction = FakeInteraction()
 
     await StoryManagerCog.recap.callback(cog, interaction)
@@ -643,7 +643,7 @@ async def test_a_character_card_is_drawn_and_a_private_one_is_shown_only_to_its_
     characters = {"c1": _character(), "c2": _character(character_id="c2", name="影", is_public=False)}
     cog = _story_cog(
         characters=characters, cogs={"ImageGenerationCog": images},
-        rate_limiter=SimpleNamespace(hit=lambda bucket, user_id: hits.append(bucket) or 0),
+        rate_limiter=SimpleNamespace(hit=lambda bucket, user_id, guild_id=None: hits.append(bucket) or 0),
     )
 
     public = FakeInteraction(user_id=7)

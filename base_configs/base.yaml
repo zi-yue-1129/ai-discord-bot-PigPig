@@ -12,9 +12,15 @@ version: "v3.7.0"
 # Each limit allows max_requests uses per per_seconds seconds; max_requests: 0 turns it off.
 rate_limits:
   exempt_owner: true   # the bot owner (BOT_OWNER_ID) is never limited
-  chat:                # AI replies (mentions, replies to the bot, auto-response channels)
+  chat:                # AI replies (mentions, replies to the bot, auto-response channels, story turns, /summarize)
     max_requests: 10
     per_seconds: 60
+  chat_daily:          # also counted with every chat use: one member over a day
+    max_requests: 200
+    per_seconds: 86400
+  chat_server:         # also counted with every chat use: a whole server, all members together
+    max_requests: 300
+    per_seconds: 3600
   image:               # image generation, from /generate_image or from the AI
     max_requests: 20
     per_seconds: 86400
