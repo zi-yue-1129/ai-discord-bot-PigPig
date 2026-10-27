@@ -5,6 +5,7 @@ from addons.logging import get_logger
 import os
 import re
 from typing import Any, Optional
+from urllib.parse import urlsplit
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -176,6 +177,25 @@ _ENDPOINT_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 _ENV_VARIABLE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+def _is_dialable_http_url(url: str) -> bool:
+    """Tells whether an HTTP client could connect to ``url``.
+
+    Args:
+        url: A configured ``base_url``.
+
+    Returns:
+        True for an http(s) URL with a host, no whitespace and a numeric port (if any).
+    """
+    if any(character.isspace() for character in url):
+        return False
+    try:
+        parts = urlsplit(url)
+        parts.port  # Raises ValueError for a non-numeric or out-of-range port.
+    except ValueError:
+        return False
+    return parts.scheme in ("http", "https") and bool(parts.hostname)
+
+
 def parse_openai_endpoints(raw: Any) -> dict[str, dict[str, str]]:
     """Validates the ``openai_endpoints`` section of llm.yaml.
 
@@ -198,7 +218,7 @@ def parse_openai_endpoints(raw: Any) -> dict[str, dict[str, str]]:
         raise ValueError(f"llm.yaml openai_endpoints must be a mapping of names, not {type(raw).__name__}")
     endpoints: dict[str, dict[str, str]] = {}
     for name, entry in raw.items():
-        if not isinstance(name, str) or not _ENDPOINT_NAME_PATTERN.match(name):
+        if not isinstance(name, str) or not _ENDPOINT_NAME_PATTERN.fullmatch(name):
             raise ValueError(
                 f"llm.yaml openai_endpoints name {name!r} must be letters, digits, '_' or '-' and start with a letter"
             )
@@ -207,10 +227,12 @@ def parse_openai_endpoints(raw: Any) -> dict[str, dict[str, str]]:
         if not isinstance(entry, dict):
             raise ValueError(f"llm.yaml openai_endpoints '{name}' must be a mapping with base_url and api_key_env")
         base_url = entry.get("base_url")
-        if not isinstance(base_url, str) or not re.match(r"^https?://[^/\s]+", base_url):
-            raise ValueError(f"llm.yaml openai_endpoints '{name}' needs a base_url starting with http:// or https://")
+        if not isinstance(base_url, str) or not _is_dialable_http_url(base_url):
+            raise ValueError(
+                f"llm.yaml openai_endpoints '{name}' needs a base_url like https://host[:port]/v1"
+            )
         key_variable = entry.get("api_key_env")
-        if not isinstance(key_variable, str) or not _ENV_VARIABLE_PATTERN.match(key_variable):
+        if not isinstance(key_variable, str) or not _ENV_VARIABLE_PATTERN.fullmatch(key_variable):
             raise ValueError(
                 f"llm.yaml openai_endpoints '{name}' needs api_key_env, the name of an environment variable"
             )

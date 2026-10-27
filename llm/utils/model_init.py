@@ -147,8 +147,8 @@ def _endpoint_name(model_name: str) -> str | None:
         The endpoint name from ``openai_endpoints`` in llm.yaml, or None when the
         provider prefix is not a configured endpoint.
     """
-    provider = model_name.split(":", 1)[0]
-    return provider if provider in llm_config.openai_endpoints else None
+    provider, separator, _ = model_name.partition(":")
+    return provider if separator and provider in llm_config.openai_endpoints else None
 
 
 def create_model_instance(

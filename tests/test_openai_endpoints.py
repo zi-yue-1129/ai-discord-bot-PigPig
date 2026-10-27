@@ -101,6 +101,40 @@ def test_a_malformed_endpoint_is_rejected_when_the_config_loads(
         _load_llm_config(tmp_path, section)
 
 
+@pytest.mark.parametrize(
+    "base_url", ["https://llm.example.invalid:abc/v1", "https://?", "https://#", "https://user@/v1", "https://:8000/v1"]
+)
+def test_a_base_url_that_cannot_be_dialled_is_rejected(tmp_path: Path, base_url: str) -> None:
+    """A URL the HTTP client cannot parse would only fail at request time, where fallback skips the endpoint."""
+    section = f'openai_endpoints:\n  steak:\n    base_url: "{base_url}"\n    api_key_env: X_KEY\n'
+
+    with pytest.raises(ValueError, match="base_url"):
+        _load_llm_config(tmp_path, section)
+
+
+@pytest.mark.parametrize(
+    ("section", "expected"),
+    [
+        ('openai_endpoints:\n  steak:\n    base_url: https://h.invalid/v1\n    api_key_env: "X_KEY\\n"\n', "api_key_env"),
+        ('openai_endpoints:\n  "steak\\n":\n    base_url: https://h.invalid/v1\n    api_key_env: X_KEY\n', "steak"),
+    ],
+)
+def test_a_trailing_newline_does_not_pass_for_a_name(tmp_path: Path, section: str, expected: str) -> None:
+    """``$`` matches before a final newline, which would make the environment lookup miss."""
+    with pytest.raises(ValueError, match=expected):
+        _load_llm_config(tmp_path, section)
+
+
+def test_a_model_name_without_a_provider_prefix_is_never_routed_to_an_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An endpoint called ``gpt-4o`` must not take over the plain OpenAI model ``gpt-4o``."""
+    monkeypatch.setattr(llm_config, "openai_endpoints", {"gpt-4o": ENDPOINT}, raising=False)
+
+    assert model_init._endpoint_name("gpt-4o") is None
+    assert model_init._endpoint_name("gpt-4o:small") == "gpt-4o"
+
+
 def test_vllm_models_keep_using_the_vllm_url(endpoint: None, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(llm_config, "vllm_url", "http://vllm.invalid", raising=False)
 
