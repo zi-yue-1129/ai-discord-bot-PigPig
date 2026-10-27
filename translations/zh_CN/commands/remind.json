@@ -13,7 +13,22 @@
         "list_empty": "你目前没有待发的提醒。",
         "list_item": "`#{id}` {time}：{message}",
         "cancel_success": "已取消提醒 #{id}。",
-        "cancel_not_found": "找不到你的提醒 #{id}（可能已发送或不是你设置的）。"
+        "cancel_not_found": "找不到你的提醒 #{id}（可能已发送或不是你设置的）。",
+        "list_from_others_title": "别人替你设的提醒（可以用 /reminder_cancel 取消）：",
+        "list_from": "（{user} 设的）",
+        "others_off": "这个机器人只能给自己设提醒。",
+        "others_not_member": "只能给这个服务器的成员设提醒。",
+        "others_limit": "这位成员已经有 {limit} 个别人设的提醒了，请等其中一个发出或被取消。",
+        "ask_prompt": "{target}，{creator} 想在 {time} 提醒你：{message}",
+        "ask_sent": "已请 {user} 确认，对方按下接受后提醒才会设置。",
+        "ask_too_often": "你最近已经请太多人确认了，请 {wait} 秒后再试。",
+        "ask_confirm": "接受",
+        "ask_cancel": "拒绝",
+        "ask_not_yours": "只有被提醒的人可以回答。",
+        "ask_done": "这个问题已经回答过了。",
+        "ask_cancelled": "已拒绝，没有设置提醒。",
+        "ask_expired": "太久没有回答，没有设置提醒。",
+        "ask_replaced": "已被新的请求取代，这则没有设置。"
     },
     "time_units": {
         "seconds": " 秒",

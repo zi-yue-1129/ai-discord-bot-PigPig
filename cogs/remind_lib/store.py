@@ -156,16 +156,25 @@ class ReminderStore:
         """Returns how many pending reminders a user has set."""
         return len(self.list_for_creator(creator_id))
 
-    def cancel(self, reminder_id: int, creator_id: int) -> bool:
-        """Cancels a pending reminder if ``creator_id`` set it.
+    def list_from_others(self, target_id: int) -> List[Reminder]:
+        """Returns the pending reminders other people set for a user."""
+        return self._select("AND target_id = ? AND creator_id != ?", (target_id, target_id))
+
+    def count_from_others(self, target_id: int) -> int:
+        """Returns how many pending reminders other people have set for a user."""
+        return len(self.list_from_others(target_id))
+
+    def cancel(self, reminder_id: int, user_id: int) -> bool:
+        """Cancels a pending reminder that ``user_id`` set or that is for ``user_id``.
 
         Returns:
             Whether a reminder was cancelled.
         """
         with self._session() as connection:
             cursor = connection.execute(
-                "UPDATE reminders SET status = 'cancelled' WHERE id = ? AND creator_id = ? AND status = 'pending'",
-                (reminder_id, creator_id),
+                "UPDATE reminders SET status = 'cancelled' "
+                "WHERE id = ? AND (creator_id = ? OR target_id = ?) AND status = 'pending'",
+                (reminder_id, user_id, user_id),
             )
             return cursor.rowcount > 0
 

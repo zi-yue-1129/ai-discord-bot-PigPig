@@ -28,20 +28,39 @@ import re
 import time
 import dateparser
 
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 from .language_manager import LanguageManager
 from .remind_lib.store import REPEAT_CHOICES, Reminder, ReminderStore, next_occurrence
 from function import func
+from addons.confirm import ConfirmView, ask
+from addons.rate_limiter import format_wait
+from addons.settings import base_config
 from addons.logging import get_logger
 from llm.reminder_writer import LATE_THRESHOLD_SECONDS, ReminderRequest, compose_reminder
 
 REMINDER_DB_PATH = "data/reminders.db"
+# Longest part of a reminder's text quoted in the question to the member it is for.
+ASK_PREVIEW_CHARS = 500
+
+
+def _shorten(text: str) -> str:
+    return text if len(text) <= ASK_PREVIEW_CHARS else text[:ASK_PREVIEW_CHARS].rstrip() + "…"
+
+
+def _limit(config: Any, key: str, default: int) -> int:
+    """A whole, non-negative limit from the ``reminders:`` block of base.yaml; ``default`` when unusable."""
+    value = config.get(key, default) if isinstance(config, dict) else default
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return default
+    return value
 
 
 class ReminderCog(commands.Cog):
     """Sets reminders and, when each falls due, has the model write it from the recent chat."""
 
     MAX_PENDING_PER_USER = 20
+    # Pending reminders other people may set for one member; the owner can change it in base.yaml.
+    MAX_PENDING_FROM_OTHERS = 3
     MAX_HORIZON_SECONDS = 365 * 24 * 3600
     MAX_DELIVERY_ATTEMPTS = 3
     RETRY_DELAY_SECONDS = 60
@@ -51,7 +70,9 @@ class ReminderCog(commands.Cog):
     GUIDE_NOTES = (
         "When a reminder is due the bot writes it in its own words from the recent chat and mentions only the "
         "person it is for. Reminders survive restarts. In chat the bot can also set, list and cancel a "
-        f"member's reminders when asked. Each member can have at most {MAX_PENDING_PER_USER} pending reminders."
+        f"member's reminders when asked. Each member can have at most {MAX_PENDING_PER_USER} pending reminders. "
+        "A reminder for someone else must be for a member of the server and is only set once that member "
+        "presses Accept; they can see it with /reminders and cancel it."
     )
 
     def __init__(self, bot):
@@ -59,9 +80,14 @@ class ReminderCog(commands.Cog):
         self.lang_manager: Optional[LanguageManager] = None
         self.logger = get_logger(server_id="Bot", source="remind")
         self.store = ReminderStore(REMINDER_DB_PATH)
+        limits = getattr(base_config, "reminders", None) or {}
+        self.max_pending_per_user = _limit(limits, "max_pending_per_user", self.MAX_PENDING_PER_USER)
+        self.max_pending_from_others = _limit(limits, "max_pending_from_others", self.MAX_PENDING_FROM_OTHERS)
         self._now = time.time
         self._wake: Optional[asyncio.Event] = None
         self._scheduler: Optional[asyncio.Task] = None
+        # Reminders for someone else that wait for them to accept, by (guild, creator, target).
+        self._asks: Dict[Any, ConfirmView] = {}
 
     async def cog_load(self):
         """Initializes the language manager and starts delivering reminders (including missed ones)."""
@@ -74,6 +100,9 @@ class ReminderCog(commands.Cog):
         if self._scheduler is not None:
             self._scheduler.cancel()
             self._scheduler = None
+        for view in list(self._asks.values()):
+            view.stop()
+        self._asks.clear()
 
     # ------------------------------------------------------------- delivery
     def _seconds_until_next(self, now: float) -> float:
@@ -226,40 +255,20 @@ class ReminderCog(commands.Cog):
                 return await reply(self.lang_manager.translate(guild_id, "commands", "remind", "responses", "too_far"))
 
             creator_id = getattr(creator, "id", None) or getattr(target_user, "id", None)
-            if self.store.count_pending(creator_id) >= self.MAX_PENDING_PER_USER:
+            if self.store.count_pending(creator_id) >= self.max_pending_per_user:
                 return await reply(self.lang_manager.translate(
-                    guild_id, "commands", "remind", "responses", "limit_reached", limit=self.MAX_PENDING_PER_USER
+                    guild_id, "commands", "remind", "responses", "limit_reached", limit=self.max_pending_per_user
                 ))
 
-            mention_safe = getattr(target_user, "mention", None)
-            if not mention_safe:
-                self.logger.warning(f"remind: target_user 無法取得 mention (target_user={target_user}, channel={getattr(channel,'id',None)}, interaction_user={getattr(interaction,'user',None)})")
-                if target_user and getattr(target_user, "id", None):
-                    mention_safe = f"<@{target_user.id}>"
-                else:
-                    mention_safe = self.lang_manager.translate(guild_id, "commands", "remind", "responses", "fallback_user")
+            due_at = self._now() + time_diff.total_seconds()
+            # A reminder for someone else is only set once they accept it: otherwise anyone could keep
+            # pinging a member with reminders they never asked for.
+            if target_user is not None and target_user.id != creator_id:
+                return await reply(await self._ask_target(
+                    channel, creator_id, target_user, message, due_at, repeat, guild_id
+                ))
 
-            now = self._now()
-            self.store.add(
-                guild_id=guild_id,
-                channel_id=channel.id,
-                creator_id=creator_id,
-                target_id=target_user.id,
-                message=message,
-                created_at=now,
-                due_at=now + time_diff.total_seconds(),
-                repeat=repeat,
-            )
-            if self._wake is not None:
-                self._wake.set()
-
-            confirmation = self.lang_manager.translate(
-                guild_id, "commands", "remind", "responses", "confirm_setup",
-                duration=self.format_timedelta(time_diff, guild_id), user=mention_safe, message=message,
-            )
-            if repeat != "none":
-                confirmation += " " + self.lang_manager.translate(guild_id, "commands", "remind", "repeat", repeat)
-            return await reply(confirmation)
+            return await reply(self._store_reminder(channel, creator_id, target_user, message, due_at, repeat, guild_id))
 
         except Exception as e:
             await func.report_error(e, f"An error occurred in setting reminder: {e}")
@@ -269,6 +278,94 @@ class ReminderCog(commands.Cog):
             if interaction:
                 await interaction.edit_original_response(content=error_msg)
             return error_msg
+
+    def _t(self, guild_id: str, key: str, **kwargs: Any) -> str:
+        return self.lang_manager.translate(guild_id, "commands", "remind", "responses", key, **kwargs)
+
+    def _store_reminder(
+        self, channel: Any, creator_id: int, target_user: Any, message: str, due_at: float, repeat: str, guild_id: str
+    ) -> str:
+        """Saves a reminder and returns the confirmation text."""
+        self.store.add(
+            guild_id=guild_id,
+            channel_id=channel.id,
+            creator_id=creator_id,
+            target_id=target_user.id,
+            message=message,
+            created_at=self._now(),
+            due_at=due_at,
+            repeat=repeat,
+        )
+        if self._wake is not None:
+            self._wake.set()
+        confirmation = self._t(
+            guild_id, "confirm_setup",
+            duration=self.format_timedelta(timedelta(seconds=max(due_at - self._now(), 0)), guild_id),
+            user=getattr(target_user, "mention", None) or f"<@{target_user.id}>", message=message,
+        )
+        if repeat != "none":
+            confirmation += " " + self.lang_manager.translate(guild_id, "commands", "remind", "repeat", repeat)
+        return confirmation
+
+    def _problem_for_others(self, channel: Any, creator_id: int, target_user: Any) -> Optional[str]:
+        """Why a reminder from ``creator_id`` for ``target_user`` cannot be set, or None when it may be."""
+        if self.max_pending_from_others <= 0:
+            return "others_off"
+        guild = getattr(channel, "guild", None)
+        if guild is None or guild.get_member(target_user.id) is None:
+            return "others_not_member"
+        if self.store.count_pending(creator_id) >= self.max_pending_per_user:
+            return "limit_reached"
+        if self.store.count_from_others(target_user.id) >= self.max_pending_from_others:
+            return "others_limit"
+        return None
+
+    def _limit_text(self, guild_id: str, problem: str) -> str:
+        limit = self.max_pending_per_user if problem == "limit_reached" else self.max_pending_from_others
+        return self._t(guild_id, problem, limit=limit)
+
+    async def _ask_target(
+        self, channel: Any, creator_id: int, target_user: Any, message: str, due_at: float, repeat: str, guild_id: str
+    ) -> str:
+        """Posts the reminder with Accept and Decline buttons only ``target_user`` can press.
+
+        Returns:
+            What the person setting it is told.
+        """
+        problem = self._problem_for_others(channel, creator_id, target_user)
+        if problem is not None:
+            return self._limit_text(guild_id, problem)
+        # Each question pings the member, so how often one person may ask is limited (owner's rate_limits).
+        limiter = getattr(self.bot, "rate_limiter", None)
+        if limiter is not None:
+            wait = limiter.hit("ask_others", creator_id)
+            if wait:
+                return self._t(guild_id, "ask_too_often", wait=format_wait(wait))
+
+        target_id = target_user.id
+
+        async def on_confirm() -> str:
+            # Checked again: the limits may have filled, or the member left, while the question was open.
+            later_problem = self._problem_for_others(channel, creator_id, target_user)
+            if later_problem is not None:
+                return self._limit_text(guild_id, later_problem)
+            return self._store_reminder(channel, creator_id, target_user, message, due_at, repeat, guild_id)
+
+        def text(key: str) -> str:
+            return self._t(guild_id, key)
+
+        view = ConfirmView(target_id, text, on_confirm, self._asks, (guild_id, creator_id, target_id))
+        repeat_text = (
+            " " + self.lang_manager.translate(guild_id, "commands", "remind", "repeat", repeat) if repeat != "none" else ""
+        )
+        content = self._t(
+            guild_id, "ask_prompt", target=f"<@{target_id}>", creator=f"<@{creator_id}>",
+            time=f"<t:{int(due_at)}:f>", message=_shorten(message),
+        ) + repeat_text
+        await ask(channel, content, view, allowed_mentions=discord.AllowedMentions(
+            everyone=False, roles=False, users=[discord.Object(id=target_id)]
+        ))
+        return self._t(guild_id, "ask_sent", user=f"<@{target_id}>")
 
     @app_commands.command(name="remind", description="Sets a reminder")
     @app_commands.describe(
@@ -305,25 +402,35 @@ class ReminderCog(commands.Cog):
         """Shows the reminders the user has set, with the ID needed to cancel one."""
         guild_id = str(interaction.guild_id) if interaction.guild_id else "@me"
         pending = self.store.list_for_creator(interaction.user.id)
-        if not pending:
+        # Reminders other people set for this member, so they can cancel them too.
+        from_others = self.store.list_from_others(interaction.user.id)
+        if not pending and not from_others:
             text = self.lang_manager.translate(guild_id, "commands", "remind", "responses", "list_empty")
         else:
-            lines = [self.lang_manager.translate(guild_id, "commands", "remind", "responses", "list_title")]
-            for reminder in pending:
-                line = self.lang_manager.translate(
-                    guild_id, "commands", "remind", "responses", "list_item",
-                    id=reminder.id, time=f"<t:{int(reminder.due_at)}:R>", message=reminder.message,
-                )
-                if reminder.repeat != "none":
-                    line += " " + self.lang_manager.translate(guild_id, "commands", "remind", "repeat", reminder.repeat)
-                lines.append(line)
+            lines = []
+            for title, reminders in (("list_title", pending), ("list_from_others_title", from_others)):
+                if not reminders:
+                    continue
+                lines.append(self.lang_manager.translate(guild_id, "commands", "remind", "responses", title))
+                for reminder in reminders:
+                    line = self.lang_manager.translate(
+                        guild_id, "commands", "remind", "responses", "list_item",
+                        id=reminder.id, time=f"<t:{int(reminder.due_at)}:R>", message=reminder.message,
+                    )
+                    if reminder.creator_id != interaction.user.id:
+                        line += " " + self.lang_manager.translate(
+                            guild_id, "commands", "remind", "responses", "list_from", user=f"<@{reminder.creator_id}>"
+                        )
+                    if reminder.repeat != "none":
+                        line += " " + self.lang_manager.translate(guild_id, "commands", "remind", "repeat", reminder.repeat)
+                    lines.append(line)
             text = "\n".join(lines)
         await interaction.response.send_message(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
     @app_commands.command(name="reminder_cancel", description="Cancels one of your reminders")
     @app_commands.describe(reminder_id="The ID shown by /reminders")
     async def reminder_cancel(self, interaction: discord.Interaction, reminder_id: int):
-        """Cancels a pending reminder the user set."""
+        """Cancels a pending reminder the user set or that someone set for them."""
         guild_id = str(interaction.guild_id) if interaction.guild_id else "@me"
         key = "cancel_success" if self.store.cancel(reminder_id, interaction.user.id) else "cancel_not_found"
         text = self.lang_manager.translate(guild_id, "commands", "remind", "responses", key, id=reminder_id)

@@ -252,5 +252,20 @@
     "validation": {
         "module_empty": "Module name cannot be empty.",
         "prompt_empty": "Prompt content cannot be empty."
+    },
+    "ai_confirm": {
+        "prompt": "{member}, change the {scope} personality to this?",
+        "scope_channel": "channel",
+        "scope_server": "server",
+        "saved": "The personality was updated.",
+        "failed": "The personality could not be saved; nothing changed.",
+        "no_permission": "You can no longer change this personality; nothing changed.",
+        "ask_confirm": "Confirm",
+        "ask_cancel": "Cancel",
+        "ask_not_yours": "Only the member being asked can answer.",
+        "ask_done": "This question was already answered.",
+        "ask_cancelled": "Cancelled; nothing changed.",
+        "ask_expired": "No answer in time; nothing changed.",
+        "ask_replaced": "Replaced by a newer proposal; nothing changed."
     }
 }

@@ -84,6 +84,19 @@ async def test_someone_elses_reminder_cannot_be_cancelled(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_the_member_a_reminder_is_for_can_cancel_it(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path, author_id=2)
+    reminder_id = _add(runtime, creator=5, target=2, message="from someone", due_at=NOW + 600)
+
+    listing = await _tools(runtime)["list_reminders"].ainvoke({})
+    text = await _tools(runtime)["cancel_reminder"].ainvoke({"reminder_id": reminder_id})
+
+    assert "from someone" in listing and "others set for you" in listing
+    assert "cancelled" in text.lower()
+    assert runtime.bot.get_cog("ReminderCog").store.pending() == []
+
+
+@pytest.mark.asyncio
 async def test_cancelling_an_unknown_reminder_is_reported(tmp_path: Path) -> None:
     text = await _tools(_runtime(tmp_path))["cancel_reminder"].ainvoke({"reminder_id": 999})
 

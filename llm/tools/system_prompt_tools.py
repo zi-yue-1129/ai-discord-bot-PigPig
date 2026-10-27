@@ -20,6 +20,44 @@ _logger = get_logger(server_id="Bot", source="llm.tools.system_prompt_tools")
 
 __all__ = ["check_personality_permission", "write_personality", "SystemPromptTools"]
 
+# Longest part of a proposed personality shown above its Confirm button (Discord allows 2000 characters).
+PREVIEW_CHARS = 1500
+
+# Used when the language manager is not loaded.
+_FALLBACK_TEXT = {
+    "prompt": "{member}, change the {scope} personality to this?",
+    "scope_channel": "channel",
+    "scope_server": "server",
+    "saved": "The personality was updated.",
+    "failed": "The personality could not be saved; nothing changed.",
+    "no_permission": "You can no longer change this personality; nothing changed.",
+    "ask_confirm": "Confirm",
+    "ask_cancel": "Cancel",
+    "ask_not_yours": "Only the member being asked can answer.",
+    "ask_done": "This question was already answered.",
+    "ask_cancelled": "Cancelled; nothing changed.",
+    "ask_expired": "No answer in time; nothing changed.",
+    "ask_replaced": "Replaced by a newer proposal; nothing changed.",
+}
+
+
+def _personality_text(bot: Any, guild_id: str, key: str, **kwargs: Any) -> str:
+    """Translates a line of the personality confirmation for a guild."""
+    language = bot.get_cog("LanguageManager") if bot is not None else None
+    if language is not None:
+        text = language.translate(guild_id, "commands", "system_prompt", "ai_confirm", key, **kwargs)
+        if isinstance(text, str) and text:
+            return text
+    return _FALLBACK_TEXT.get(key, key).format(**kwargs)
+
+
+def _preview(prompt: str) -> str:
+    """The proposed personality as a quote, cut to fit one message."""
+    text = prompt.strip()
+    if len(text) > PREVIEW_CHARS:
+        text = text[:PREVIEW_CHARS].rstrip() + "…"
+    return "\n".join("> " + line for line in text.splitlines() or [""])
+
 
 def check_personality_permission(bot: Any, author: Any, guild: Any, channel: Any, scope: str) -> str | None:
     """Check whether *author* may modify the personality at *scope*.
@@ -117,7 +155,10 @@ class SystemPromptTools:
         runtime = self.runtime
 
         async def update_personality(merged_prompt: str, scope: str = "channel") -> str:
-            """Modify the bot's personality or system prompt for this channel or server.
+            """Propose a new personality or system prompt for this channel or server.
+
+            The proposal is posted with a Confirm button that only the requesting member
+            can press; the personality changes only after they press it.
 
             You already know your current personality from the system prompt in your
             context. Generate a COMPLETE merged version incorporating the user's
@@ -154,7 +195,38 @@ class SystemPromptTools:
             if permission_error is not None:
                 return permission_error
 
-            return await write_personality(guild_id, channel_id, merged_prompt, scope, bot, user_id)
+            # The text the model wrote may come from someone else's message or a web page in its
+            # context, so the change only happens when the member who asked presses Confirm.
+            from addons.confirm import ConfirmView, ask
+
+            def text(key: str, **kwargs: Any) -> str:
+                return _personality_text(bot, guild_id, key, **kwargs)
+
+            async def on_confirm() -> str:
+                # Checked again: the member may have lost the permission while the question was open.
+                member = guild.get_member(author.id) if hasattr(guild, "get_member") else author
+                if member is None or check_personality_permission(bot, member, guild, channel, scope) is not None:
+                    return text("no_permission")
+                result = await write_personality(guild_id, channel_id, merged_prompt, scope, bot, user_id)
+                return text("failed") + f" ({result})" if result.startswith("Error") else text("saved")
+
+            pending = getattr(bot, "personality_asks", None)
+            if not isinstance(pending, dict):
+                pending = {}
+                setattr(bot, "personality_asks", pending)
+            key = (guild_id, "server" if scope == "server" else channel_id, author.id)
+            view = ConfirmView(author.id, text, on_confirm, pending, key)
+            scope_name = text("scope_server" if scope == "server" else "scope_channel")
+            content = text("prompt", member=f"<@{author.id}>", scope=scope_name) + "\n" + _preview(merged_prompt)
+            try:
+                await ask(channel, content, view)
+            except Exception as exc:
+                self.logger.error(f"update_personality could not post its confirmation: {exc}")
+                return "Error: Could not post the confirmation button, so the personality was not changed."
+            return (
+                "Posted the proposed personality with a Confirm button. Nothing changes until the member who "
+                "asked presses Confirm; tell them to check it and press it."
+            )
 
         _message_meta: dict[str, str] = {"target_agent_mode": "message"}
         return [

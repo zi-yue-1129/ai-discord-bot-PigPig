@@ -15,6 +15,9 @@ from typing import Callable, Deque, Dict, Iterable, Mapping, Optional, Tuple
 DEFAULT_LIMITS: Dict[str, Dict[str, float]] = {
     "chat": {"max_requests": 10, "per_seconds": 60},
     "image": {"max_requests": 20, "per_seconds": 86400},
+    # Questions the AI posts to another member on someone's behalf (a reminder or a memory for them);
+    # each pings that member.
+    "ask_others": {"max_requests": 3, "per_seconds": 3600},
 }
 
 

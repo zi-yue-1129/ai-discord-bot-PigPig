@@ -73,17 +73,32 @@ def test_pending_reminders_are_counted_per_creator(store: ReminderStore) -> None
     assert store.count_pending(5) == 1
 
 
-def test_only_the_creator_can_cancel_a_reminder(store: ReminderStore) -> None:
-    reminder_id = _add(store, due_at=NOW + 10, creator=1)
+def test_only_the_creator_or_the_target_can_cancel_a_reminder(store: ReminderStore) -> None:
+    reminder_id = _add(store, due_at=NOW + 10, creator=1, target=2)
 
-    assert store.cancel(reminder_id, creator_id=99) is False
+    assert store.cancel(reminder_id, user_id=99) is False
     assert store.count_pending(1) == 1
-    assert store.cancel(reminder_id, creator_id=1) is True
+    assert store.cancel(reminder_id, user_id=1) is True
     assert store.count_pending(1) == 0
 
 
+def test_the_target_can_cancel_a_reminder_someone_else_set(store: ReminderStore) -> None:
+    reminder_id = _add(store, due_at=NOW + 10, creator=1, target=2)
+
+    assert store.cancel(reminder_id, user_id=2) is True
+    assert store.pending() == []
+
+
+def test_reminders_from_others_leave_out_ones_people_set_for_themselves(store: ReminderStore) -> None:
+    _add(store, due_at=NOW + 10, creator=2, target=2, message="own")
+    _add(store, due_at=NOW + 20, creator=1, target=2, message="from Al")
+
+    assert [reminder.message for reminder in store.list_from_others(2)] == ["from Al"]
+    assert store.count_from_others(2) == 1
+
+
 def test_cancelling_an_unknown_reminder_is_refused(store: ReminderStore) -> None:
-    assert store.cancel(12345, creator_id=1) is False
+    assert store.cancel(12345, user_id=1) is False
 
 
 def test_postponing_moves_a_reminder_and_counts_the_attempt(store: ReminderStore) -> None:
@@ -507,11 +522,11 @@ async def test_setting_a_reminder_stores_it(tmp_path: Path) -> None:
 
     reply = await cog._set_reminder_logic(
         channel=_Channel(), target_user=_target(), time_str="10 minutes", message="stretch", guild_id="7",
-        creator=SimpleNamespace(id=1),
+        creator=SimpleNamespace(id=2),
     )
 
     (reminder,) = cog.store.pending()
-    assert (reminder.creator_id, reminder.target_id, reminder.message, reminder.channel_id) == (1, 2, "stretch", 70)
+    assert (reminder.creator_id, reminder.target_id, reminder.message, reminder.channel_id) == (2, 2, "stretch", 70)
     assert reminder.due_at == pytest.approx(NOW + 600, abs=2)
     assert reply.startswith("commands/remind/responses/confirm_setup")
 
@@ -542,6 +557,154 @@ async def test_too_many_pending_reminders_are_refused(tmp_path: Path) -> None:
 
     assert reply.startswith("commands/remind/responses/limit_reached")
     assert cog.store.count_pending(1) == ReminderCog.MAX_PENDING_PER_USER
+
+
+class _Guild:
+    def __init__(self, member_ids: List[int]) -> None:
+        self.member_ids = member_ids
+
+    def get_member(self, user_id: int) -> Any:
+        return SimpleNamespace(id=user_id) if user_id in self.member_ids else None
+
+
+def _guild_channel(member_ids: List[int]) -> _Channel:
+    channel = _Channel()
+    channel.guild = _Guild(member_ids)
+    return channel
+
+
+async def _set_for(cog: ReminderCog, channel: Any, creator: int, target: int, repeat: str = "none") -> str:
+    return await cog._set_reminder_logic(
+        channel=channel, target_user=SimpleNamespace(id=target, mention=f"<@{target}>"), time_str="10 minutes",
+        message="ping", guild_id="7", creator=SimpleNamespace(id=creator), repeat=repeat,
+    )
+
+
+@pytest.fixture
+def asks(monkeypatch: pytest.MonkeyPatch) -> List[tuple]:
+    """Records the questions posted to the member a reminder is for instead of sending them."""
+    posted: List[tuple] = []
+
+    async def fake_ask(channel: Any, content: Any, view: Any, allowed_mentions: Any = None) -> Any:
+        posted.append((content, view, allowed_mentions))
+        return view
+
+    monkeypatch.setattr("cogs.remind.ask", fake_ask)
+    return posted
+
+
+@pytest.mark.asyncio
+async def test_a_reminder_for_someone_else_waits_for_them_to_accept(tmp_path: Path, asks: List[tuple]) -> None:
+    cog = _make_cog(tmp_path, _Channel())
+
+    reply = await _set_for(cog, _guild_channel([1, 2]), creator=1, target=2, repeat="daily")
+
+    assert reply.startswith("commands/remind/responses/ask_sent")
+    assert cog.store.pending() == []
+    content, view, allowed = asks[0]
+    assert view.owner_id == 2
+    assert [user.id for user in allowed.users] == [2] and allowed.everyone is False and allowed.roles is False
+
+
+@pytest.mark.asyncio
+async def test_accepting_sets_the_reminder_with_its_repeat(tmp_path: Path, asks: List[tuple]) -> None:
+    cog = _make_cog(tmp_path, _Channel())
+    await _set_for(cog, _guild_channel([1, 2]), creator=1, target=2, repeat="daily")
+
+    reply = await asks[0][1].on_confirm()
+
+    (reminder,) = cog.store.pending()
+    assert (reminder.creator_id, reminder.target_id, reminder.repeat) == (1, 2, "daily")
+    assert reply.startswith("commands/remind/responses/confirm_setup")
+
+
+@pytest.mark.asyncio
+async def test_a_repeating_reminder_for_yourself_needs_no_question(tmp_path: Path, asks: List[tuple]) -> None:
+    cog = _make_cog(tmp_path, _Channel())
+
+    reply = await _set_for(cog, _guild_channel([2]), creator=2, target=2, repeat="daily")
+
+    assert reply.startswith("commands/remind/responses/confirm_setup") and asks == []
+    assert cog.store.pending()[0].repeat == "daily"
+
+
+@pytest.mark.asyncio
+async def test_a_reminder_for_someone_outside_the_server_is_refused(tmp_path: Path, asks: List[tuple]) -> None:
+    cog = _make_cog(tmp_path, _Channel())
+
+    reply = await _set_for(cog, _guild_channel([1]), creator=1, target=2)
+
+    assert reply.startswith("commands/remind/responses/others_not_member")
+    assert asks == [] and cog.store.pending() == []
+
+
+@pytest.mark.asyncio
+async def test_one_member_gets_only_a_few_reminders_from_others(tmp_path: Path, asks: List[tuple]) -> None:
+    cog = _make_cog(tmp_path, _Channel())
+    channel = _guild_channel([1, 2, 3, 4, 5])
+    for creator in (1, 3, 4):
+        await _set_for(cog, channel, creator=creator, target=2)
+        await asks[-1][1].on_confirm()
+
+    reply = await _set_for(cog, channel, creator=5, target=2)
+
+    assert reply.startswith("commands/remind/responses/others_limit")
+    assert cog.store.count_from_others(2) == ReminderCog.MAX_PENDING_FROM_OTHERS == 3
+    # The member's own reminders are not counted against that.
+    assert (await _set_for(cog, channel, creator=2, target=2)).startswith("commands/remind/responses/confirm_setup")
+
+
+@pytest.mark.asyncio
+async def test_the_limit_is_checked_again_when_the_member_accepts(tmp_path: Path, asks: List[tuple]) -> None:
+    cog = _make_cog(tmp_path, _Channel())
+    cog.max_pending_from_others = 1
+    channel = _guild_channel([1, 2, 3])
+    await _set_for(cog, channel, creator=1, target=2)
+    await _set_for(cog, channel, creator=3, target=2)
+
+    await asks[0][1].on_confirm()
+    late = await asks[1][1].on_confirm()
+
+    assert late.startswith("commands/remind/responses/others_limit")
+    assert cog.store.count_from_others(2) == 1
+
+
+@pytest.mark.asyncio
+async def test_asking_others_too_often_is_limited(tmp_path: Path, asks: List[tuple]) -> None:
+    from addons.rate_limiter import LimitRule, RateLimiter
+
+    cog = _make_cog(tmp_path, _Channel())
+    cog.bot.rate_limiter = RateLimiter({"ask_others": LimitRule(1, 3600)})
+    channel = _guild_channel([1, 2, 3])
+    await _set_for(cog, channel, creator=1, target=2)
+
+    reply = await _set_for(cog, channel, creator=1, target=3)
+
+    assert reply.startswith("commands/remind/responses/ask_too_often") and len(asks) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_owner_can_turn_off_reminders_for_others(tmp_path: Path, asks: List[tuple]) -> None:
+    cog = _make_cog(tmp_path, _Channel())
+    cog.max_pending_from_others = 0
+
+    reply = await _set_for(cog, _guild_channel([1, 2]), creator=1, target=2)
+
+    assert reply.startswith("commands/remind/responses/others_off") and asks == []
+
+
+def test_limits_come_from_the_reminders_block(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import cogs.remind as remind_module
+
+    monkeypatch.setattr(
+        remind_module, "base_config",
+        SimpleNamespace(reminders={"max_pending_per_user": 5, "max_pending_from_others": "lots"}),
+    )
+    cog = ReminderCog(SimpleNamespace())
+
+    assert cog.max_pending_per_user == 5
+    # An unusable value falls back to the default instead of turning the limit off.
+    assert cog.max_pending_from_others == ReminderCog.MAX_PENDING_FROM_OTHERS
 
 
 @pytest.mark.asyncio
@@ -583,6 +746,30 @@ async def test_users_see_only_their_own_pending_reminders(tmp_path: Path) -> Non
     text = interaction.sent[0]["content"]
     assert "mine" in text and "theirs" not in text
     assert interaction.sent[0]["ephemeral"] is True
+
+
+@pytest.mark.asyncio
+async def test_members_also_see_reminders_others_set_for_them(tmp_path: Path) -> None:
+    cog = _make_cog(tmp_path, _Channel())
+    _add(cog.store, due_at=NOW + 10, creator=1, target=2, message="from Al")
+    interaction = _Interaction(2)
+
+    await ReminderCog.reminders.callback(cog, interaction)
+
+    text = interaction.sent[0]["content"]
+    assert "list_from_others_title" in text and "from Al" in text and "<@1>" in text
+
+
+@pytest.mark.asyncio
+async def test_the_target_can_cancel_with_the_command(tmp_path: Path) -> None:
+    cog = _make_cog(tmp_path, _Channel())
+    reminder_id = _add(cog.store, due_at=NOW + 10, creator=1, target=2)
+    target = _Interaction(2)
+
+    await ReminderCog.reminder_cancel.callback(cog, target, reminder_id)
+
+    assert target.sent[0]["content"].startswith("commands/remind/responses/cancel_success")
+    assert cog.store.pending() == []
 
 
 @pytest.mark.asyncio

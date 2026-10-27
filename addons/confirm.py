@@ -100,11 +100,17 @@ class ConfirmView(discord.ui.View):
         await self._close("ask_replaced")
 
 
-async def ask(channel: Any, content: Union[str, Callable[[], str]], view: ConfirmView) -> ConfirmView:
-    """Posts ``view`` under ``content`` (pinging nobody), replacing the open question under its key.
+async def ask(
+    channel: Any,
+    content: Union[str, Callable[[], str]],
+    view: ConfirmView,
+    allowed_mentions: Optional[discord.AllowedMentions] = None,
+) -> ConfirmView:
+    """Posts ``view`` under ``content``, replacing the open question under its key.
 
     ``content`` may be a function, called only once the replaced question is closed, so the text
-    reflects what may be shown at the moment it is posted.
+    reflects what may be shown at the moment it is posted. Nobody is pinged unless
+    ``allowed_mentions`` names them.
     """
     previous = None
     if view.pending is not None:
@@ -114,7 +120,9 @@ async def ask(channel: Any, content: Union[str, Callable[[], str]], view: Confir
         if previous is not None:
             await previous.replace()
         text = content() if callable(content) else content
-        view.message = await channel.send(text, view=view, allowed_mentions=discord.AllowedMentions.none())
+        view.message = await channel.send(
+            text, view=view, allowed_mentions=allowed_mentions or discord.AllowedMentions.none()
+        )
     except BaseException:
         # Also when the task is cancelled, so the key is never left reserved.
         view._finish()

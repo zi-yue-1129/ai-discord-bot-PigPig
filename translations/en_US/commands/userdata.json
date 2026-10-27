@@ -36,6 +36,19 @@
             "analysis_failed": "Analysis failed",
             "ai_processing_failed": "AI processing failed",
             "update_failed": "Update failed"
+        },
+        "ask_others": {
+            "prompt": "{target}, {asker} would like me to remember this about you: {memory}\nSave it to your personal memory?",
+            "sent": "Asked them to accept; it is remembered only once they do.",
+            "too_often": "You have asked people to accept too often lately. Try again in {wait}s.",
+            "saved": "Remembered.",
+            "ask_confirm": "Accept",
+            "ask_cancel": "Decline",
+            "ask_not_yours": "Only the member being asked can answer.",
+            "ask_done": "This question was already answered.",
+            "ask_cancelled": "Declined; nothing was remembered.",
+            "ask_expired": "No answer in time; nothing was remembered.",
+            "ask_replaced": "Replaced by a newer request; this one was not remembered."
         }
     }
 }

@@ -28,7 +28,7 @@ class _Logger:
     def info(self, text: str, *args: Any, **kwargs: Any) -> None:
         self.lines.append(text)
 
-    warning = error = info
+    warning = error = debug = info
 
 
 class _FakeModel:
@@ -239,3 +239,99 @@ async def test_the_read_tool_reports_an_unknown_user_instead_of_the_asker() -> N
     assert result == "data_not_found"
     assert reads == []
     assert users.created == []
+
+
+# ------------------------------------- memories about others need their OK
+
+
+class _Member:
+    def __init__(self, user_id: int) -> None:
+        self.id = user_id
+        self.name = f"member{user_id}"
+        self.display_name = f"Member {user_id}"
+
+
+def _save_tool(saves: List[tuple], members: tuple = (int(TARGET),), limiter: Any = None) -> Any:
+    async def save(user_id: str, name: str, data: str, context: Any, nickname: Optional[str] = None) -> str:
+        saves.append((user_id, name, data, nickname))
+        return "saved"
+
+    cog = SimpleNamespace(_save_user_data=save)
+    bot = SimpleNamespace(get_cog=lambda name: cog if name == "UserDataCog" else None, get_user=lambda user_id: None)
+    if limiter is not None:
+        bot.rate_limiter = limiter
+    author = SimpleNamespace(id=int(ASKER), name="asker", display_name="Asker")
+    guild = SimpleNamespace(id=1, get_member=lambda user_id: _Member(user_id) if user_id in members else None)
+    message = SimpleNamespace(author=author, guild=guild, channel=SimpleNamespace(id=5))
+    runtime = SimpleNamespace(bot=bot, message=message, logger=_Logger())
+    (tool,) = [t for t in UserMemoryTools(runtime).get_tools() if t.name == "save_user_memory"]
+    return tool
+
+
+@pytest.fixture
+def asks(monkeypatch: pytest.MonkeyPatch) -> List[tuple]:
+    """Records the questions posted instead of sending them."""
+    posted: List[tuple] = []
+
+    async def fake_ask(channel: Any, content: Any, view: Any, allowed_mentions: Any = None) -> Any:
+        posted.append((content, view, allowed_mentions))
+        return view
+
+    monkeypatch.setattr(sys.modules[UserMemoryTools.__module__], "ask", fake_ask)
+    return posted
+
+
+@pytest.mark.asyncio
+async def test_a_memory_about_another_member_waits_for_them(asks: List[tuple]) -> None:
+    saves: List[tuple] = []
+
+    result = await _save_tool(saves).ainvoke({"user_id": int(TARGET), "memory_to_save": "likes jazz"})
+
+    assert "accept" in result.lower()
+    assert saves == []
+    content, view, allowed = asks[0]
+    assert view.owner_id == int(TARGET)
+    assert "likes jazz" in content
+    assert [user.id for user in allowed.users] == [int(TARGET)] and allowed.everyone is False
+
+
+@pytest.mark.asyncio
+async def test_the_memory_is_saved_for_them_when_they_accept(asks: List[tuple]) -> None:
+    saves: List[tuple] = []
+    await _save_tool(saves).ainvoke({"user_id": int(TARGET), "memory_to_save": "likes jazz"})
+
+    await asks[0][1].on_confirm()
+
+    assert saves == [(TARGET, f"member{TARGET}", "likes jazz", f"Member {TARGET}")]
+
+
+@pytest.mark.asyncio
+async def test_a_memory_for_someone_outside_the_server_is_refused(asks: List[tuple]) -> None:
+    saves: List[tuple] = []
+
+    result = await _save_tool(saves, members=()).ainvoke({"user_id": int(TARGET), "memory_to_save": "x"})
+
+    assert result.startswith("Refused") and asks == [] and saves == []
+
+
+@pytest.mark.asyncio
+async def test_asking_others_too_often_is_limited(asks: List[tuple]) -> None:
+    from addons.rate_limiter import LimitRule, RateLimiter
+
+    limiter = RateLimiter({"ask_others": LimitRule(1, 3600)})
+    tool = _save_tool([], limiter=limiter)
+    await tool.ainvoke({"user_id": int(TARGET), "memory_to_save": "one"})
+
+    result = await tool.ainvoke({"user_id": int(TARGET), "memory_to_save": "two"})
+
+    assert len(asks) == 1 and "too often" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_a_memory_about_the_asker_is_saved_under_their_own_name(asks: List[tuple]) -> None:
+    saves: List[tuple] = []
+
+    result = await _save_tool(saves).ainvoke({"user_id": int(ASKER), "memory_to_save": "likes tea"})
+
+    assert result == "saved" and asks == []
+    assert saves == [(ASKER, "asker", "likes tea", "Asker")]

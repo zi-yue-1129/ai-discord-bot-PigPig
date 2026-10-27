@@ -87,7 +87,8 @@ class ReminderTools:
                     Do not use abstract times like "later" or "someday" or the system will fail to parse them.
                 message: The reminder message content to be sent.
                 user_id: Optional Discord user ID to remind. If not provided,
-                    the reminder will be set for the message author.
+                    the reminder will be set for the message author. A reminder for
+                    someone else must be for a member of this server and cannot repeat.
                 repeat: "none" for a one-time reminder, "daily" to repeat every day,
                     or "weekly" to repeat every week at the same time. The first
                     reminder is at time_str.
@@ -190,10 +191,10 @@ class ReminderTools:
 
         @tool
         async def list_reminders() -> str:
-            """Lists the pending reminders the requesting user has set.
+            """Lists the pending reminders the requesting user has set, and those others set for them.
 
             Call this when the user asks what reminders they have, or before cancelling
-            one to find its ID. Only the requesting user's own reminders are listed.
+            one to find its ID. Only reminders the requesting user set or receives are listed.
 
             Returns:
                 One line per reminder with its ID, due time, target and text, or a note
@@ -203,22 +204,29 @@ class ReminderTools:
             if error:
                 return error
             pending = cog.store.list_for_creator(user_id)
-            if not pending:
+            from_others = cog.store.list_from_others(user_id)
+            if not pending and not from_others:
                 return "You have no pending reminders."
-            lines = ["Pending reminders (ID | due | target | text):"]
-            for reminder in pending:
-                due = datetime.fromtimestamp(reminder.due_at).strftime("%Y-%m-%d %H:%M")
-                lines.append(
-                    f"#{reminder.id} | {due} (unix {int(reminder.due_at)}) | <@{reminder.target_id}> | {reminder.message}"
-                )
+            lines = []
+            for title, reminders in (
+                ("Pending reminders you set (ID | due | target | text):", pending),
+                ("Pending reminders others set for you; you may cancel them (ID | due | set by | text):", from_others),
+            ):
+                if not reminders:
+                    continue
+                lines.append(title)
+                for reminder in reminders:
+                    due = datetime.fromtimestamp(reminder.due_at).strftime("%Y-%m-%d %H:%M")
+                    person = reminder.target_id if reminder.creator_id == user_id else reminder.creator_id
+                    lines.append(f"#{reminder.id} | {due} (unix {int(reminder.due_at)}) | <@{person}> | {reminder.message}")
             return "\n".join(lines)
 
         @tool
         async def cancel_reminder(reminder_id: int) -> str:
-            """Cancels one of the requesting user's pending reminders.
+            """Cancels a pending reminder the requesting user set, or one someone else set for them.
 
             Use list_reminders first if the ID is not known. A user can only cancel
-            reminders they set themselves.
+            reminders they set themselves or that are for them.
 
             Args:
                 reminder_id: The reminder's ID, as shown by list_reminders.
@@ -229,7 +237,10 @@ class ReminderTools:
             cog, user_id, error = _reminder_cog_and_user()
             if error:
                 return error
-            mine = {reminder.id: reminder for reminder in cog.store.list_for_creator(user_id)}
+            mine = {
+                reminder.id: reminder
+                for reminder in cog.store.list_for_creator(user_id) + cog.store.list_from_others(user_id)
+            }
             if reminder_id not in mine or not cog.store.cancel(reminder_id, user_id):
                 return f"Reminder #{reminder_id} was not found among your pending reminders."
             return f"Cancelled reminder #{reminder_id}: {mine[reminder_id].message}"

@@ -13,7 +13,22 @@
         "list_empty": "You have no pending reminders.",
         "list_item": "`#{id}` {time}: {message}",
         "cancel_success": "Cancelled reminder #{id}.",
-        "cancel_not_found": "No reminder #{id} of yours was found (it may have been sent already, or you did not set it)."
+        "cancel_not_found": "No reminder #{id} of yours was found (it may have been sent already, or you did not set it).",
+        "list_from_others_title": "Reminders others set for you (cancel one with /reminder_cancel):",
+        "list_from": "(set by {user})",
+        "others_off": "Reminders can only be set for yourself here.",
+        "others_not_member": "Reminders can only be set for members of this server.",
+        "others_limit": "This member already has {limit} reminders set by others. Wait until one is sent or cancelled.",
+        "ask_prompt": "{target}, {creator} would like to remind you at {time}: {message}",
+        "ask_sent": "Asked {user} to accept; the reminder is set only once they do.",
+        "ask_too_often": "You have asked people to accept too often lately. Try again in {wait}s.",
+        "ask_confirm": "Accept",
+        "ask_cancel": "Decline",
+        "ask_not_yours": "Only the member being reminded can answer.",
+        "ask_done": "This question was already answered.",
+        "ask_cancelled": "Declined; no reminder was set.",
+        "ask_expired": "No answer in time; no reminder was set.",
+        "ask_replaced": "Replaced by a newer request; this one was not set."
     },
     "time_units": {
         "seconds": "s",

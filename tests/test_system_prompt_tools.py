@@ -133,36 +133,82 @@ def test_write_personality_exported():
     assert "SystemPromptTools" in mod.__all__
 
 
+def _ask_and_press(tool, **kwargs):
+    """Runs the tool, then presses Confirm on the question it posted; returns (tool reply, press reply, asks)."""
+    asks = []
+
+    async def fake_ask(channel, content, view):
+        asks.append((content, view))
+        return view
+
+    async def run():
+        with patch("addons.confirm.ask", fake_ask):
+            reply = await tool.coroutine(**kwargs)
+        pressed = await asks[0][1].on_confirm() if asks else None
+        return reply, pressed
+
+    reply, pressed = asyncio.run(run())
+    return reply, pressed, asks
+
+
 class TestUpdatePersonalityChannel:
     def setup_method(self):
         self.mock_bot, self.mock_manager = _make_bot_with_manager()
+        self.mock_bot.personality_asks = {}
         self.runtime = _make_runtime(bot=self.mock_bot)
         self.tool = SystemPromptTools(self.runtime).get_tools()[0]
 
+    def test_nothing_is_written_before_the_member_presses_confirm(self):
+        async def run():
+            async def fake_ask(channel, content, view):
+                return view
+            with patch("addons.confirm.ask", fake_ask):
+                return await self.tool.coroutine(merged_prompt="Be funny.", scope="channel")
+
+        reply = asyncio.run(run())
+        assert "confirm" in reply.lower()
+        self.mock_manager.set_channel_prompt.assert_not_called()
+
+    def test_only_the_asking_member_may_press(self):
+        _, _, asks = _ask_and_press(self.tool, merged_prompt="Be funny.", scope="channel")
+        assert asks[0][1].owner_id == 333
+
+    def test_the_proposal_is_shown_with_the_question(self):
+        _, _, asks = _ask_and_press(self.tool, merged_prompt="Be funny.", scope="channel")
+        assert "> Be funny." in asks[0][0]
+
     def test_calls_set_channel_prompt_with_correct_args(self):
-        asyncio.run(
-            self.tool.coroutine(merged_prompt="Be funny.", scope="channel")
-        )
+        _ask_and_press(self.tool, merged_prompt="Be funny.", scope="channel")
         self.mock_manager.set_channel_prompt.assert_called_once_with(
             "111", "222", {"prompt": "Be funny.", "enabled": True}, "333"
         )
 
-    def test_returns_success_message(self):
-        result = asyncio.run(
-            self.tool.coroutine(merged_prompt="Be funny.", scope="channel")
-        )
-        assert "success" in result.lower() or "updated" in result.lower()
-
     def test_invalidates_cache_after_write(self):
-        asyncio.run(
-            self.tool.coroutine(merged_prompt="Be funny.", scope="channel")
-        )
+        _ask_and_press(self.tool, merged_prompt="Be funny.", scope="channel")
         self.mock_manager.cache.invalidate.assert_called()
+
+    def test_a_member_who_lost_the_permission_cannot_confirm(self):
+        asks = []
+
+        async def fake_ask(channel, content, view):
+            asks.append(view)
+            return view
+
+        async def run():
+            with patch("addons.confirm.ask", fake_ask):
+                await self.tool.coroutine(merged_prompt="Be rude.", scope="channel")
+            with patch("cogs.system_prompt.permissions.PermissionValidator") as MockV:
+                MockV.return_value.can_modify_channel_prompt.return_value = False
+                return await asks[0].on_confirm()
+
+        asyncio.run(run())
+        self.mock_manager.set_channel_prompt.assert_not_called()
 
 
 class TestUpdatePersonalityServer:
     def setup_method(self):
         self.mock_bot, self.mock_manager = _make_bot_with_manager()
+        self.mock_bot.personality_asks = {}
         self.runtime = _make_runtime(bot=self.mock_bot)
         self.tool = SystemPromptTools(self.runtime).get_tools()[0]
 
@@ -177,25 +223,21 @@ class TestUpdatePersonalityServer:
     def test_allows_admin_to_set_server_scope(self):
         with patch("cogs.system_prompt.permissions.PermissionValidator") as MockV:
             MockV.return_value.can_modify_server_prompt.return_value = True
-            result = asyncio.run(
-                self.tool.coroutine(merged_prompt="Be formal.", scope="server")
-            )
+            _ask_and_press(self.tool, merged_prompt="Be formal.", scope="server")
         self.mock_manager.set_server_prompt.assert_called_once_with(
             "111", {"prompt": "Be formal.", "enabled": True}, "333"
         )
-        assert "success" in result.lower() or "updated" in result.lower()
 
 
 class TestUpdatePersonalityErrors:
-    def test_missing_cog_returns_error_string(self):
+    def test_missing_cog_saves_nothing(self):
         mock_bot = MagicMock()
         mock_bot.get_cog.return_value = None
+        mock_bot.personality_asks = {}
         runtime = _make_runtime(bot=mock_bot)
         tool = SystemPromptTools(runtime).get_tools()[0]
-        result = asyncio.run(
-            tool.coroutine(merged_prompt="...", scope="channel")
-        )
-        assert "error" in result.lower()
+        _, pressed, _ = _ask_and_press(tool, merged_prompt="...", scope="channel")
+        assert "nothing changed" in pressed.lower()
 
     def test_no_message_context_returns_error_string(self):
         runtime = MagicMock()
