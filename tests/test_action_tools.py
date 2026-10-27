@@ -7,6 +7,7 @@ host presses Confirm, and a birthday it proposes is saved only once the member i
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import sys
 from pathlib import Path
@@ -196,6 +197,59 @@ async def test_a_proposed_event_is_only_made_when_its_host_confirms(world: Simpl
     again = FakeInteraction(HOST_ID, posted)
     await world.events.confirm_draft(again, view)
     assert again.sent[0][0] == "draft_done|" and len(world.store.upcoming(GUILD_ID, NOW)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_press_while_a_draft_is_turning_into_an_event_keeps_the_buttons_and_counts(
+    world: SimpleNamespace,
+) -> None:
+    """The draft message gets its buttons before the event stores its message id; that gap is not an orphan."""
+    await world.events.post_draft(world.here, world.guild.get_member(HOST_ID), "raid", "3600")
+    posted = world.here.messages[-1]
+    edit_may_finish = asyncio.Event()
+    host = FakeInteraction(HOST_ID, posted)
+    edited = host._edit
+
+    async def edit_then_wait(**kwargs: Any) -> None:
+        await edited(**kwargs)
+        await edit_may_finish.wait()
+
+    host.response.edit_message = edit_then_wait
+
+    class Press(FakeInteraction):
+        def __init__(self, user_id: int, message: FakeMessage) -> None:
+            super().__init__(user_id, message)
+            self.guild_id = GUILD_ID
+            self.followups: List[dict] = []
+            self.followup = SimpleNamespace(send=self._followup)
+
+        async def _followup(self, content: Any = None, **kwargs: Any) -> None:
+            self.followups.append({"content": content, **kwargs})
+
+    confirming = asyncio.create_task(world.events.confirm_draft(host, posted.kwargs["view"]))
+    for _ in range(200):
+        if host.edits:
+            break
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("the draft was never edited")
+    press = Press(3, posted)
+    pressing = asyncio.create_task(world.events.answer(press, GOING))
+    for _ in range(200):
+        if press.deferred:
+            break
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("the press was never acknowledged")
+
+    edit_may_finish.set()
+    await asyncio.wait_for(asyncio.gather(confirming, pressing), timeout=5)
+
+    # The press is answered like any other, which refreshes the message with its buttons still on it.
+    assert press.edits and all(edit.get("view") is not None for edit in press.edits), "the live event's buttons were removed"
+    assert [reply["content"] for reply in press.followups] == ["you_are_going|"]
+    (event,) = world.store.upcoming(GUILD_ID, NOW)
+    assert world.store.roster(event).going == [HOST_ID, 3]
 
 
 @pytest.mark.asyncio

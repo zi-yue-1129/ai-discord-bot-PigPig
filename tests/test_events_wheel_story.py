@@ -631,7 +631,7 @@ class FakeImages:
     def __init__(self) -> None:
         self.prompts: List[str] = []
 
-    async def _generate_image_logic(self, prompt: str, guild_id: str, channel_id: int) -> dict:
+    async def _generate_image_logic(self, prompt: str, guild_id: str, channel_id: int, channel: Any = None) -> dict:
         self.prompts.append(prompt)
         return {"attachments": [{"data_base64": base64.b64encode(b"png").decode()}]}
 
@@ -847,7 +847,7 @@ async def test_a_card_never_shares_the_channel_image_history() -> None:
             self.conversation_history = {500: [{"role": "user", "content": "earlier public request"}]}
             self.seen: list = []
 
-        async def _generate_image_logic(self, prompt: str, guild_id: str, channel_id: Any) -> dict:
+        async def _generate_image_logic(self, prompt: str, guild_id: str, channel_id: Any, channel: Any = None) -> dict:
             self.seen.append(list(self._get_conversation_history(channel_id)))
             self._update_conversation_history(channel_id, "user", prompt)
             return {"attachments": [{"data_base64": base64.b64encode(b"png").decode()}]}
@@ -1696,7 +1696,7 @@ async def test_a_card_that_could_not_be_drawn_is_not_charged() -> None:
     from addons.rate_limiter import LimitRule, RateLimiter
 
     class NoImage(FakeImages):
-        async def _generate_image_logic(self, prompt: str, guild_id: str, channel_id: int) -> dict:
+        async def _generate_image_logic(self, prompt: str, guild_id: str, channel_id: int, channel: Any = None) -> dict:
             return {"attachments": []}
 
     limiter = RateLimiter({"image": LimitRule(max_requests=1, per_seconds=3600)})
@@ -1798,3 +1798,113 @@ async def test_a_card_whose_reply_cannot_be_acknowledged_is_not_charged() -> Non
     with pytest.raises(discord.HTTPException):
         await StoryManagerCog.card.callback(cog, interaction, "c1")
     assert limiter.hit("image", 7) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_card_falls_back_to_the_local_model_without_touching_the_channel() -> None:
+    import logging
+
+    from PIL import Image
+
+    from cogs.gen_img import ImageGenerationCog
+
+    image_cog = ImageGenerationCog.__new__(ImageGenerationCog)
+    image_cog.lang_manager = FakeLang()
+    image_cog.logger = logging.getLogger("test_card_fallback")
+    image_cog.conversation_history = {}
+    base_pixels: list = []
+
+    async def gemini_draws_nothing(prompt: str, input_images: Any, history: Any) -> tuple:
+        return None, None
+
+    def local_pipe(prompt: str, image: Any, **kwargs: Any) -> list:
+        base_pixels.append(image.getpixel((0, 0)))
+        return [Image.new("RGB", (8, 8), color="blue")]
+
+    class NoDownloads:
+        def get(self, *args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("the card must not read an image posted in the channel")
+
+    image_cog.generate_with_gemini = gemini_draws_nothing
+    image_cog.pipe = local_pipe
+    image_cog.session = NoDownloads()
+    cog = _story_cog(characters={"c1": _character()}, cogs={"ImageGenerationCog": image_cog}, rate_limiter=None)
+    interaction = FakeInteraction(user_id=7)
+    interaction.channel.last_message = SimpleNamespace(
+        attachments=[SimpleNamespace(filename="someone-elses.png", url="https://cdn.example/x.png")]
+    )
+
+    await StoryManagerCog.card.callback(cog, interaction, "c1")
+
+    assert interaction.followups[0]["embed"].title == "艾莉絲"  # drawn by the local model
+    assert interaction.channel.sent == []  # no "processing" notice in the channel
+    assert base_pixels == [(255, 255, 255)]  # a blank base, not a member's picture
+    assert image_cog.conversation_history == {}  # the card's own history was dropped
+
+
+async def _settle(condition: Any) -> None:
+    """Yields to the event loop until ``condition()`` holds, failing instead of hanging."""
+    for _ in range(200):
+        if condition():
+            break
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("the awaited state was never reached")
+
+
+@pytest.mark.asyncio
+async def test_a_press_while_the_event_is_still_being_created_keeps_the_buttons_and_counts(store: EventStore) -> None:
+    """The announcement is live before its message is stored; a press in that gap is not an orphan."""
+    from datetime import datetime
+
+    cog = _events_cog(store, FakeChannel())
+    cog.parse_time = lambda text: datetime.fromtimestamp(NOW + float(text))
+    posted = SimpleNamespace(id=next(_MESSAGE_IDS))
+    lookup_may_finish = asyncio.Event()
+
+    class SlowLookup(FakeInteraction):
+        async def original_response(self) -> Any:
+            await lookup_may_finish.wait()
+            return posted
+
+    host = SlowLookup()
+    creating = asyncio.create_task(EventsCog.create.callback(cog, host, "開黑", "3600", 0, 15))
+    await _settle(lambda: host.sent)
+    press = FakeInteraction(user_id=3, message=posted)
+    pressing = asyncio.create_task(cog.answer(press, GOING))
+    await _settle(lambda: press.deferred is not None)
+
+    lookup_may_finish.set()
+    await asyncio.wait_for(asyncio.gather(creating, pressing), timeout=5)
+
+    # The press is answered like any other, which refreshes the message with its buttons still on it.
+    assert press.edits and all(edit.get("view") is not None for edit in press.edits), "the live event's buttons were removed"
+    assert [reply["content"] for reply in press.followups] == ["you_are_going|"]
+    (event,) = store.upcoming(GUILD_ID, NOW)
+    assert event.message_id == posted.id and store.roster(event).going == [1, 3]
+
+
+@pytest.mark.asyncio
+async def test_a_press_after_a_failed_creation_still_removes_the_dead_buttons(store: EventStore) -> None:
+    """Waiting for creations must not keep the cleanup from running once they are over."""
+    cog = _events_cog(store, FakeChannel())
+    interaction = FakeInteraction(user_id=3, message=SimpleNamespace(id=next(_MESSAGE_IDS)))
+    with cog._creating(interaction.channel_id):
+        assert interaction.channel_id in cog._creations
+    assert interaction.channel_id not in cog._creations
+
+    await cog.answer(interaction, GOING)
+
+    assert interaction.followups[0]["content"] == "event_gone|"
+    assert interaction.edits == [{"view": None}]
+
+
+@pytest.mark.asyncio
+async def test_a_press_on_a_button_of_a_lost_event_removes_the_dead_buttons(store: EventStore) -> None:
+    cog = _events_cog(store, FakeChannel())
+    interaction = FakeInteraction(user_id=3, message=SimpleNamespace(id=987654))
+
+    await cog.answer(interaction, GOING)
+
+    assert interaction.followups[0]["content"] == "event_gone|"
+    assert interaction.edits == [{"view": None}]
