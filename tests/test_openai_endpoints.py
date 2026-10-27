@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from addons.settings import llm_config
+from addons.settings import LLMConfig, llm_config
 from llm.utils import model_init
 
 ENDPOINT = {"base_url": "https://llm.example.invalid/v1", "api_key_env": "EXAMPLE_LLM_API_KEY"}
@@ -40,6 +42,63 @@ def test_a_missing_key_is_an_explicit_error(endpoint: None, monkeypatch: pytest.
 
     with pytest.raises(ValueError, match="EXAMPLE_LLM_API_KEY"):
         model_init.create_model_instance("example:qwen")
+
+
+def _load_llm_config(tmp_path: Path, section: str) -> LLMConfig:
+    """Builds an ``LLMConfig`` from a llm.yaml holding only the given ``openai_endpoints`` text."""
+    path = tmp_path / "llm.yaml"
+    path.write_text(section, encoding="utf-8")
+    return LLMConfig(str(path))
+
+
+def test_a_valid_endpoints_section_loads(tmp_path: Path) -> None:
+    config = _load_llm_config(
+        tmp_path,
+        "openai_endpoints:\n  steak:\n    base_url: https://llm.example.invalid/v1\n    api_key_env: STEAK_LLM_API_KEY\n",
+    )
+
+    assert config.openai_endpoints == {
+        "steak": {"base_url": "https://llm.example.invalid/v1", "api_key_env": "STEAK_LLM_API_KEY"}
+    }
+
+
+@pytest.mark.parametrize("section", ["", "openai_endpoints:\n", "openai_endpoints: {}\n"])
+def test_no_endpoints_means_none_configured(tmp_path: Path, section: str) -> None:
+    """A key whose entries are all commented out is YAML null and must not break startup."""
+    assert _load_llm_config(tmp_path, section).openai_endpoints == {}
+
+
+@pytest.mark.parametrize(
+    "name", ["openai", "OpenAI", "anthropic", "google_genai", "ollama", "deepseek", "vllm", "azure_openai"]
+)
+def test_an_endpoint_cannot_take_the_name_of_a_built_in_provider(tmp_path: Path, name: str) -> None:
+    """``anthropic:...`` would otherwise be sent, with the built-in provider's key, to the endpoint's host."""
+    section = f"openai_endpoints:\n  {name}:\n    base_url: https://llm.example.invalid/v1\n    api_key_env: X_KEY\n"
+
+    with pytest.raises(ValueError, match=name):
+        _load_llm_config(tmp_path, section)
+
+
+@pytest.mark.parametrize(
+    ("section", "expected"),
+    [
+        ("openai_endpoints:\n  steak:\n    api_key_env: X_KEY\n", "base_url"),
+        ("openai_endpoints:\n  steak:\n    base_url: https://h.invalid/v1\n", "api_key_env"),
+        ("openai_endpoints:\n  steak:\n    base_url:\n    api_key_env: X_KEY\n", "base_url"),
+        ("openai_endpoints:\n  steak:\n    base_url: h.invalid/v1\n    api_key_env: X_KEY\n", "base_url"),
+        ("openai_endpoints:\n  steak:\n    base_url: https://h.invalid/v1\n    api_key_env: not a name\n", "api_key_env"),
+        ("openai_endpoints:\n  steak: https://h.invalid/v1\n", "steak"),
+        ("openai_endpoints:\n  steak:\n", "steak"),
+        ("openai_endpoints:\n  bad:name:\n    base_url: https://h.invalid/v1\n    api_key_env: X_KEY\n", "bad:name"),
+        ("openai_endpoints: [steak]\n", "openai_endpoints"),
+    ],
+)
+def test_a_malformed_endpoint_is_rejected_when_the_config_loads(
+    tmp_path: Path, section: str, expected: str
+) -> None:
+    """A mistake must stop the load with its cause, not surface as a KeyError that model fallback hides."""
+    with pytest.raises(ValueError, match=expected):
+        _load_llm_config(tmp_path, section)
 
 
 def test_vllm_models_keep_using_the_vllm_url(endpoint: None, monkeypatch: pytest.MonkeyPatch) -> None:

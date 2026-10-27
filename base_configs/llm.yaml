@@ -130,6 +130,8 @@ vllm_url: "http://127.0.0.1:8181"
 # Other OpenAI-compatible servers. A model string "<name>:<model>" in model_priorities
 # (for example "steak:qwen") is served by the endpoint called <name>. The API key is read
 # from the environment variable named by api_key_env (put it in .env, not in this file).
+# A name may not be a built-in provider ("openai", "anthropic", "vllm", ...); the bot will not
+# start, and the dashboard will not save, a section with a missing or malformed field.
 # openai_endpoints:
 #   steak:
 #     base_url: "https://llm.example.com/v1"
