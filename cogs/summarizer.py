@@ -3,6 +3,7 @@ import re
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, Optional, Set
+from addons.rate_limiter import format_wait
 from addons.logging import get_logger
 
 import discord
@@ -90,6 +91,18 @@ class SummarizerCog(commands.Cog):
             localized_desc = self.lang_manager.translate(guild_id, "commands", "summarize", "description")
             if localized_desc and localized_desc != "summarize":
                 self.summarize.description = localized_desc
+
+        # A summary is a model call over many messages, so it counts like a chat message.
+        limiter = getattr(self.bot, "rate_limiter", None)
+        retry_after = limiter.hit("chat", interaction.user.id, interaction.guild_id) if limiter else 0
+        if retry_after:
+            wait = format_wait(retry_after)
+            text = (
+                self.lang_manager.translate(guild_id, "errors", "rate_limited", retry_after=wait)
+                if self.lang_manager else f"⏳ You're going a bit fast. Try again in {wait}s."
+            )
+            await interaction.response.send_message(text, ephemeral=True)
+            return
 
         await interaction.response.defer(ephemeral=only_me, thinking=True)
         limit = max(1, min(limit, MAX_SUMMARY_MESSAGES))

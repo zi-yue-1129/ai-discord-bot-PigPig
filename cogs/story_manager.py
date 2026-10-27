@@ -69,6 +69,8 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
         self.recap_store = RecapStore(RECAP_DB_PATH)
         # One daily recap check at a time per channel, so two quick messages post one recap.
         self._recap_locks: Dict[int, asyncio.Lock] = {}
+        # One story turn at a time per channel: a burst of messages is answered in order, not all at once.
+        self._turn_locks: Dict[int, asyncio.Lock] = {}
         self._today = lambda: date.today().isoformat()
         self.logger.info("StoryManagerCog (UI版本) 已初始化")
 
@@ -234,7 +236,7 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
         text = None
         if orchestrator is not None and (lines or instance.summaries):
             limiter = getattr(self.bot, "rate_limiter", None)
-            charge = (lambda: limiter.hit("chat", user_id)) if limiter is not None and user_id is not None else None
+            charge = (lambda: limiter.hit("chat", user_id, guild_id)) if limiter is not None and user_id is not None else None
             language_manager = self.bot.get_cog("LanguageManager")
             lang = language_manager.get_server_lang(str(guild_id)) if language_manager else "en_US"
             try:
@@ -450,7 +452,9 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
         
         try:
             await self.maybe_post_daily_recap(message)
-            await self.story_manager.process_story_message(message)
+            lock = self._turn_locks.setdefault(message.channel.id, asyncio.Lock())
+            async with lock:
+                await self.story_manager.process_story_message(message)
             
         except Exception as e:
             self.logger.error(
