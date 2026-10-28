@@ -58,6 +58,7 @@ from itertools import cycle
 from cogs.music_lib.state_manager import StateManager
 from cogs.music_lib.ui_manager import UIManager
 from llm.orchestrator import Orchestrator
+from llm.utils.phase_timer import PhaseTimer
 from addons.logging import get_logger
 
 # Module-level logger for bot module
@@ -259,7 +260,8 @@ class PigPig(commands.Bot):
 
             if not message.guild or message.author.bot:
                 return
-            
+            timer = PhaseTimer()
+
             if self.message_tracker:
                 await self.message_tracker.track_message(message)
             
@@ -348,10 +350,13 @@ class PigPig(commands.Bot):
                             _seen_ver = self.version_storage.get_seen_version(guild_id)
                             _announce = (_seen_ver != _current_ver)
 
+                    timer.mark("routing")
                     message_edit = await message.reply("...")
+                    timer.mark("placeholder_reply")
                     await self.orchestrator.handle_message(
                         self, message_edit, message, bound_log,
                         announce_new_version=_announce,
+                        timer=timer,
                     )
                     channel_manager.record_bot_reply(message.channel.id, message.author.id)
 
