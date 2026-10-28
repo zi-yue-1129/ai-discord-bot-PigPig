@@ -6,6 +6,7 @@ import re
 from addons.logging import get_logger
 from addons.settings import memory_config
 from llm.self_knowledge import build_self_description
+from llm.utils.phase_timer import PhaseTimer
 
 logger = get_logger(server_id="Bot", source="llm.orchestrator")
 
@@ -440,6 +441,7 @@ Focus on understanding what the user actually needs and prepare a clear analysis
         message: Message,
         logger: Any,
         announce_new_version: bool = False,
+        timer: Optional[PhaseTimer] = None,
     ) -> OrchestratorResponse:
         """
         Main entrypoint for handling an incoming Discord message.
@@ -450,7 +452,18 @@ Focus on understanding what the user actually needs and prepare a clear analysis
         short_term_msgs (List[BaseMessage]) are injected directly into the
         agents' messages lists (oldest -> newest), placed before the current
         user input to preserve conversation order.
+
+        Args:
+            bot: The Discord bot.
+            message_edit: The placeholder reply that is edited as the answer is produced.
+            message: The user's message being answered.
+            logger: Logger bound to the guild and user.
+            announce_new_version: Whether to open the reply with a new-version announcement.
+            timer: Phase timer already started by the caller (so the time before this method is
+                counted too); a new one is started here when omitted.
         """
+        if timer is None:
+            timer = PhaseTimer()
         # Default fallbacks
         procedural_context_str: str = ""
         short_term_msgs: List[BaseMessage] = []
@@ -464,6 +477,7 @@ Focus on understanding what the user actually needs and prepare a clear analysis
             # Interrupt any active background memory tasks to prioritize this conversation
             if hasattr(bot, "message_tracker") and bot.message_tracker:
                 bot.message_tracker.interrupt_all()
+            timer.mark("typing")
 
             # Create a shared image cache for this entire message processing cycle
             # This prevents re-downloading identical image URLs across multiple model fallback attempts
@@ -488,6 +502,7 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                 asyncio.create_task(func.report_error(e, "ContextManager.get_context failed in Orchestrator"))
                 procedural_context_str = ""
                 short_term_msgs = []
+            timer.mark("context")
 
             # 1b) Player status goes into the context because neither agent can look it
             # up after its single tool round.
@@ -498,6 +513,7 @@ Focus on understanding what the user actually needs and prepare a clear analysis
             except Exception as e:
                 # Per design: report and continue without the music section
                 asyncio.create_task(func.report_error(e, "build_music_context failed in Orchestrator"))
+            timer.mark("music")
 
             try:
                 user = getattr(message, "author", None)
@@ -525,6 +541,7 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                 # But OrchestratorResponse.tool_calls uses tool_list. 
                 # We should probably combine them or just get all for that purpose.
                 all_tools = info_agent_tools + message_agent_tools
+                timer.mark("tools")
 
                 # --- Info agent setup with fallback ---
                 # Note: Using manual fallback for consistency with message_agent
@@ -545,7 +562,9 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                 
                 # Update status to "Analyzing..."
                 analyzing_msg = lang_manager.translate(guild_id, "system", "chat_bot", "responses", "analyzing") if lang_manager else "🔍 Analyzing information..."
+                timer.mark("info_prompt")
                 await safe_edit_message(message_edit, analyzing_msg)
+                timer.mark("analyzing_edit")
                 
                 # Prepare callbacks
                 callbacks = []
@@ -635,6 +654,7 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                 await asyncio.create_task(func.report_error(e, "info_agent failed"))
                 raise
 
+            timer.mark("info_agent")
             try:
                 # --- Message agent setup with streaming fallback ---
                 # Note: ModelFallbackMiddleware doesn't support streaming mode,
@@ -708,7 +728,9 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                 
                 # Update status to "Thinking..."
                 thinking_msg = lang_manager.translate(guild_id, "system", "chat_bot", "responses", "thinking") if lang_manager else "🧠 Thinking about response..."
+                timer.mark("message_prompt")
                 await safe_edit_message(message_edit, thinking_msg)
+                timer.mark("thinking_edit")
                 
                 # Streaming fallback loop - try each model once, no retries
                 # Use circuit breaker to skip models that recently failed
@@ -800,6 +822,9 @@ Focus on understanding what the user actually needs and prepare a clear analysis
             except Exception as e:
                 await asyncio.create_task(func.report_error(e, "message_agent failed"))
                 raise
+
+            timer.mark("message_agent")
+            logger.info(f"Reply timing: {timer.summary()}")
 
             resp = OrchestratorResponse.construct()
             resp.reply = message_result
