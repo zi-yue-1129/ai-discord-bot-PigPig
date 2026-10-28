@@ -179,3 +179,13 @@ def test_the_new_caps_have_defaults() -> None:
 
     assert limiter.rules["chat_daily"] == LimitRule(DEFAULT_LIMITS["chat_daily"]["max_requests"], 86400)
     assert limiter.rules["chat_server"].per_seconds == 3600
+
+
+def test_a_server_may_use_the_bot_twelve_hundred_times_an_hour_and_base_yaml_says_the_same() -> None:
+    import yaml
+
+    with open("base_configs/base.yaml", encoding="utf-8") as handle:
+        documented = yaml.safe_load(handle)["rate_limits"]["chat_server"]
+
+    assert DEFAULT_LIMITS["chat_server"] == {"max_requests": 1200, "per_seconds": 3600}
+    assert documented == DEFAULT_LIMITS["chat_server"], "base.yaml and the built-in default must agree"

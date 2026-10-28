@@ -19,7 +19,7 @@ rate_limits:
     max_requests: 200
     per_seconds: 86400
   chat_server:         # also counted with every chat use: a whole server, all members together
-    max_requests: 300
+    max_requests: 1200
     per_seconds: 3600
   image:               # image generation, from /generate_image or from the AI
     max_requests: 20

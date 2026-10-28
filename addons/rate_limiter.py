@@ -16,7 +16,7 @@ DEFAULT_LIMITS: Dict[str, Dict[str, float]] = {
     "chat": {"max_requests": 10, "per_seconds": 60},
     # Charged together with "chat": the same member over a day, and a whole server (see LINKED_BUCKETS).
     "chat_daily": {"max_requests": 200, "per_seconds": 86400},
-    "chat_server": {"max_requests": 300, "per_seconds": 3600},
+    "chat_server": {"max_requests": 1200, "per_seconds": 3600},
     "image": {"max_requests": 20, "per_seconds": 86400},
     # Questions the AI posts to another member on someone's behalf (a reminder or a memory for them);
     # each pings that member.
