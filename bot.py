@@ -72,6 +72,9 @@ from addons.tokens import tokens
 # Per-guild logger creation is now performed via get_logger(server_id, source, channel).
 
 
+DEFAULT_ALLOWED_MENTIONS = discord.AllowedMentions(everyone=False, roles=False, users=True, replied_user=True)
+
+
 class PigPig(commands.Bot):
     """Main Discord bot class with music, messaging, and logging features.
     
@@ -97,6 +100,9 @@ class PigPig(commands.Bot):
             *args: Variable length argument list passed to parent Bot class.
             **kwargs: Arbitrary keyword arguments passed to parent Bot class.
         """
+        # No message the bot sends may ping @everyone, @here or a role unless that send allows it itself.
+        # Text from members and the AI ends up in many messages, so this is the safe default for all of them.
+        kwargs.setdefault("allowed_mentions", DEFAULT_ALLOWED_MENTIONS)
         super().__init__(*args, **kwargs)
         func.set_bot(self)
         self.loggers = {}
@@ -297,7 +303,8 @@ class PigPig(commands.Bot):
                 # Check if it's a story mode channel
                 if channel_mode == 'story':
                     story_manager_cog = self.get_cog('StoryManagerCog')
-                    if story_manager_cog:
+                    # Every story turn runs several model calls, so it counts like a chat message.
+                    if story_manager_cog and await self._charge_chat(message):
                         await story_manager_cog.handle_story_message(message)
                     return  # In story mode, don't continue with general message processing
 
@@ -322,7 +329,7 @@ class PigPig(commands.Bot):
                 )
                 wants_reply = directly_asked or auto_reply
                 if is_allowed and wants_reply:
-                    retry_after = self.rate_limiter.hit("chat", message.author.id)
+                    retry_after = self.rate_limiter.hit("chat", message.author.id, message.guild.id)
                     if retry_after:
                         # Unprompted auto-replies are skipped quietly; a direct ask gets told why.
                         if is_mentioned or is_reply_to_bot:
@@ -356,6 +363,14 @@ class PigPig(commands.Bot):
         except Exception as e:
             await func.report_error(e, f"on_message: {e}")
             
+    async def _charge_chat(self, message: discord.Message) -> bool:
+        """Charges a message to its author's chat quota; when over it, says so and returns False."""
+        retry_after = self.rate_limiter.hit("chat", message.author.id, message.guild.id)
+        if retry_after:
+            await self._tell_rate_limited(message, "chat", retry_after)
+            return False
+        return True
+
     async def _tell_rate_limited(self, message: discord.Message, bucket: str, retry_after: float) -> None:
         """Says once per window that the user hit their usage limit; later attempts only get a ⏳ reaction."""
         try:
@@ -413,40 +428,26 @@ class PigPig(commands.Bot):
                 return
             
             # Implement logic for generating responses
-            if self.user.id in after.raw_mentions and not after.mention_everyone:
-                    # Fetch the bot's previous reply
+            if self.user.id in after.raw_mentions and not after.mention_everyone and channel_manager:
+                    is_allowed, auto_response_enabled, channel_mode = channel_manager.is_allowed_channel(after.channel, guild_id)
+                    # Check if it's a story mode channel
+                    if channel_mode == 'story':
+                        story_manager_cog = self.get_cog('StoryManagerCog')
+                        if story_manager_cog and await self._charge_chat(after):
+                            await story_manager_cog.handle_story_message(after)
+                        return  # In story mode, don't continue with general message processing
+                    if not is_allowed:
+                        return
+                    # Charged before anything else, so editing a message over and over costs nothing
+                    # beyond the author's quota (not even the history read below).
+                    if not await self._charge_chat(after):
+                        return
+                    # Delete the bot's previous reply to this message
                     async for msg in after.channel.history(limit=50):
                         if msg.reference and msg.reference.message_id == before.id and msg.author.id == self.user.id:
-                            await msg.delete()  # Delete previous reply
-                    if channel_manager:
-                        guild_id = str(after.guild.id)
-                        is_allowed, auto_response_enabled, channel_mode = channel_manager.is_allowed_channel(after.channel, guild_id)
-                        # Check if it's a story mode channel
-                        if channel_mode == 'story':
-                            story_manager_cog = self.get_cog('StoryManagerCog')
-                            if story_manager_cog:
-                                await story_manager_cog.handle_story_message(after)
-                            return  # In story mode, don't continue with general message processing
-                        
-                        is_reply_to_bot = False
-                        if after.reference:
-                            ref_msg = None
-                            if hasattr(after.reference, 'resolved') and isinstance(after.reference.resolved, discord.Message):
-                                ref_msg = after.reference.resolved
-                            elif hasattr(after.reference, 'cached_message') and after.reference.cached_message:
-                                ref_msg = after.reference.cached_message
-                                
-                            if ref_msg and ref_msg.author.id == self.user.id:
-                                is_reply_to_bot = True
-
-                        if is_allowed and (self.user.id in after.raw_mentions and not after.mention_everyone or auto_response_enabled or is_reply_to_bot):
-                            retry_after = self.rate_limiter.hit("chat", after.author.id)
-                            if retry_after:
-                                await self._tell_rate_limited(after, "chat", retry_after)
-                                return
-                            message_edit = await after.reply("...")
-                            await self.orchestrator.handle_message(self,message_edit, after, logger)
-                            
+                            await msg.delete()
+                    message_edit = await after.reply("...")
+                    await self.orchestrator.handle_message(self,message_edit, after, logger)
         except Exception as e:
             await func.report_error(e, f"on_message_edit: {e}")
         

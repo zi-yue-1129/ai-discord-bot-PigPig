@@ -36,6 +36,20 @@
             "analysis_failed": "分析失败",
             "ai_processing_failed": "AI 处理失败",
             "update_failed": "更新失败"
+        },
+        "ask_others": {
+            "prompt": "{target}，{asker} 想让我记住关于你的这件事：{memory}\n要存进你的个人记忆吗？",
+            "sent": "已请对方确认，对方按下接受后才会记住。",
+            "too_often": "你最近已经请太多人确认了，请 {wait} 秒后再试。",
+            "unavailable": "只能向这个服务器的成员提议记住与他们有关的事。",
+            "saved": "已记住。",
+            "ask_confirm": "接受",
+            "ask_cancel": "拒绝",
+            "ask_not_yours": "只有被询问的人可以回答。",
+            "ask_done": "这个问题已经回答过了。",
+            "ask_cancelled": "已拒绝，什么都没有记住。",
+            "ask_expired": "太久没有回答，什么都没有记住。",
+            "ask_replaced": "已被新的请求取代，这则没有记住。"
         }
     }
 }

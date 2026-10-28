@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import sys
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
@@ -28,7 +29,7 @@ class _Logger:
     def info(self, text: str, *args: Any, **kwargs: Any) -> None:
         self.lines.append(text)
 
-    warning = error = info
+    warning = error = debug = info
 
 
 class _FakeModel:
@@ -239,3 +240,218 @@ async def test_the_read_tool_reports_an_unknown_user_instead_of_the_asker() -> N
     assert result == "data_not_found"
     assert reads == []
     assert users.created == []
+
+
+# ------------------------------------- memories about others need their OK
+
+
+class _Member:
+    def __init__(self, user_id: int) -> None:
+        self.id = user_id
+        self.name = f"member{user_id}"
+        self.display_name = f"Member {user_id}"
+
+
+def _save_tool(
+    saves: List[tuple],
+    members: tuple = (int(TARGET),),
+    limiter: Any = None,
+    hidden: Optional[set] = frozenset(),
+    shared: Optional[List[bool]] = None,
+) -> Any:
+    """The ``save_user_memory`` tool. ``hidden`` is the opt-out list (None: it cannot be read); ``shared``
+    collects whether each save may show the merged memory in its answer."""
+
+    async def save(
+        user_id: str, name: str, data: str, context: Any, nickname: Optional[str] = None, share_result: bool = True
+    ) -> str:
+        saves.append((user_id, name, data, nickname))
+        if shared is not None:
+            shared.append(share_result)
+        return "saved" if share_result else "generic"
+
+    cog = SimpleNamespace(_save_user_data=save)
+
+    def read_optouts(guild_id: int) -> set:
+        if hidden is None:
+            raise sqlite3.OperationalError("database is locked")
+        return set(hidden)
+
+    leaderboard = SimpleNamespace(store=SimpleNamespace(read_optouts=read_optouts))
+    cogs = {"UserDataCog": cog, "LeaderboardCog": leaderboard}
+    bot = SimpleNamespace(get_cog=lambda name: cogs.get(name), get_user=lambda user_id: None)
+    if limiter is not None:
+        bot.rate_limiter = limiter
+    author = SimpleNamespace(id=int(ASKER), name="asker", display_name="Asker")
+    guild = SimpleNamespace(id=1, get_member=lambda user_id: _Member(user_id) if user_id in members else None)
+    message = SimpleNamespace(author=author, guild=guild, channel=SimpleNamespace(id=5))
+    runtime = SimpleNamespace(bot=bot, message=message, logger=_Logger())
+    (tool,) = [t for t in UserMemoryTools(runtime).get_tools() if t.name == "save_user_memory"]
+    return tool
+
+
+class _Posted(List[tuple]):
+    """The questions posted so far; ``during_ask`` holds changes made while a question is being posted."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.during_ask: List[Any] = []
+
+
+@pytest.fixture
+def asks(monkeypatch: pytest.MonkeyPatch) -> _Posted:
+    """Records the questions posted instead of sending them."""
+    posted = _Posted()
+    during_ask = posted.during_ask
+
+    async def fake_ask(
+        channel: Any, content: Any, view: Any, allowed_mentions: Any = None, still_allowed: Any = None
+    ) -> Any:
+        for change in during_ask:
+            change()
+        if still_allowed is not None and not await still_allowed():
+            return None
+        posted.append((content, view, allowed_mentions))
+        return view
+
+    monkeypatch.setattr(sys.modules[UserMemoryTools.__module__], "ask", fake_ask)
+    return posted
+
+
+@pytest.mark.asyncio
+async def test_a_memory_about_another_member_waits_for_them(asks: List[tuple]) -> None:
+    saves: List[tuple] = []
+
+    result = await _save_tool(saves).ainvoke({"user_id": int(TARGET), "memory_to_save": "likes jazz"})
+
+    assert "accept" in result.lower()
+    assert saves == []
+    content, view, allowed = asks[0]
+    assert view.owner_id == int(TARGET)
+    assert "likes jazz" in content
+    assert [user.id for user in allowed.users] == [int(TARGET)] and allowed.everyone is False
+
+
+@pytest.mark.asyncio
+async def test_the_memory_is_saved_for_them_when_they_accept(asks: List[tuple]) -> None:
+    saves: List[tuple] = []
+    await _save_tool(saves).ainvoke({"user_id": int(TARGET), "memory_to_save": "likes jazz"})
+
+    await asks[0][1].on_confirm()
+
+    assert saves == [(TARGET, f"member{TARGET}", "likes jazz", f"Member {TARGET}")]
+
+
+@pytest.mark.asyncio
+async def test_accepting_does_not_show_the_rest_of_their_memory_in_the_channel(asks: List[tuple]) -> None:
+    """The answer is public, and the saved memory is merged with what they told other servers."""
+    saves: List[tuple] = []
+    shared: List[bool] = []
+    await _save_tool(saves, shared=shared).ainvoke({"user_id": int(TARGET), "memory_to_save": "likes jazz"})
+
+    answer = await asks[0][1].on_confirm()
+
+    assert shared == [False]
+    assert "generic" in answer and "saved" not in answer
+
+
+@pytest.mark.asyncio
+async def test_a_save_that_may_not_share_its_result_never_returns_the_merged_memory() -> None:
+    from cogs.memory.users.models import UserInfo
+
+    existing = UserInfo(discord_id=TARGET, discord_name="n", procedural_memory="PRIVATE_FROM_GUILD_B", user_background="PRIVATE_BG")
+
+    class _Users:
+        async def get_user_info(self, user_id: str) -> Any:
+            return existing
+
+        async def update_user_data(self, user_id: str, merged: Any, **kwargs: Any) -> bool:
+            return True
+
+    async def merge(old: Any, new: str, user_id: str, guild_id: str) -> Any:
+        return UserInfo(discord_id=TARGET, discord_name="n", procedural_memory="PRIVATE_FROM_GUILD_B + " + new, user_background="PRIVATE_BG")
+
+    def translate(guild_id: str, *path: str, fallback_key: str = "", **kwargs: Any) -> str:
+        return f"{'/'.join(path)}|{kwargs.get('data', '')}"
+
+    cog = SimpleNamespace(
+        user_manager=_Users(), _invoke_ai_merge_agent=merge, _translate=translate, logger=_Logger(),
+        _get_guild_id_from_context=lambda context: "1", bot=SimpleNamespace(orchestrator=None),
+    )
+
+    shown = await UserDataCog._save_user_data(cog, TARGET, "n", "likes jazz", None, share_result=True)
+    hidden = await UserDataCog._save_user_data(cog, TARGET, "n", "likes jazz", None, share_result=False)
+
+    assert "PRIVATE_FROM_GUILD_B" in shown, "the slash command still shows the member their own memory"
+    assert "PRIVATE" not in hidden and hidden.startswith("commands/userdata/ask_others/saved")
+
+
+@pytest.mark.asyncio
+async def test_opting_out_while_the_question_is_being_posted_cancels_it(asks: _Posted) -> None:
+    hidden: set = set()
+    asks.during_ask.append(lambda: hidden.add(int(TARGET)))
+
+    result = await _save_tool([], hidden=hidden).ainvoke({"user_id": int(TARGET), "memory_to_save": "x"})
+
+    assert asks == [] and result.startswith("Refused")
+    assert TARGET not in result, "the answer must not name the member who just hid"
+
+
+@pytest.mark.asyncio
+async def test_a_hidden_member_cannot_be_asked_or_pinged(asks: List[tuple]) -> None:
+    saves: List[tuple] = []
+
+    result = await _save_tool(saves, hidden={int(TARGET)}).ainvoke({"user_id": int(TARGET), "memory_to_save": "x"})
+
+    assert asks == [] and saves == []
+    assert TARGET not in result, "the answer must not name the hidden member"
+
+
+@pytest.mark.asyncio
+async def test_nobody_can_be_asked_while_the_opt_out_list_is_unreadable(asks: List[tuple]) -> None:
+    saves: List[tuple] = []
+
+    await _save_tool(saves, hidden=None).ainvoke({"user_id": int(TARGET), "memory_to_save": "x"})
+
+    assert asks == [] and saves == []
+
+
+@pytest.mark.asyncio
+async def test_a_hidden_member_can_still_save_their_own_memory(asks: List[tuple]) -> None:
+    saves: List[tuple] = []
+
+    await _save_tool(saves, hidden={int(ASKER)}).ainvoke({"user_id": int(ASKER), "memory_to_save": "likes tea"})
+
+    assert saves == [(ASKER, "asker", "likes tea", "Asker")]
+
+
+@pytest.mark.asyncio
+async def test_a_memory_for_someone_outside_the_server_is_refused(asks: List[tuple]) -> None:
+    saves: List[tuple] = []
+
+    result = await _save_tool(saves, members=()).ainvoke({"user_id": int(TARGET), "memory_to_save": "x"})
+
+    assert result.startswith("Refused") and asks == [] and saves == []
+
+
+@pytest.mark.asyncio
+async def test_asking_others_too_often_is_limited(asks: List[tuple]) -> None:
+    from addons.rate_limiter import LimitRule, RateLimiter
+
+    limiter = RateLimiter({"ask_others": LimitRule(1, 3600)})
+    tool = _save_tool([], limiter=limiter)
+    await tool.ainvoke({"user_id": int(TARGET), "memory_to_save": "one"})
+
+    result = await tool.ainvoke({"user_id": int(TARGET), "memory_to_save": "two"})
+
+    assert len(asks) == 1 and "too often" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_a_memory_about_the_asker_is_saved_under_their_own_name(asks: List[tuple]) -> None:
+    saves: List[tuple] = []
+
+    result = await _save_tool(saves).ainvoke({"user_id": int(ASKER), "memory_to_save": "likes tea"})
+
+    assert result == "saved" and asks == []
+    assert saves == [(ASKER, "asker", "likes tea", "Asker")]

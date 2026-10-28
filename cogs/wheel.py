@@ -136,7 +136,7 @@ class WheelCog(commands.Cog):
             return
         # A restaurant search calls a paid API, so it counts like a chat message.
         limiter = getattr(self.bot, "rate_limiter", None)
-        retry_after = limiter.hit("chat", interaction.user.id) if limiter else 0
+        retry_after = limiter.hit("chat", interaction.user.id, interaction.guild_id) if limiter else 0
         if retry_after:
             await interaction.response.send_message(self._t(guild_id, "rate_limited", seconds=format_wait(retry_after)), ephemeral=True)
             return

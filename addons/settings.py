@@ -72,6 +72,8 @@ class BaseConfig:
         self.auto_response: dict = data.get("auto_response", {}) or {}
         # Limits for community features (see CommunityLimits in cogs/community_lib/limits.py).
         self.community: dict = data.get("community", {}) or {}
+        # Limits for reminders (see ReminderCog in cogs/remind.py).
+        self.reminders: dict = data.get("reminders", {}) or {}
 
         # Dashboard web interface settings
         self.dashboard: dict = data.get("dashboard", {

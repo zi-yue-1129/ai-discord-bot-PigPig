@@ -22,6 +22,8 @@ from .system_prompt.manager import SystemPromptManager
 from function import func
 
 RECAP_DB_PATH = "data/story_recaps.db"
+# How long a story message waits for the turn before it in the same channel; after that it is dropped.
+STORY_QUEUE_WAIT_SECONDS = 120
 # Messages read back for a recap.
 RECAP_HISTORY = 40
 _WEBHOOK_ID = re.compile(r"/webhooks/(\d+)/")
@@ -69,6 +71,8 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
         self.recap_store = RecapStore(RECAP_DB_PATH)
         # One daily recap check at a time per channel, so two quick messages post one recap.
         self._recap_locks: Dict[int, asyncio.Lock] = {}
+        # One story turn at a time per channel: a burst of messages is answered in order, not all at once.
+        self._turn_locks: Dict[int, asyncio.Lock] = {}
         self._today = lambda: date.today().isoformat()
         self.logger.info("StoryManagerCog (UI版本) 已初始化")
 
@@ -234,7 +238,7 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
         text = None
         if orchestrator is not None and (lines or instance.summaries):
             limiter = getattr(self.bot, "rate_limiter", None)
-            charge = (lambda: limiter.hit("chat", user_id)) if limiter is not None and user_id is not None else None
+            charge = (lambda: limiter.hit("chat", user_id, guild_id)) if limiter is not None and user_id is not None else None
             language_manager = self.bot.get_cog("LanguageManager")
             lang = language_manager.get_server_lang(str(guild_id)) if language_manager else "en_US"
             try:
@@ -450,7 +454,21 @@ class StoryManagerCog(commands.Cog, name="StoryManagerCog"):
         
         try:
             await self.maybe_post_daily_recap(message)
-            await self.story_manager.process_story_message(message)
+            lock = self._turn_locks.setdefault(message.channel.id, asyncio.Lock())
+            try:
+                await asyncio.wait_for(lock.acquire(), timeout=STORY_QUEUE_WAIT_SECONDS)
+            except asyncio.TimeoutError:
+                # The turn before it has not finished in time: drop this one instead of piling up behind it.
+                self.logger.warning(f"story: dropped a message in channel {message.channel.id}, the previous turn is stuck")
+                try:
+                    await message.add_reaction("⏳")
+                except discord.HTTPException:
+                    self.logger.warning("story: could not mark the dropped message", exc_info=True)
+                return
+            try:
+                await self.story_manager.process_story_message(message)
+            finally:
+                lock.release()
             
         except Exception as e:
             self.logger.error(

@@ -33,6 +33,8 @@ import discord
 from langchain_core.tools import tool
 
 from function import func
+from addons.confirm import ConfirmView, ask
+from addons.rate_limiter import format_wait
 from cogs.userdata import UserDataCog
 from llm.memory.privacy import hidden_in_guild_async
 
@@ -42,6 +44,25 @@ if TYPE_CHECKING:
 
 # Module-level logger
 _logger = get_logger(server_id="Bot", source="llm.tools.user_data")
+
+
+# Longest part of a proposed memory quoted in the question to the member it is about.
+ASK_PREVIEW_CHARS = 500
+
+# Used when the language manager is not loaded.
+_ASK_FALLBACK = {
+    "prompt": "{target}, {asker} would like me to remember this about you: {memory}\nSave it to your personal memory?",
+    "too_often": "You have asked people to accept too often lately. Try again in {wait}s.",
+    "unavailable": "A memory about someone else can only be proposed to a member of this server.",
+    "saved": "Remembered.",
+    "ask_confirm": "Accept",
+    "ask_cancel": "Decline",
+    "ask_not_yours": "Only the member being asked can answer.",
+    "ask_done": "This question was already answered.",
+    "ask_cancelled": "Declined; nothing was remembered.",
+    "ask_expired": "No answer in time; nothing was remembered.",
+    "ask_replaced": "Replaced by a newer request; this one was not remembered.",
+}
 
 
 class UserMemoryTools:
@@ -129,6 +150,71 @@ class UserMemoryTools:
                     exception=e,
                 )
         
+        def _ask_text(guild_id: str, key: str, **kwargs: Any) -> str:
+            bot = get_bot()
+            language = bot.get_cog("LanguageManager") if bot is not None else None
+            if language is not None:
+                text = language.translate(guild_id, "commands", "userdata", "ask_others", key, **kwargs)
+                if isinstance(text, str) and text:
+                    return text
+            return _ASK_FALLBACK.get(key, key).format(**kwargs)
+
+        async def _ask_to_save(message: Any, target_id: int, memory: str) -> str:
+            """Posts ``memory`` with Accept and Decline buttons only the member it is about can press."""
+            guild = getattr(message, "guild", None)
+            channel = getattr(message, "channel", None)
+            target = guild.get_member(target_id) if guild is not None else None
+            guild_id = str(guild.id) if guild is not None else "0"
+            # A member who hid with /leaderboard optout is never pinged or named by third parties, and
+            # the refusal reads exactly like "not a member" so it does not reveal who hid.
+            hidden = await hidden_in_guild_async(get_bot(), guild.id) if guild is not None else None
+            if target is None or channel is None or hidden is None or target_id in hidden:
+                return f"Refused: {_ask_text(guild_id, 'unavailable')}"
+            asker_id = message.author.id
+            # Each question pings the member, so how often one person may ask is limited (owner's rate_limits).
+            limiter = getattr(get_bot(), "rate_limiter", None)
+            if limiter is not None:
+                wait = limiter.hit("ask_others", asker_id)
+                if wait:
+                    return _ask_text(guild_id, "too_often", wait=format_wait(wait))
+
+            async def on_confirm() -> str:
+                cog = get_cog()
+                if cog is None:
+                    return "Error: Personal memory system (UserDataCog) is not loaded."
+                result = await cog._save_user_data(
+                    str(target_id), getattr(target, "name", f"User_{target_id}"), memory, message,
+                    nickname=getattr(target, "display_name", None),
+                    share_result=False,
+                )
+                await _invalidate_procedural_cache(target_id)
+                return f"<@{target_id}> {result}"
+
+            bot = get_bot()
+            pending = getattr(bot, "memory_asks", None)
+            if not isinstance(pending, dict):
+                pending = {}
+                setattr(bot, "memory_asks", pending)
+            view = ConfirmView(
+                target_id, lambda key: _ask_text(guild_id, key), on_confirm, pending, (guild_id, asker_id, target_id)
+            )
+            preview = memory if len(memory) <= ASK_PREVIEW_CHARS else memory[:ASK_PREVIEW_CHARS].rstrip() + "…"
+            content = _ask_text(guild_id, "prompt", target=f"<@{target_id}>", asker=f"<@{asker_id}>", memory=preview)
+            async def target_still_askable() -> bool:
+                # The member may have opted out while the earlier question to them was being closed.
+                hidden_now = await hidden_in_guild_async(bot, guild.id)
+                return hidden_now is not None and target_id not in hidden_now
+
+            posted = await ask(channel, content, view, allowed_mentions=discord.AllowedMentions(
+                everyone=False, roles=False, users=[discord.Object(id=target_id)]
+            ), still_allowed=target_still_askable)
+            if posted is None:
+                return f"Refused: {_ask_text(guild_id, 'unavailable')}"
+            return (
+                "Asked the other member to accept. Nothing is saved unless they press Accept; "
+                "tell the user so."
+            )
+
         @tool
         async def read_user_memory(user_id: int) -> str:
             """Reads the personal memory or preferences stored for a specific user.
@@ -266,10 +352,11 @@ class UserMemoryTools:
             Use this tool only when the user **explicitly asks** you to remember
             something (e.g., "My name is Bob," "Please call me Master,"
             "I am a Python developer"). This new information will be intelligently
-            merged with any existing memory.
+            merged with any existing memory. A memory about another member is not
+            saved right away: that member is asked and it is saved only if they accept.
     
             Args:
-                user_id: The Discord user's ID.
+                user_id: The Discord ID of the member the memory is about.
                 memory_to_save: The new piece of information to remember.
     
             Returns:
@@ -289,65 +376,23 @@ class UserMemoryTools:
                     extra={"user_id": user_id}
                 )
     
-                # Determine effective user id. If the LLM provided an invalid value,
-                # default to the author of the triggering message (if available).
-                effective_id = None
+                # A memory is shown to the model in every later chat with that member, on every server,
+                # so a memory about someone else is only saved once that member accepts it.
+                msg = getattr(runtime, "message", None)
+                author_id = getattr(getattr(msg, "author", None), "id", None)
+                if author_id is None:
+                    return "Error: Cannot save memory without knowing who is asking."
                 try:
-                    effective_id = int(user_id)
-                except Exception:
-                    msg = getattr(runtime, "message", None)
-                    if msg and getattr(msg, "author", None):
-                        logger.warning(
-                            "save_user_memory: LLM provided invalid user_id; defaulting to message author",
-                            extra={"provided_user_id": user_id, "author_id": getattr(msg.author, "id", None)}
-                        )
-                        effective_id = msg.author.id
-                    else:
-                        logger.warning(
-                            "save_user_memory: invalid user_id and no message context; using raw value",
-                            extra={"user_id": user_id}
-                        )
-                        effective_id = user_id
-    
-                # Get the names for storage. Prefer cache (get_user) and fall back to fetch_user.
-                bot = get_bot()
-                discord_name = f"User_{effective_id}"
-                nickname = None
-                if bot:
-                    try:
-                        fetched_user = None
-                        # try convert to integer id when possible
-                        try:
-                            int_id = int(effective_id)
-                        except Exception:
-                            int_id = None
-                        
-                        if int_id is not None:
-                            # 1) Try local cache first
-                            fetched_user = bot.get_user(int_id)
-                            
-                            # 2) Only if not in cache, and we have a valid int_id, try fetch_user
-                            if not fetched_user:
-                                try:
-                                    fetched_user = await bot.fetch_user(int_id)
-                                except discord.NotFound:
-                                    logger.warning(f"fetch_user: unknown user {int_id}")
-                                    # Fallback to message author if LLM hallucinated an ID
-                                    msg = getattr(runtime, "message", None)
-                                    if msg and getattr(msg, "author", None):
-                                        author_id = msg.author.id
-                                        if author_id and author_id != int_id:
-                                            effective_id = author_id
-                                            fetched_user = msg.author
-                                except Exception as e:
-                                    logger.warning(f"Failed to fetch user {int_id}: {e}")
+                    requested_id = int(user_id)
+                except (TypeError, ValueError):
+                    requested_id = author_id
+                if requested_id != author_id:
+                    return await _ask_to_save(msg, requested_id, memory_to_save)
+                effective_id = author_id
 
-                        if fetched_user:
-                            discord_name = getattr(fetched_user, "name", discord_name)
-                            nickname = getattr(fetched_user, "display_name", None)
-                    except Exception as e:
-                        logger.warning(f"Display name resolution error: {e}")
-    
+                discord_name = getattr(msg.author, "name", None) or f"User_{effective_id}"
+                nickname = getattr(msg.author, "display_name", None)
+
                 # Debug details about what will be saved
                 logger.debug(
                     "save_user_memory inputs",

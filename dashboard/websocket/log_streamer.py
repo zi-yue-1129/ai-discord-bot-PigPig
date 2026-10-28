@@ -74,6 +74,29 @@ class LogStreamer:
 
 log_streamer = LogStreamer()
 
+# How often an open guild log stream re-checks that its viewer may still read it.
+GUILD_LOG_RECHECK_SECONDS = 60
+
+
+def may_read_guild_logs(app: Any, payload: dict[str, Any], guild_id: str) -> bool:
+    """Whether a token's holder may stream a guild's logs: the bot owner, or a member who is an
+    administrator of that guild right now.
+
+    Guild logs carry the text of every message, private channels included, so being a member is not
+    enough. The token's admin list is up to an hour old, so the bot's current view of the member decides.
+    """
+    if payload.get("role") == "owner":
+        return True
+    if guild_id not in payload.get("admin_guild_ids", []):
+        return False
+    bot = getattr(getattr(app, "state", None), "bot", None)
+    try:
+        guild = bot.get_guild(int(guild_id))
+        member = guild.get_member(int(payload.get("sub", 0)))
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return member is not None and bool(member.guild_permissions.administrator)
+
 
 @router.websocket("/ws/admin/logs")
 async def ws_admin_logs(
@@ -116,7 +139,7 @@ async def ws_guild_logs(
     level: str | None = Query(default=None),
     token: str | None = Query(default=None),
 ) -> None:
-    """WebSocket endpoint for guild-specific log streaming."""
+    """WebSocket endpoint for guild-specific log streaming (the bot owner and the guild's administrators)."""
     if not token:
         await websocket.close(code=4001, reason="Missing token")
         return
@@ -124,21 +147,58 @@ async def ws_guild_logs(
     if not payload:
         await websocket.close(code=4003, reason="Unauthorized")
         return
-    if payload.get("role") != "owner" and guild_id not in payload.get("guild_ids", []):
+    if not may_read_guild_logs(websocket.app, payload, guild_id):
         await websocket.close(code=4003, reason="No access to this guild")
         return
     filters = {"guild_id": guild_id, "level": level}
-    await log_streamer.connect(websocket, filters)
-    try:
+
+    def still_allowed() -> bool:
+        """Whether the token is still valid and its holder may still read this guild's logs."""
+        current = verify_access_token(token)
+        return bool(current) and may_read_guild_logs(websocket.app, current, guild_id)
+
+    async def stream() -> bool:
+        """Replays and streams records; returns True when it stopped because access ended."""
+        await log_streamer.connect(websocket, filters)
         while True:
             data = await websocket.receive_text()
+            if not still_allowed():
+                return True
             try:
                 update = json.loads(data)
                 if "level" in update:
                     filters["level"] = update["level"]
             except (json.JSONDecodeError, TypeError):
                 pass
-    except WebSocketDisconnect:
+
+    async def watch() -> None:
+        """Returns once access has ended. It runs from the start, so a replay that stalls on a client
+        that stopped reading cannot postpone a revocation."""
+        while True:
+            await asyncio.sleep(GUILD_LOG_RECHECK_SECONDS)
+            if not still_allowed():
+                return
+
+    streaming = asyncio.create_task(stream())
+    watching = asyncio.create_task(watch())
+    revoked = False
+    try:
+        done, _ = await asyncio.wait({streaming, watching}, return_when=asyncio.FIRST_COMPLETED)
+        if watching in done:
+            revoked = True
+        elif not streaming.cancelled() and streaming.exception() is None:
+            revoked = streaming.result()
+        elif not isinstance(streaming.exception(), WebSocketDisconnect):
+            log.error("guild log stream ended with an error", exc_info=streaming.exception())
+    finally:
+        # Also when this handler is cancelled: stop the replay, and never stay subscribed.
+        for task in (streaming, watching):
+            task.cancel()
+        await asyncio.gather(streaming, watching, return_exceptions=True)
         await log_streamer.disconnect(websocket)
-    except Exception:
-        await log_streamer.disconnect(websocket)
+    if revoked:
+        try:
+            await asyncio.wait_for(websocket.close(code=4003, reason="No access to this guild"), timeout=5)
+        except Exception:
+            # The client already left or stopped reading; it is unsubscribed, so nothing more is sent.
+            log.error("could not close a revoked guild log stream", exc_info=True)

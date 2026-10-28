@@ -252,5 +252,20 @@
     "validation": {
         "module_empty": "模块名称不能为空。",
         "prompt_empty": "提示词内容不能为空。"
+    },
+    "ai_confirm": {
+        "prompt": "{member}，要把{scope}的人格改成下面这样吗？",
+        "scope_channel": "这个频道",
+        "scope_server": "整个服务器",
+        "saved": "人格已更新。",
+        "failed": "人格没有保存成功，什么都没有变。",
+        "no_permission": "你现在已经不能修改这个人格，什么都没有变。",
+        "ask_confirm": "确认",
+        "ask_cancel": "取消",
+        "ask_not_yours": "只有被询问的人可以回答。",
+        "ask_done": "这个问题已经回答过了。",
+        "ask_cancelled": "已取消，什么都没有变。",
+        "ask_expired": "太久没有回答，什么都没有变。",
+        "ask_replaced": "已被新的提议取代，什么都没有变。"
     }
 }

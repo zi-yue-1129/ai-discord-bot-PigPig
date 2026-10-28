@@ -235,12 +235,12 @@ class GamesCog(commands.Cog):
             return self._t(guild_id, "request_channel")
         return None
 
-    def _charge(self, host_id: Optional[int]) -> Optional[Charge]:
-        """Charges each model attempt (fallback models included) to the host's chat quota."""
+    def _charge(self, host_id: Optional[int], guild_id: int) -> Optional[Charge]:
+        """Charges each model attempt (fallback models included) to the host's chat quota and the server's."""
         limiter = getattr(self.bot, "rate_limiter", None)
         if limiter is None or host_id is None:
             return None
-        return lambda: limiter.hit("chat", host_id)
+        return lambda: limiter.hit("chat", host_id, guild_id)
 
     def _quota_text(self, guild_id: int, error: QuotaExhausted) -> str:
         return self._t(guild_id, "rate_limited", seconds=max(1, round(error.retry_after)))
@@ -452,7 +452,7 @@ class GamesCog(commands.Cog):
         ]
         random.shuffle(candidates)
 
-        charge = self._charge(host_id)
+        charge = self._charge(host_id, guild.id)
         out_of_quota: Optional[QuotaExhausted] = None
 
         async def one(memory: Any) -> Optional[QuizQuestion]:
@@ -687,7 +687,7 @@ class GamesCog(commands.Cog):
                 start,
                 chain.words[-30:],
                 MAX_CJK_LENGTH,
-                self._charge(host_id),
+                self._charge(host_id, guild.id),
             )
         word = normalise_word((reply or "").splitlines()[0].strip(" \"'「」『』。.!！") if reply else "")
         if word is None or chain.problem(word, BOT_PLAYER) is not None:

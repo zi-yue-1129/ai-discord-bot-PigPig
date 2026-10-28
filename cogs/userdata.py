@@ -674,7 +674,8 @@ class UserDataCog(commands.Cog):
         discord_name: str,
         user_data: str,
         context: Union[discord.Interaction, discord.Message],
-        nickname: Optional[str] = None
+        nickname: Optional[str] = None,
+        share_result: bool = True,
     ) -> str:
         """Core logic for saving user data with AI-assisted merge.
         
@@ -683,6 +684,10 @@ class UserDataCog(commands.Cog):
             display_name: User's display name.
             user_data: New data to save.
             context: Discord context for guild ID.
+            nickname: The member's server nickname, if any.
+            share_result: False when the answer is posted where other people read it (the member
+                accepted a memory someone else proposed): the merged memory is then not repeated,
+                since it holds what the member told the bot in other servers and in private.
             
         Returns:
             Success or error message string.
@@ -763,6 +768,9 @@ class UserDataCog(commands.Cog):
                 except Exception as cache_err:
                     self.logger.warning(f"Failed to invalidate procedural cache for {user_id}: {cache_err}")
 
+
+                if not share_result:
+                    return self._translate(guild_id, "commands", "userdata", "ask_others", "saved")
 
                 response_key = "data_updated" if existing_data else "data_created"
                 
