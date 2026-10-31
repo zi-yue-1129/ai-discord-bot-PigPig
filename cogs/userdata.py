@@ -43,7 +43,7 @@ from pydantic import BaseModel, Field
 from addons.settings import prompt_config
 from cogs.memory.users.manager import SQLiteUserManager
 from cogs.memory.users.models import UserInfo
-from llm.memory.source_label import SOURCE_TAG_INSTRUCTION, render_sources, tag_with_source
+from llm.memory.source_label import SOURCE_TAG_INSTRUCTION, reattach_source_tags, render_sources, tag_with_source
 from cogs.memory.db.knowledge_storage import MAX_KNOWLEDGE_CHARS, KnowledgeStorage
 from function import func
 from addons.discord_text import reply_in_chunks
@@ -730,12 +730,20 @@ class UserDataCog(commands.Cog):
             # Invoke AI agent to merge data
             try:
                 # The memory is global, so every fact keeps the place it was told in.
+                tagged_data = tag_with_source(user_data, context)
                 merged_data = await self._invoke_ai_merge_agent(
                     existing_data,
-                    tag_with_source(user_data, context),
+                    tagged_data,
                     user_id,
                     guild_id=guild_id or "0",
                 )
+                # The merge model is asked to keep the tags but may not; the code puts them back.
+                earlier = [
+                    getattr(existing_data, "procedural_memory", None),
+                    getattr(existing_data, "user_background", None),
+                ]
+                merged_data.procedural_memory = reattach_source_tags(merged_data.procedural_memory, earlier, tagged_data)
+                merged_data.user_background = reattach_source_tags(merged_data.user_background, earlier, tagged_data)
             except Exception as e:
                 self.logger.error(f"AI processing failed for user {user_id}: {e}")
                 await func.report_error(

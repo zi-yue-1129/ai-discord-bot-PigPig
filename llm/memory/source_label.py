@@ -13,7 +13,13 @@ member belongs to.
 from __future__ import annotations
 
 import re
-from typing import Any, Optional
+import time
+from difflib import SequenceMatcher
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+from addons.logging import get_logger
+
+logger = get_logger(server_id="Bot", source=__name__)
 
 # Added to the merge prompt so the merge model keeps the tags next to their facts.
 SOURCE_TAG_INSTRUCTION = (
@@ -89,6 +95,184 @@ def tag_with_source(text: str, context: Optional[Any]) -> str:
     tag = "[source: direct message]" if guild is None else f"[source: server id={guild.id}]"
     # Every line is its own fact; the merge keeps a tag next to its fact and never tags an untagged one.
     return "\n".join(f"{line.strip()} {tag}" if line.strip() else "" for line in text.strip().split("\n"))
+
+
+# Reattaching tags compares every merged line with the known facts. The text comes from the merge
+# model and from members, so the work is bounded: long lines are not compared by similarity (the
+# cost grows with the square of the length) and all similarity work shares one time budget; lines
+# reached after it ran out are only matched when identical or contained, and that is logged.
+_MAX_FUZZY_CHARS = 400
+_MAX_CONTAIN_WORK = 20_000_000
+_MAX_MATCH_CHARS = 100_000  # past this much text (merged or known) only identical lines are matched
+_FUZZY_BUDGET_SECONDS = 0.4
+_MIN_CONTAINED_CHARS = 4
+_MAX_CONTAIN_TRIES = 1_000  # occurrences of one fact in one line that are checked for word boundaries
+_MIN_SIMILARITY = 0.7
+_MIN_SIMILARITY_TO_NEW = 0.65  # unrelated short sentences already reach 0.58; reworded ones 0.67+
+
+
+def _normalize(text: str) -> str:
+    """Reduce a fact for comparison: case, spacing and edge punctuation do not matter, symbols do.
+
+    ``C++`` and ``C#`` are different facts, so symbols inside the text are kept.
+    """
+    return re.sub(r"\s+", " ", text.casefold()).strip(" .。!！,，;；:：")
+
+
+def _split_fact(line: str) -> Tuple[str, Tuple[str, ...]]:
+    """Split a line into its text (indentation kept) and the stored tags it carries (in order, no repeats)."""
+    return _STORED_TAG.sub("", line).rstrip(), tuple(dict.fromkeys(_STORED_TAG.findall(line)))
+
+
+def _is_word_char(char: str) -> bool:
+    """Whether ``char`` belongs to a Latin word; ``+`` and ``#`` do too, so ``C`` is not inside ``C++``/``C#``.
+
+    CJK text has no word boundaries to respect.
+    """
+    return (char.isascii() and char.isalnum()) or char in "+#"
+
+
+def _contains(fact: str, key: str) -> bool:
+    """Whether ``fact`` occurs in ``key`` as whole words: ``likes jazz`` is not in ``dislikes jazz``."""
+    start = key.find(fact)
+    for _ in range(_MAX_CONTAIN_TRIES):
+        if start == -1:
+            return False
+        end = start + len(fact)
+        starts_clean = not (_is_word_char(fact[0]) and start > 0 and _is_word_char(key[start - 1]))
+        ends_clean = not (_is_word_char(fact[-1]) and end < len(key) and _is_word_char(key[end]))
+        if starts_clean and ends_clean:
+            return True
+        start = key.find(fact, start + 1)
+    return False
+
+
+def _contained_tags(key: str, facts: Dict[str, Tuple[str, ...]], deadline: float) -> List[Tuple[str, ...]]:
+    """The tags of every known fact that occurs in ``key`` as whole words (stops at the deadline)."""
+    found: List[Tuple[str, ...]] = []
+    for fact, tags in facts.items():
+        if time.monotonic() > deadline:
+            break
+        if len(fact) >= _MIN_CONTAINED_CHARS and _contains(fact, key):
+            found.append(tags)
+    return found
+
+
+def _most_similar(key: str, candidates: Dict[str, Tuple[str, ...]], minimum: float, deadline: float) -> Optional[str]:
+    """The candidate fact most similar to ``key`` (at least ``minimum``), if any.
+
+    Args:
+        key: Normalized text to compare.
+        candidates: Normalized facts mapped to their tags.
+        minimum: Lowest accepted similarity ratio.
+        deadline: ``time.monotonic()`` value after which no more comparisons are made.
+
+    Returns:
+        The best candidate, or ``None`` when none is similar enough or the limits (line length,
+        time) leave the comparison out.
+    """
+    if len(key) > _MAX_FUZZY_CHARS:
+        return None
+    matcher = SequenceMatcher(None, autojunk=False)
+    matcher.set_seq2(key)
+    best_ratio, best_fact = 0.0, None
+    for fact in candidates:
+        if len(fact) > _MAX_FUZZY_CHARS:
+            continue
+        if time.monotonic() > deadline:
+            break
+        matcher.set_seq1(fact)
+        if matcher.real_quick_ratio() < minimum or matcher.quick_ratio() < minimum:
+            continue
+        ratio = matcher.ratio()
+        if ratio > best_ratio:
+            best_ratio, best_fact = ratio, fact
+    return best_fact if best_ratio >= minimum else None
+
+
+def _union(*tag_groups: Sequence[str]) -> Tuple[str, ...]:
+    """Tags of all groups in order, without repeats."""
+    return tuple(dict.fromkeys(tag for group in tag_groups for tag in group))
+
+
+def reattach_source_tags(
+    merged_text: Optional[str], earlier_texts: Sequence[Optional[str]], new_tagged_text: str
+) -> Optional[str]:
+    """Put each fact's source tag back after the merge model rewrote the memory.
+
+    The model is asked to keep the tags, but it may drop, move or invent them, so the code decides.
+    One principle: the code fills in, it never overrides the model. Each merged line is handled so:
+
+    * identical to a known fact: that fact's tags plus the known tags the model gave it (the same
+      fact told in other words elsewhere, merged by the model);
+    * the model gave it known tags: exactly those. It may have negated, joined or updated facts and
+      only it knows; an incomplete tag beats a false one;
+    * no tag from the model: the tags of the known facts the line contains (whole words), else of
+      the most similar known fact (reworded), else of the fact in this save it resembles, else
+      none. Only the tags those facts already carry are used, never "this save" as a guess, and a
+      fact stored without a tag stays without one.
+
+    A tag the model made up is always dropped. The matching is a heuristic, so a fact updated by a
+    merge can keep only its old source, and a member who plants a known tag in their own text can
+    move it onto another of their own facts (it is their own data).
+
+    Args:
+        merged_text: One field of the merged memory.
+        earlier_texts: The memory fields stored before this save.
+        new_tagged_text: What is being saved, already tagged by ``tag_with_source``.
+
+    Returns:
+        ``merged_text`` with the tags put back (``None`` and the empty string are returned as they are).
+    """
+    if not merged_text:
+        return merged_text
+    facts: Dict[str, Tuple[str, ...]] = {}
+    new_facts: Dict[str, Tuple[str, ...]] = {}  # only the tags of this save, not the history of the same text
+    sources = [(earlier, False) for earlier in earlier_texts] + [(new_tagged_text, True)]
+    for text, is_new in sources:
+        for line in (text or "").split("\n"):
+            clean, tags = _split_fact(line)
+            key = _normalize(clean)
+            if key:
+                facts[key] = _union(facts.get(key, ()), tags)
+                if is_new:
+                    new_facts[key] = _union(new_facts.get(key, ()), tags)
+    known_tags = {tag for tags in facts.values() for tag in tags}
+
+    lines = merged_text.split("\n")
+    allow_similarity = (
+        len(merged_text) <= _MAX_MATCH_CHARS
+        and sum(len(fact) for fact in facts) <= _MAX_MATCH_CHARS
+        and len(merged_text) * len(facts) <= _MAX_CONTAIN_WORK
+    )
+    deadline = time.monotonic() + _FUZZY_BUDGET_SECONDS
+    result: List[str] = []
+    for line in lines:
+        clean, present = _split_fact(line)
+        key = _normalize(clean)
+        shown = _neutralize_tags(clean, frozenset())  # a malformed tag the model invented is text, not a tag
+        if not key:
+            result.append(shown)
+            continue
+        given = tuple(tag for tag in present if tag in known_tags)
+        tags: Tuple[str, ...]
+        if key in facts:
+            # The same fact told in other words elsewhere: the model merged them and kept both tags.
+            tags = _union(facts[key], given)
+        elif given:
+            tags = given  # the model tagged the line itself: its choice stands
+        elif allow_similarity and (contained := _contained_tags(key, facts, deadline)):
+            tags = _union(*contained)
+        elif allow_similarity and (similar := _most_similar(key, facts, _MIN_SIMILARITY, deadline)) is not None:
+            tags = facts[similar]
+        elif allow_similarity and (like_new := _most_similar(key, new_facts, _MIN_SIMILARITY_TO_NEW, deadline)) is not None:
+            tags = new_facts[like_new]
+        else:
+            tags = ()
+        result.append(f"{shown} {' '.join(tags)}" if tags else shown)
+    if time.monotonic() > deadline:
+        logger.warning("Source tag matching ran out of its %.1f s budget; later lines were matched without similarity", _FUZZY_BUDGET_SECONDS)
+    return "\n".join(result)
 
 
 def render_sources(text: str, current_guild_id: Optional[str]) -> str:
