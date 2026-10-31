@@ -56,7 +56,12 @@ def tag_with_source(text: str, context: Optional[Any]) -> str:
     """
     if context is None:
         return text
-    text = _TYPED_TAG.sub("", text).strip()
+    # Repeat until nothing changes: removing an inner tag can join the rest into a new one.
+    previous = None
+    while previous != text:
+        previous = text
+        text = _TYPED_TAG.sub("", text)
+    text = text.strip()
     guild = getattr(context, "guild", None)
     if guild is None:
         return f"{text} [source: direct message]"
