@@ -6,7 +6,9 @@ import re
 from addons.logging import get_logger
 from addons.settings import memory_config
 from llm.self_knowledge import build_self_description
+from llm.callbacks import ToolLogCallbackHandler
 from llm.utils.phase_timer import PhaseTimer
+from llm.utils.tool_trace import collect_tool_calls, describe_info_agent_outcome
 
 logger = get_logger(server_id="Bot", source="llm.orchestrator")
 
@@ -567,7 +569,8 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                 timer.mark("analyzing_edit")
                 
                 # Prepare callbacks
-                callbacks = []
+                # The log handler is always attached so the logs show which tools ran and how long they took.
+                callbacks = [ToolLogCallbackHandler(logger)]
                 if lang_manager:
                     callbacks.append(ToolFeedbackCallbackHandler(message_edit, lang_manager, guild_id))
 
@@ -655,6 +658,7 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                 raise
 
             timer.mark("info_agent")
+            logger.info(f"Info agent: {describe_info_agent_outcome(info_message, len(messages_for_info_agent))}")
             try:
                 # --- Message agent setup with streaming fallback ---
                 # Note: ModelFallbackMiddleware doesn't support streaming mode,
@@ -829,16 +833,17 @@ Focus on understanding what the user actually needs and prepare a clear analysis
             resp = OrchestratorResponse.construct()
             resp.reply = message_result
             
-            # Build concise tool list for logging (only names, not full schemas)
+            # The tools the info agent really called, and the (names only) list it could choose from.
+            called = collect_tool_calls(info_message, len(messages_for_info_agent))
             tool_names = [getattr(t, "name", repr(t)) for t in all_tools]
-            
-            # Store full tool info in response if needed
             resp.tool_calls = [
-                {"tool": getattr(t, "name", repr(t)), "args": getattr(t, "args", None)} for t in all_tools
+                {"tool": call.name, "args": call.arguments, "status": call.status, "result_chars": call.result_chars}
+                for call in called
             ]
-            
-            # Log with concise tool names only
-            logger.info(f"{bot.user.name}:{resp.reply}, available_tools: {tool_names}")
+
+            logger.info(
+                f"{bot.user.name}:{resp.reply}, tools_called: {[call.name for call in called]}, available_tools: {tool_names}"
+            )
             return resp
 
 

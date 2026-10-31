@@ -1,11 +1,13 @@
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple, Union
 from uuid import UUID
 import asyncio
+import time
 
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.outputs import LLMResult
 
 from llm.utils.send_message import safe_edit_message
+from llm.utils.tool_trace import is_error_answer
 
 
 class ToolFeedbackCallbackHandler(AsyncCallbackHandler):
@@ -64,3 +66,68 @@ class ToolFeedbackCallbackHandler(AsyncCallbackHandler):
         except Exception:
             # Silently ignore callback errors to prevent disrupting tool execution
             pass
+
+
+class _LogSink(Protocol):
+    """What the tool log handler needs from a logger."""
+
+    def info(self, message: str) -> None:
+        """Writes an informational line."""
+
+    def error(self, message: str) -> None:
+        """Writes an error line."""
+
+
+class ToolLogCallbackHandler(AsyncCallbackHandler):
+    """Writes one log line when a tool starts and one when it ends or fails.
+
+    Unlike :class:`ToolFeedbackCallbackHandler` it never touches Discord and does not need a
+    language manager, so it can always be attached and the logs always show which tools ran, how
+    long they took and which ones failed.
+    """
+
+    def __init__(self, logger: _LogSink, clock: Callable[[], float] = time.monotonic) -> None:
+        """Creates the handler.
+
+        Args:
+            logger: Where the lines go.
+            clock: Source of the current time in seconds; replaced in tests.
+        """
+        self._logger = logger
+        self._clock = clock
+        self._running: Dict[UUID, Tuple[str, float]] = {}
+
+    def _finish(self, run_id: UUID) -> Tuple[str, str]:
+        """Forgets a running tool and returns (name, how long it ran as text)."""
+        name, started = self._running.pop(run_id, ("unknown_tool", None))
+        elapsed = f"{self._clock() - started:.2f}s" if started is not None else "unknown time"
+        return name, elapsed
+
+    async def on_tool_start(
+        self,
+        serialized: Dict[str, Any],
+        input_str: str,
+        *,
+        run_id: UUID,
+        **kwargs: Any,
+    ) -> None:
+        """Logs that a tool started, with its (shortened) input."""
+        name = str(serialized.get("name", "unknown_tool"))
+        self._running[run_id] = (name, self._clock())
+        shortened = input_str if len(input_str) <= 200 else input_str[:199] + "…"
+        self._logger.info(f"Tool started: {name} input={shortened}")
+
+    async def on_tool_end(self, output: Any, *, run_id: UUID, **kwargs: Any) -> None:
+        """Logs that a tool finished, how long it took and how long its answer was."""
+        name, elapsed = self._finish(run_id)
+        text = str(getattr(output, "content", output))
+        if is_error_answer(text):
+            # Most tools report failure by returning "Error: ..." rather than raising.
+            self._logger.error(f"Tool returned an error: {name} in {elapsed}: {text[:200]}")
+            return
+        self._logger.info(f"Tool finished: {name} in {elapsed}, {len(text)} chars")
+
+    async def on_tool_error(self, error: BaseException, *, run_id: UUID, **kwargs: Any) -> None:
+        """Logs that a tool raised an error."""
+        name, elapsed = self._finish(run_id)
+        self._logger.error(f"Tool failed: {name} after {elapsed}: {type(error).__name__}: {error}")
