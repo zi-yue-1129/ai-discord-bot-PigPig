@@ -1,0 +1,116 @@
+"""Keyword search finds a memory whatever the letter case, and the payload indexes sit on the fields really used."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from typing import Any, List, Tuple
+
+import pytest
+from qdrant_client.models import PayloadSchemaType, TextIndexParams
+
+from cogs.memory.vector_stores.qdrant_store import QdrantStore
+from llm.tools.episodic_memory import EpisodicMemoryTools
+
+
+def _conditions(query: str) -> list:
+    """The 'any of these words' conditions of the keyword filter (fails if there is no filter)."""
+    return QdrantStore._keyword_filter(query).should
+
+
+def _texts(query: str) -> List[str]:
+    return [condition.match.text for condition in _conditions(query)]
+
+
+def test_each_word_is_matched_as_text_on_the_keywords_field() -> None:
+    assert {condition.key for condition in _conditions("HAREKAZE Kuma")} == {"metadata.keywords"}
+    assert _texts("HAREKAZE Kuma") == ["HAREKAZE", "Kuma"]
+
+
+def test_any_word_may_match_not_all_of_them() -> None:
+    assert not QdrantStore._keyword_filter("a b").must, "'should' means any word matches"
+
+
+def test_chinese_words_are_kept_as_they_are() -> None:
+    assert _texts("刮刮樂 期望值") == ["刮刮樂", "期望值"]
+
+
+def test_an_empty_query_has_no_filter() -> None:
+    assert QdrantStore._keyword_filter("   ") is None
+
+
+def test_a_flood_of_words_is_capped() -> None:
+    assert len(_texts(" ".join(f"w{number}" for number in range(500)))) == QdrantStore.MAX_KEYWORD_QUERY_WORDS
+
+
+class _Client:
+    def __init__(self, failing_field: str = "") -> None:
+        self.created: List[Tuple[str, Any]] = []
+        self.failing_field = failing_field
+
+    def collection_exists(self, name: str) -> bool:
+        return True
+
+    def create_payload_index(self, collection_name: str, field_name: str, field_schema: Any) -> None:
+        if field_name == self.failing_field:
+            raise RuntimeError("index refused")
+        self.created.append((field_name, field_schema))
+
+
+def _store(client: _Client) -> QdrantStore:
+    store = QdrantStore.__new__(QdrantStore)
+    store.client = client
+    store.collection_name = "memories"
+    return store
+
+
+@pytest.mark.asyncio
+async def test_the_indexes_are_created_on_the_metadata_fields_the_filters_use() -> None:
+    client = _Client()
+
+    await _store(client).ensure_storage()
+
+    created = dict(client.created)
+    assert set(created) == {"metadata.keywords", "metadata.author_ids", "metadata.channel_id", "metadata.guild_id"}
+    assert created["metadata.guild_id"] == PayloadSchemaType.KEYWORD
+    keywords = created["metadata.keywords"]
+    assert isinstance(keywords, TextIndexParams) and keywords.lowercase is True
+
+
+@pytest.mark.asyncio
+async def test_one_refused_index_does_not_stop_the_others() -> None:
+    client = _Client(failing_field="metadata.keywords")
+
+    await _store(client).ensure_storage()
+
+    assert {field for field, _ in client.created} == {"metadata.author_ids", "metadata.channel_id", "metadata.guild_id"}
+
+
+# ---------------------------------------------------------------- what the model is told
+
+
+class _EmptyStore:
+    async def search(self, **kwargs: Any) -> list:
+        return []
+
+
+def _tool() -> Any:
+    bot = SimpleNamespace(vector_manager=SimpleNamespace(store=_EmptyStore()))
+    message = SimpleNamespace(channel=SimpleNamespace(id=1), guild=SimpleNamespace(id=2))
+    runtime = SimpleNamespace(bot=bot, message=message, logger=None)
+    (tool,) = [t for t in EpisodicMemoryTools(runtime).get_tools() if t.name == "search_episodic_memory"]
+    return tool
+
+
+def test_the_tool_description_asks_for_single_topic_words_not_ids_or_sentences() -> None:
+    description = _tool().description
+
+    assert "single" in description and "not" in description and "ID" in description
+    assert "exact-term" not in description and "precise tokens or phrases" not in description
+
+
+@pytest.mark.asyncio
+async def test_an_empty_result_tells_the_model_not_to_search_again_with_a_longer_query() -> None:
+    answer = await _tool().ainvoke({"keyword_query": "something"})
+
+    assert answer.startswith("No relevant memories found.")
+    assert "do not" in answer.lower() and "retry" in answer.lower()

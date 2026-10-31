@@ -8,11 +8,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import List, Optional
+from typing import Any, List, Optional, Tuple
 
 from qdrant_client import QdrantClient
 
-from qdrant_client.models import Distance, VectorParams, FieldCondition, MatchAny, MatchValue,Filter
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchText,
+    PayloadSchemaType,
+    TextIndexParams,
+    TextIndexType,
+    TokenizerType,
+    VectorParams,
+)
 from langchain_qdrant import QdrantVectorStore
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
@@ -27,6 +37,22 @@ logger = logging.getLogger(__name__)
 
 class QdrantStore(VectorStoreInterface):
     """LangChain Qdrant vector store wrapper."""
+
+    # Most words of one keyword query that are matched; the model sometimes sends very long ones.
+    MAX_KEYWORD_QUERY_WORDS = 20
+
+    # Payload indexes, on the paths the filters really use (the fields live under ``metadata``).
+    # Keywords are stored as the summarizer wrote them (``HAREKAZE``, ``PigPig``), so the text index
+    # lowercases both sides and a query matches whatever the letter case.
+    PAYLOAD_INDEXES: List[Tuple[str, Any]] = [
+        ("metadata.author_ids", PayloadSchemaType.KEYWORD),
+        ("metadata.channel_id", PayloadSchemaType.KEYWORD),
+        ("metadata.guild_id", PayloadSchemaType.KEYWORD),
+        (
+            "metadata.keywords",
+            TextIndexParams(type=TextIndexType.TEXT, tokenizer=TokenizerType.WORD, lowercase=True, min_token_len=1),
+        ),
+    ]
 
     def __init__(self, settings: MemoryConfig, embedding_model: Optional[Embeddings]) -> None:
         if not embedding_model:
@@ -98,27 +124,19 @@ class QdrantStore(VectorStoreInterface):
                 )
                 return
 
-            # Create payload indexes for filtering (idempotent)
-            from qdrant_client.models import PayloadSchemaType
-
-            try:
-                self.client.create_payload_index(
-                    collection_name=self.collection_name,
-                    field_name="author_ids",
-                    field_schema=PayloadSchemaType.KEYWORD,
-                )
-                self.client.create_payload_index(
-                    collection_name=self.collection_name,
-                    field_name="channel_id",
-                    field_schema=PayloadSchemaType.KEYWORD,
-                )
-                self.client.create_payload_index(
-                    collection_name=self.collection_name,
-                    field_name="keywords",
-                    field_schema=PayloadSchemaType.KEYWORD,
-                )
-            except Exception:
-                logger.debug("Payload indexes may already exist for collection %s", self.collection_name)
+            # Create payload indexes for filtering (idempotent). One refused index must not
+            # skip the others, but it is reported: searches still work without it, only slower
+            # (or, for keywords, case-sensitive).
+            for field_name, field_schema in self.PAYLOAD_INDEXES:
+                try:
+                    self.client.create_payload_index(
+                        collection_name=self.collection_name,
+                        field_name=field_name,
+                        field_schema=field_schema,
+                    )
+                except Exception as index_error:  # keep creating the other indexes; the failure is logged below
+                    logger.error("Could not create payload index %s", field_name, exc_info=True)
+                    asyncio.create_task(self._report_error(index_error))
         except Exception as e:
             asyncio.create_task(self._report_error(e))
             raise VectorOperationError("Failed to ensure storage") from e
@@ -332,6 +350,22 @@ class QdrantStore(VectorStoreInterface):
             )
         return fragments
 
+    @classmethod
+    def _keyword_filter(cls, query_text: str) -> Optional[Filter]:
+        """Builds the "any of these words" condition for a keyword search.
+
+        Args:
+            query_text: Words separated by whitespace.
+
+        Returns:
+            A filter matching fragments whose keywords contain any of the words (the text index
+            ignores letter case), or ``None`` when the query has no words.
+        """
+        words = query_text.split()[: cls.MAX_KEYWORD_QUERY_WORDS]
+        if not words:
+            return None
+        return Filter(should=[FieldCondition(key="metadata.keywords", match=MatchText(text=word)) for word in words])
+
     async def search_memories_by_keyword(
         self,
         query_text: str,
@@ -343,23 +377,16 @@ class QdrantStore(VectorStoreInterface):
         """Keyword search using Qdrant query API with payload filtering."""
         try:
             
-            # Parse query keywords
-            keywords = [kw.strip().lower() for kw in query_text.split() if kw.strip()]
-            
-            # Build filter conditions
+            # Build filter conditions: any query word may match a stored keyword
             filter_conditions = []
-            
-            if keywords:
-                keyword_condition = FieldCondition(
-                    key="metadata.keywords",
-                    match=MatchAny(any=keywords)
-                )
-                filter_conditions.append(keyword_condition)
-            
+            keyword_filter = self._keyword_filter(query_text)
+            if keyword_filter is not None:
+                filter_conditions.append(keyword_filter)
+
             filter_conditions.extend(
                 self._metadata_conditions(user_id=user_id, channel_id=channel_id, guild_id=guild_id)
             )
-            
+
             # Create filter with all conditions
             search_filter = Filter(must=filter_conditions) if filter_conditions else None
             
