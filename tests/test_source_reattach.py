@@ -281,3 +281,14 @@ def test_a_negated_fact_keeps_the_tag_the_model_gave_not_the_one_it_contains() -
     result = reattach_source_tags(f"No longer likes jazz {B}", [f"Likes jazz {A}"], f"I dislike jazz now {B}")
 
     assert result == f"No longer likes jazz {B}"
+
+
+def test_a_gigantic_memory_is_not_searched_for_similar_facts_at_all() -> None:
+    """9,000,000 letters against 9,000,001 took 4 s inside one containment check; past a size cap only identical lines count."""
+    huge = "a" * 9_000_000
+
+    started = time.monotonic()
+    result = reattach_source_tags("a" * 9_001_001, [f"{huge} {A}"], f"x {B}")
+
+    assert time.monotonic() - started < 1.0
+    assert result == "a" * 9_001_001, "no similarity work, so the untagged line stays untagged"

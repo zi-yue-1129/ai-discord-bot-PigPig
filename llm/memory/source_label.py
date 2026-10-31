@@ -103,6 +103,7 @@ def tag_with_source(text: str, context: Optional[Any]) -> str:
 # reached after it ran out are only matched when identical or contained, and that is logged.
 _MAX_FUZZY_CHARS = 400
 _MAX_CONTAIN_WORK = 20_000_000
+_MAX_MATCH_CHARS = 100_000  # past this much text (merged or known) only identical lines are matched
 _FUZZY_BUDGET_SECONDS = 0.4
 _MIN_CONTAINED_CHARS = 4
 _MAX_CONTAIN_TRIES = 1_000  # occurrences of one fact in one line that are checked for word boundaries
@@ -239,7 +240,11 @@ def reattach_source_tags(
     known_tags = {tag for tags in facts.values() for tag in tags}
 
     lines = merged_text.split("\n")
-    allow_similarity = len(merged_text) * len(facts) <= _MAX_CONTAIN_WORK
+    allow_similarity = (
+        len(merged_text) <= _MAX_MATCH_CHARS
+        and sum(len(fact) for fact in facts) <= _MAX_MATCH_CHARS
+        and len(merged_text) * len(facts) <= _MAX_CONTAIN_WORK
+    )
     deadline = time.monotonic() + _FUZZY_BUDGET_SECONDS
     result: List[str] = []
     for line in lines:
