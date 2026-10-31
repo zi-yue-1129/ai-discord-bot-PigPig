@@ -25,11 +25,15 @@ def _call_key(call: _ToolCall) -> Tuple[str, str]:
     return call["name"], json.dumps(call.get("args", {}), sort_keys=True, ensure_ascii=False, default=str)
 
 
-def _without_dropped_blocks(content: Any, kept_ids: Set[str]) -> Any:
-    """Remove provider ``tool_use`` blocks whose call was dropped.
+_CALL_BLOCK_TYPES = ("tool_use", "tool_call")
 
-    Anthropic-style models also keep each call as a ``tool_use`` block in the message content; one
-    without a matching result makes the next request invalid.
+
+def _without_dropped_blocks(content: Any, kept_ids: Set[str]) -> Any:
+    """Remove the content blocks of calls that were dropped.
+
+    Anthropic-style models also keep each call as a ``tool_use`` block in the message content, and
+    LangChain's standardized output (``LC_OUTPUT_VERSION=v1``) as a ``tool_call`` block; one without
+    a matching result makes the next request invalid.
 
     Args:
         content: The message content (a string or a list of blocks).
@@ -42,7 +46,7 @@ def _without_dropped_blocks(content: Any, kept_ids: Set[str]) -> Any:
         return content
     return [
         block for block in content
-        if not (isinstance(block, dict) and block.get("type") == "tool_use" and block.get("id") not in kept_ids)
+        if not (isinstance(block, dict) and block.get("type") in _CALL_BLOCK_TYPES and block.get("id") not in kept_ids)
     ]
 
 

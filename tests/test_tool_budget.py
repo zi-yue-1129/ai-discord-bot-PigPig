@@ -193,3 +193,17 @@ def test_the_orchestrator_installs_the_budget_middleware() -> None:
     source = inspect.getsource(orchestrator)
     assert "llm_config.info_agent_max_identical_calls" in source and "ToolCallBudgetMiddleware(" in source
     assert "DirectToolOutputMiddleware" not in source, "the no-op middleware (after_tools is no hook) is gone"
+
+
+def test_standardized_tool_call_blocks_of_dropped_calls_are_removed_too() -> None:
+    """With LC_OUTPUT_VERSION=v1 LangChain keeps each call as a `tool_call` content block."""
+    middleware = ToolCallBudgetMiddleware(max_tool_calls=1)
+    content = [
+        {"type": "tool_call", "id": "c1", "name": "a", "args": {}},
+        {"type": "tool_call", "id": "c2", "name": "b", "args": {}},
+    ]
+    reply = AIMessage(content=content, id="a1", tool_calls=[_call("a", "c1"), _call("b", "c2")])
+
+    kept = _apply(middleware, HumanMessage(content="hi"), reply)["messages"][0]
+
+    assert [block["id"] for block in kept.content] == ["c1"]
