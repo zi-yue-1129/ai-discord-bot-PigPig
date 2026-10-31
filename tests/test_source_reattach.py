@@ -46,11 +46,11 @@ def test_an_old_fact_without_a_tag_stays_without_one() -> None:
     assert result == f"plays go\nlikes tea {B}"
 
 
-def test_a_fact_the_model_rewrote_keeps_its_source_and_gains_this_saves() -> None:
-    """Reworded: it still came from A, and the change can only come from this save (B)."""
+def test_a_fact_the_model_rewrote_keeps_its_source() -> None:
+    """Reworded without a tag from the model: only the old fact's own tag, never this save's (unrelated save, review)."""
     result = reattach_source_tags("喜歡吃拉麵", [f"喜歡拉麵 {A}"], f"喜歡茶 {B}")
 
-    assert result == f"喜歡吃拉麵 {A} {B}"
+    assert result == f"喜歡吃拉麵 {A}"
 
 
 def test_a_line_that_matches_nothing_stays_untagged() -> None:
@@ -139,7 +139,9 @@ def test_a_joined_line_keeps_the_tag_the_model_gave_for_the_part_that_was_reword
     """'likes jazz' is found inside the line; 'likes tea' was shortened, so only the model's own tag knows it."""
     result = reattach_source_tags(f"likes jazz and tea {B}", [f"likes jazz {A}"], f"likes tea {B}")
 
-    assert A in result and B in result
+    # The model tagged the line, so its choice stands even though A is also in it: the code
+    # fills in untagged lines and never adds to a tagged one (an incomplete tag beats a false one).
+    assert result == f"likes jazz and tea {B}"
 
 
 def test_facts_that_differ_only_in_symbols_are_not_the_same_fact() -> None:
@@ -164,10 +166,11 @@ def test_a_reworded_new_fact_still_gets_this_saves_tag() -> None:
 # ---------------------------------------------------- independent review (second round)
 
 
-def test_a_superseded_fact_keeps_the_old_source_and_gains_the_new_one() -> None:
+def test_a_superseded_fact_without_a_model_tag_keeps_only_the_old_source() -> None:
+    """Known limit: the update may have come from this save, but guessing it would also tag unrelated rewrites."""
     result = reattach_source_tags("Is 26 years old", [f"Is 25 years old {A}"], f"Just turned 26 {B}")
 
-    assert result == f"Is 26 years old {A} {B}"
+    assert result == f"Is 26 years old {A}"
 
 
 def test_a_reworded_untagged_legacy_fact_is_not_claimed_by_this_save() -> None:
@@ -254,7 +257,7 @@ def test_this_saves_tags_do_not_include_the_history_of_a_fact_it_repeated() -> N
         f"Likes jazz {S2}",
     )
 
-    assert result == f"Likes jazz {S1} {S2}\nLives in central Taipei {S3} {S2}"
+    assert result == f"Likes jazz {S1} {S2}\nLives in central Taipei {S3}"
 
 
 def test_a_symbol_that_belongs_to_the_word_is_not_a_boundary() -> None:
@@ -262,3 +265,19 @@ def test_a_symbol_that_belongs_to_the_word_is_not_a_boundary() -> None:
     result = reattach_source_tags(f"Uses C++ daily {S2}", [f"Uses C {S1}"], f"I program in C++ {S2}")
 
     assert result == f"Uses C++ daily {S2}"
+
+
+# ----------------------------------------------- Codex review (fifth round): one principle
+
+
+def test_a_paraphrased_private_fact_is_not_claimed_by_an_unrelated_save() -> None:
+    """A fact from a DM must not become '[source: this server]' because someone saved something else there."""
+    result = reattach_source_tags("Living in Taipei", [f"Lives in Taipei {DM}"], f"Likes jazz {B}")
+
+    assert result == f"Living in Taipei {DM}"
+
+
+def test_a_negated_fact_keeps_the_tag_the_model_gave_not_the_one_it_contains() -> None:
+    result = reattach_source_tags(f"No longer likes jazz {B}", [f"Likes jazz {A}"], f"I dislike jazz now {B}")
+
+    assert result == f"No longer likes jazz {B}"

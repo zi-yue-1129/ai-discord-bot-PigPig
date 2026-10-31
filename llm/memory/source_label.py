@@ -200,20 +200,20 @@ def reattach_source_tags(
     """Put each fact's source tag back after the merge model rewrote the memory.
 
     The model is asked to keep the tags, but it may drop, move or invent them, so the code decides.
-    Each merged line is matched with the earlier facts and the facts being saved:
+    One principle: the code fills in, it never overrides the model. Each merged line is handled so:
 
     * identical to a known fact: that fact's tags plus the known tags the model gave it (the same
       fact told in other words elsewhere, merged by the model);
-    * containing known facts (whole words): their tags plus the known tags the model gave it;
-    * similar to a known fact (reworded): the known tags the model gave it if any, else that fact's
-      tags; if it was an earlier fact that has tags, this save's tags are added too, since the
-      change can only come from this save. An earlier fact stored without a tag stays without one;
-    * nothing: the known tags the model gave it, else this save's tags if it resembles what is being
-      saved, else none. A wrong "told here" is worse than a missing tag.
+    * the model gave it known tags: exactly those. It may have negated, joined or updated facts and
+      only it knows; an incomplete tag beats a false one;
+    * no tag from the model: the tags of the known facts the line contains (whole words), else of
+      the most similar known fact (reworded), else of the fact in this save it resembles, else
+      none. Only the tags those facts already carry are used, never "this save" as a guess, and a
+      fact stored without a tag stays without one.
 
-    A tag the model made up is always dropped. The matching is a heuristic: when a merge changes
-    the meaning of a fact (a contradiction) the new wording may carry only the old tag, and a
-    member who plants a known tag in their own text can move it onto another of their own facts.
+    A tag the model made up is always dropped. The matching is a heuristic, so a fact updated by a
+    merge can keep only its old source, and a member who plants a known tag in their own text can
+    move it onto another of their own facts (it is their own data).
 
     Args:
         merged_text: One field of the merged memory.
@@ -237,7 +237,6 @@ def reattach_source_tags(
                 if is_new:
                     new_facts[key] = _union(new_facts.get(key, ()), tags)
     known_tags = {tag for tags in facts.values() for tag in tags}
-    new_tags = _union(*new_facts.values())
 
     lines = merged_text.split("\n")
     allow_similarity = len(merged_text) * len(facts) <= _MAX_CONTAIN_WORK
@@ -255,15 +254,12 @@ def reattach_source_tags(
         if key in facts:
             # The same fact told in other words elsewhere: the model merged them and kept both tags.
             tags = _union(facts[key], given)
-        elif allow_similarity and (contained := _contained_tags(key, facts, deadline)):
-            tags = _union(*contained, given)
-        elif allow_similarity and (similar := _most_similar(key, facts, _MIN_SIMILARITY, deadline)) is not None:
-            # Similarity is a guess: when the model tagged the line itself, its known tags win.
-            tags = given or facts[similar]
-            if not given and similar not in new_facts and tags:
-                tags = _union(tags, new_tags)
         elif given:
-            tags = given
+            tags = given  # the model tagged the line itself: its choice stands
+        elif allow_similarity and (contained := _contained_tags(key, facts, deadline)):
+            tags = _union(*contained)
+        elif allow_similarity and (similar := _most_similar(key, facts, _MIN_SIMILARITY, deadline)) is not None:
+            tags = facts[similar]
         elif allow_similarity and (like_new := _most_similar(key, new_facts, _MIN_SIMILARITY_TO_NEW, deadline)) is not None:
             tags = new_facts[like_new]
         else:
