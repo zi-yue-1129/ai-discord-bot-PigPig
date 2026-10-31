@@ -25,6 +25,7 @@ from addons.logging import get_logger
 from dashboard.middleware.permission import get_current_user
 from dashboard.services.member_stats import delete_member_stats
 from function import ROOT_DIR
+from llm.memory.source_label import drop_unknown_tags
 
 log = get_logger(server_id="Bot", source=__name__)
 router = APIRouter(prefix="/api/user", tags=["user"])
@@ -191,14 +192,19 @@ async def update_procedural_memory(
             if row is None:
                 raise HTTPException(status_code=404, detail="User memory record not found")
 
+            stored = await (await db.execute(
+                "SELECT procedural_memory, user_background FROM users WHERE discord_id = ?", (user_id,)
+            )).fetchone()
+
+            # [source: ...] tags say where a fact was told; a member cannot add one by hand.
             updates = []
             params = []
             if procedural_memory is not None:
                 updates.append("procedural_memory = ?")
-                params.append(procedural_memory)
+                params.append(drop_unknown_tags(str(procedural_memory), stored[0]))
             if user_background is not None:
                 updates.append("user_background = ?")
-                params.append(user_background)
+                params.append(drop_unknown_tags(str(user_background), stored[1]))
 
             params.append(user_id)
             await db.execute(

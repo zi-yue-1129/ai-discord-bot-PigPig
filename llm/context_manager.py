@@ -13,6 +13,7 @@ from typing import Any, List, Optional, Tuple
 
 import discord
 
+from llm.memory.source_label import render_sources
 from function import func
 from llm.memory.procedural import ProceduralMemoryProvider
 from llm.memory.short_term import ShortTermMemoryProvider
@@ -190,7 +191,8 @@ class ContextManager:
                 timestamp, 
                 episodic_str=episodic_str, 
                 human_time=human_time,
-                knowledge=knowledge
+                knowledge=knowledge,
+                guild_id=str(message.guild.id) if getattr(message, "guild", None) else None,
             )
         except Exception as e:
             asyncio.create_task(
@@ -267,6 +269,7 @@ class ContextManager:
         episodic_str: Optional[str] = None,
         human_time: Optional[str] = None,
         knowledge: Optional[KnowledgeMemory] = None,
+        guild_id: Optional[str] = None,
     ) -> str:
         """Format procedural memory and current state into a single string.
  
@@ -282,9 +285,9 @@ class ContextManager:
             for uid, uinfo in user_info_map.items():
                 sub_lines: List[str] = [f"User: {uid}"]
                 if getattr(uinfo, "user_background", None):
-                    sub_lines.append(f"Background: {uinfo.user_background}")
+                    sub_lines.append(f"Background: {render_sources(uinfo.user_background, guild_id)}")
                 if getattr(uinfo, "procedural_memory", None):
-                    sub_lines.append(f"Preferences: {uinfo.procedural_memory}")
+                    sub_lines.append(f"Preferences: {render_sources(uinfo.procedural_memory, guild_id)}")
                 parts.append("\n".join(sub_lines))
         except Exception as e:
             asyncio.create_task(
