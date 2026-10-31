@@ -99,7 +99,8 @@ _CONFIG_ALLOWED_KEYS: dict[str, set[str]] = {
     "llm": {
         "model_priorities", "google_search_agent",
         "llm_call_timeout", "reasoning_optimization_prompt", "ollama_url", "vllm_url",
-        "max_output_tokens", "openai_endpoints", "tool_groups",
+        "max_output_tokens", "openai_endpoints", "tool_groups", "info_agent_max_tool_calls",
+        "info_agent_max_identical_calls",
     },
     "memory": {
         "enabled", "procedural_cache_ttl", "procedural_data_path", "episodic_data_path",
@@ -175,6 +176,14 @@ async def write_config(
             parse_openai_endpoints(config_data["openai_endpoints"])
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if file == "llm":
+        # A budget below 1 makes the bot fail to build its info agent, which breaks every chat.
+        for budget_key in ("info_agent_max_tool_calls", "info_agent_max_identical_calls"):
+            if budget_key in config_data:
+                value = config_data[budget_key]
+                if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                    raise HTTPException(status_code=400, detail=f"'{budget_key}' must be a whole number of at least 1")
 
     path = _config_path(file)
 

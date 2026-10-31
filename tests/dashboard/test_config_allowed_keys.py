@@ -83,3 +83,38 @@ async def test_saving_a_valid_endpoint_still_works(tmp_path: Path, monkeypatch: 
     await admin.write_config("llm", _JsonRequest({"config": {"openai_endpoints": endpoints}}), user={"sub": "owner"})
 
     assert yaml.safe_load(path.read_text(encoding="utf-8"))["openai_endpoints"] == endpoints
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["info_agent_max_tool_calls", "info_agent_max_identical_calls"])
+@pytest.mark.parametrize("bad_value", [0, -1, "3", 2.5, True, None])
+async def test_a_tool_budget_that_is_not_a_positive_integer_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, key: str, bad_value: object
+) -> None:
+    """A budget of 0 would make every chat fail when the bot builds its info agent."""
+    from fastapi import HTTPException
+
+    from dashboard.routers import admin
+
+    path = tmp_path / "llm.yaml"
+    path.write_text("llm_call_timeout: 60\n", encoding="utf-8")
+    monkeypatch.setattr(admin, "_config_path", lambda file: str(path))
+
+    with pytest.raises(HTTPException) as refused:
+        await admin.write_config("llm", _JsonRequest({"config": {key: bad_value}}), user={"sub": "owner"})
+
+    assert refused.value.status_code == 400 and key in refused.value.detail
+    assert path.read_text(encoding="utf-8") == "llm_call_timeout: 60\n"
+
+
+@pytest.mark.asyncio
+async def test_a_positive_integer_tool_budget_is_saved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from dashboard.routers import admin
+
+    path = tmp_path / "llm.yaml"
+    path.write_text("llm_call_timeout: 60\n", encoding="utf-8")
+    monkeypatch.setattr(admin, "_config_path", lambda file: str(path))
+
+    await admin.write_config("llm", _JsonRequest({"config": {"info_agent_max_tool_calls": 5}}), user={"sub": "owner"})
+
+    assert yaml.safe_load(path.read_text(encoding="utf-8"))["info_agent_max_tool_calls"] == 5

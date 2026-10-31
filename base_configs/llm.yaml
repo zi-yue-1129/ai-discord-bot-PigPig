@@ -137,6 +137,13 @@ vllm_url: "http://127.0.0.1:8181"
 #     base_url: "https://llm.example.com/v1"
 #     api_key_env: "STEAK_LLM_API_KEY"
 llm_call_timeout: 180
+# Most tool calls the info agent may make for one message with one model. Normal messages use 1-6
+# calls; a model stuck repeating one call was seen making 80. Past the limit the agent ends with the
+# results it has. A fallback model starts the message over, so it gets its own count.
+info_agent_max_tool_calls: 8
+# How often the same tool with the same arguments may run across the rounds of one message. 2 allows
+# one legitimate repeat (e.g. "roll again if it is 1"); further repeats are treated as a loop.
+info_agent_max_identical_calls: 2
 # Most tokens one chat reply call may generate, reasoning included. A model stuck in a loop is
 # stopped by the server at this size. 0 removes the cap.
 max_output_tokens: 8192

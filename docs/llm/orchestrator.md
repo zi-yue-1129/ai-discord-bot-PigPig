@@ -82,7 +82,7 @@ The orchestrator maintains an `image_cache` during a single message cycle. If mu
 
 - **UserDataCog**: Source of user preferences and memory management.
 - **LanguageManager**: Handles dynamic translation of system status messages ("Analyzing...", "Thinking...").
-- **DirectToolOutputMiddleware**: Forces the Info Agent to return results immediately after a tool call, preventing infinite loops.
+- **ToolCallBudgetMiddleware** (`llm/utils/tool_budget.py`): Keeps the Info Agent from looping on tools. A call with the same tool and arguments may run `info_agent_max_identical_calls` times across rounds (default 2), the whole run is capped at `info_agent_max_tool_calls` (`llm.yaml`, default 8), and the agent ends with the results it already has when nothing is left to run. Both limits count per model attempt: a fallback model starts the message over from the original input, so it has its own count.
 
 ---
 *The Orchestrator is designed to be the "brain" of the bot, abstracting away the complexity of model selection and context assembly from the UI layers.*

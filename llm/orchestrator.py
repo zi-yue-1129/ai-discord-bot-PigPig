@@ -11,24 +11,20 @@ from llm.utils.info_context import build_info_agent_request
 from llm.utils.phase_timer import PhaseTimer
 from llm.utils.tool_trace import collect_tool_calls, describe_info_agent_outcome
 
-logger = get_logger(server_id="Bot", source="llm.orchestrator")
-
 import discord
 from discord import Message
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain.agents import create_agent
-from langchain.agents.middleware import ModelCallLimitMiddleware, AgentMiddleware, hook_config
+from langchain.agents.middleware import ModelCallLimitMiddleware
 
 from llm.model_manager import ModelManager
 from llm.tools_factory import get_tools
 from llm.schema import OrchestratorResponse, OrchestratorRequest
 from llm.utils.send_message import send_message, safe_edit_message
 from llm.utils.model_init import create_model_instance
+from llm.utils.tool_budget import ToolCallBudgetMiddleware
 from function import func
 from addons.settings import llm_config, music_config, prompt_config
-
-_LLM_CALL_TIMEOUT_SECONDS: float = llm_config.llm_call_timeout
-_IMAGE_FETCH_TIMEOUT_SECONDS: float = 15.0
 
 from .prompting.system_prompt import get_system_prompt
 from .prompting.protected_prompt_manager import get_protected_prompt_manager
@@ -48,11 +44,10 @@ from llm.model_circuit_breaker import get_model_circuit_breaker
 
 from llm.utils.safe_typing import SafeTyping
 
+logger = get_logger(server_id="Bot", source="llm.orchestrator")
 
-class DirectToolOutputMiddleware(AgentMiddleware):
-    @hook_config(can_jump_to=["end"])
-    def after_tools(self, state, runtime):
-        return {"jump_to": "end"}
+_LLM_CALL_TIMEOUT_SECONDS: float = llm_config.llm_call_timeout
+_IMAGE_FETCH_TIMEOUT_SECONDS: float = 15.0
 
 
 class Orchestrator:
@@ -608,7 +603,9 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                             model=info_model_instance,
                             tools=info_agent_tools,
                             system_prompt=model_specific_prompt,
-                            middleware=[DirectToolOutputMiddleware()],
+                            middleware=[ToolCallBudgetMiddleware(
+                                llm_config.info_agent_max_tool_calls, llm_config.info_agent_max_identical_calls
+                            )],
                         )
 
                         sanitized_messages = await self._sanitize_messages_for_model(info_agent_input, current_info_model, image_cache)
