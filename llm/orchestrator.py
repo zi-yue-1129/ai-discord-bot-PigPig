@@ -7,7 +7,7 @@ from addons.logging import get_logger
 from addons.settings import memory_config
 from llm.self_knowledge import build_self_description
 from llm.callbacks import ToolLogCallbackHandler
-from llm.utils.info_context import build_info_context_message
+from llm.utils.info_context import build_info_agent_request
 from llm.utils.phase_timer import PhaseTimer
 from llm.utils.tool_trace import collect_tool_calls, describe_info_agent_outcome
 
@@ -509,7 +509,6 @@ Focus on understanding what the user actually needs and prepare a clear analysis
 
             # 1b) Player status goes into the context because neither agent can look it
             # up after its single tool round.
-            music_context = ""
             try:
                 music_context = await build_music_context(bot, message.guild, music_config.ai)
                 if music_context:
@@ -558,21 +557,13 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                     raise RuntimeError(f"Failed to get info_model priority list: {e}") from e
 
                 info_system_prompt = self._build_info_agent_prompt(bot_id=bot.user.id, message=message)
-                # The info agent only chooses tools. The stored user memory and server knowledge in
-                # procedural_context_str made the live model write a reply instead of calling tools
-                # (see llm/utils/info_context.py), so its system prompt stays static, which also keeps
-                # the provider's prompt cache valid, and it gets a short note after the conversation.
-                full_info_prompt = info_system_prompt
-
                 # Inject short-term memory messages directly before current user input
                 messages_for_info_agent = list(short_term_msgs)
-                info_agent_input = messages_for_info_agent + [
-                    build_info_context_message(
-                        getattr(message.channel, "name", str(getattr(message.channel, "id", ""))),
-                        getattr(message, "created_at", None),
-                        music_context,
-                    )
-                ]
+                # The system context in the info agent's SYSTEM PROMPT made the live model write a reply
+                # instead of calling tools; after the conversation it does not (see llm/utils/info_context.py).
+                full_info_prompt, info_agent_input = build_info_agent_request(
+                    info_system_prompt, messages_for_info_agent, procedural_context_str
+                )
 
                 # Update status to "Analyzing..."
                 analyzing_msg = lang_manager.translate(guild_id, "system", "chat_bot", "responses", "analyzing") if lang_manager else "🔍 Analyzing information..."

@@ -1,19 +1,18 @@
-"""The short context note the info agent gets instead of the full system context.
+"""Where the info agent gets the system context (stored user memory, server knowledge, time, player status).
 
-The reply agent gets the whole system context (stored user memory, server knowledge, recalled
-episodes). Putting that same block into the info agent's system prompt made the live model write a
-chat reply instead of calling tools: in a replay of the real conversations it answered 0 of 36 tool
-requests with a tool call, against about 30 of 36 when the block was left out and only the time and
-channel were given after the conversation. The info agent only decides which tools to call, so it
-gets just what that decision needs: where and when this is, and the music player status.
+The reply agent gets that block in its system prompt. Putting the same block into the *info agent's*
+system prompt made the live model write a chat reply instead of calling tools: in a replay of the
+real conversations 16 of 36 tool requests got a tool call (0 of 36 in another run). With the block
+after the conversation, as a short note, 30 of 36 did, and the info agent still sees the stored
+memory ("play my favourite song"). The system prompt therefore stays the static info prompt, which
+also keeps the provider's prompt cache valid.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Callable, Optional
+from typing import List, Sequence, Tuple
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import BaseMessage, HumanMessage
 
 _NOTE = (
     "[Background for the tool execution agent, not a user message. "
@@ -21,32 +20,24 @@ _NOTE = (
 )
 
 
-def build_info_context_message(
-    channel_name: str,
-    created_at: Optional[datetime],
-    music_context: str = "",
-    now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-) -> HumanMessage:
-    """Builds the note that goes after the conversation in the info agent's input.
+def build_info_agent_request(
+    system_prompt: str,
+    messages: Sequence[BaseMessage],
+    system_context: str,
+) -> Tuple[str, List[BaseMessage]]:
+    """Builds what the info agent is sent.
 
     Args:
-        channel_name: Name of the channel the message was written in.
-        created_at: When the triggering message was written; a time without a zone counts as UTC.
-            ``None`` uses the current time.
-        music_context: The music player status, or an empty string when there is none.
-        now: Source of the current time; replaced in tests.
+        system_prompt: The info agent's static instructions.
+        messages: The conversation, oldest first, ending with the message to act on.
+        system_context: The system context block (user memory, knowledge, channel and time, player
+            status). May be empty.
 
     Returns:
-        A ``HumanMessage`` holding the note, the channel, the time and, when given, the player status.
+        ``(system_prompt, messages)``: the prompt unchanged, and a new list holding the conversation
+        followed, when there is a context, by one note with that context. ``messages`` is not modified.
     """
-    moment = created_at if created_at is not None else now()
-    moment = moment.replace(tzinfo=timezone.utc) if moment.tzinfo is None else moment.astimezone(timezone.utc)
-    parts = [
-        _NOTE,
-        "--- System Context ---",
-        f"Channel: #{channel_name}\nTimestamp: {moment.timestamp()}\nCurrent Time: {moment.strftime('%Y-%m-%d %H:%M:%S UTC')}",
-    ]
-    if music_context:
-        parts.append(music_context)
-    parts.append("--- End System Context ---")
-    return HumanMessage(content="\n\n".join(parts))
+    conversation = list(messages)
+    if system_context:
+        conversation.append(HumanMessage(content=f"{_NOTE}\n\n{system_context}"))
+    return system_prompt, conversation
