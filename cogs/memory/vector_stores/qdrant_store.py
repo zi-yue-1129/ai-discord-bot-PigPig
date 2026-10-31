@@ -42,6 +42,11 @@ class QdrantStore(VectorStoreInterface):
     # Most words of one keyword query that are matched; the model sometimes sends very long ones.
     MAX_KEYWORD_QUERY_WORDS = 20
 
+    # True once ensure_storage built the keywords text index. Without it a text match is a
+    # case-sensitive substring scan that can crowd out exact hits (``SQL`` vs ``NoSQL``), so until
+    # then keyword search keeps its old exact lowercase match.
+    _keyword_index_ready: bool = False
+
     # Payload indexes, on the paths the filters really use (the fields live under ``metadata``).
     # Keywords are stored as the summarizer wrote them (``HAREKAZE``, ``PigPig``), so the text index
     # lowercases both sides and a query matches whatever the letter case.
@@ -128,6 +133,7 @@ class QdrantStore(VectorStoreInterface):
             # Create payload indexes for filtering (idempotent). One refused index must not
             # skip the others, but it is reported: searches still work without it, only slower
             # (or, for keywords, case-sensitive).
+            self._keyword_index_ready = False
             for field_name, field_schema in self.PAYLOAD_INDEXES:
                 try:
                     # In a thread: on a large collection the server call can take many seconds.
@@ -137,6 +143,8 @@ class QdrantStore(VectorStoreInterface):
                         field_name=field_name,
                         field_schema=field_schema,
                     )
+                    if field_name == "metadata.keywords":
+                        self._keyword_index_ready = True
                 except Exception as index_error:  # keep creating the other indexes; the failure is logged below
                     logger.error("Could not create payload index %s", field_name, exc_info=True)
                     asyncio.create_task(self._report_error(index_error))
@@ -354,25 +362,26 @@ class QdrantStore(VectorStoreInterface):
         return fragments
 
     @classmethod
-    def _keyword_filter(cls, query_text: str) -> Optional[Filter]:
+    def _keyword_filter(cls, query_text: str, text_index: bool = True) -> Optional[Filter]:
         """Builds the "any of these words" condition for a keyword search.
 
         Args:
             query_text: Words separated by whitespace.
+            text_index: Whether the keywords text index exists. With it each word is a text match,
+                which ignores letter case; without it the words are matched exactly, lowercased,
+                as keyword search always did.
 
         Returns:
-            A filter matching fragments whose keywords contain any of the words (the text index
-            ignores letter case), or ``None`` when the query has no words.
+            A filter matching fragments whose keywords contain any of the words, or ``None`` when
+            the query has no words.
         """
         words = query_text.split()[: cls.MAX_KEYWORD_QUERY_WORDS]
         if not words:
             return None
-        conditions = [FieldCondition(key="metadata.keywords", match=MatchText(text=word)) for word in words]
-        # Floor when the text index is missing (the text match is then case-sensitive): the words as
-        # typed and lowercased, matched exactly as keyword search always did.
-        variants = list(dict.fromkeys(variant for word in words for variant in (word, word.lower())))
-        conditions.append(FieldCondition(key="metadata.keywords", match=MatchAny(any=variants)))
-        return Filter(should=conditions)
+        if not text_index:
+            exact = [word.lower() for word in words]
+            return Filter(should=[FieldCondition(key="metadata.keywords", match=MatchAny(any=exact))])
+        return Filter(should=[FieldCondition(key="metadata.keywords", match=MatchText(text=word)) for word in words])
 
     async def search_memories_by_keyword(
         self,
@@ -387,7 +396,7 @@ class QdrantStore(VectorStoreInterface):
             
             # Build filter conditions: any query word may match a stored keyword
             filter_conditions = []
-            keyword_filter = self._keyword_filter(query_text)
+            keyword_filter = self._keyword_filter(query_text, text_index=self._keyword_index_ready)
             if keyword_filter is not None:
                 filter_conditions.append(keyword_filter)
 

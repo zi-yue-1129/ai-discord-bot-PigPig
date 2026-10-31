@@ -56,8 +56,8 @@ class EpisodicMemoryTools:
             sentence or a long list of words in it, those find nothing. You can provide both
             parameters together for a hybrid search.
 
-            If nothing is found, do not search again with a longer or reworded query; answer
-            without the memory.
+            If a keyword_query finds nothing, do not repeat it with a longer or reworded list of
+            words: try a vector_query or answer without the memory.
 
             Parameters:
                 vector_query (Optional[str]): Natural-language semantic query for vector search.

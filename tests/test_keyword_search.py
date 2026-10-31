@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import Any, List, Tuple
 
 import pytest
-from qdrant_client.models import MatchAny, MatchText, PayloadSchemaType, TextIndexParams
+from qdrant_client.models import Filter, MatchAny, MatchText, PayloadSchemaType, TextIndexParams
 
 from cogs.memory.vector_stores.qdrant_store import QdrantStore
 from llm.tools.episodic_memory import EpisodicMemoryTools
@@ -16,12 +16,6 @@ from llm.tools.episodic_memory import EpisodicMemoryTools
 def _conditions(query: str) -> list:
     """The text-match conditions of the keyword filter (fails if there is no filter)."""
     return [condition for condition in QdrantStore._keyword_filter(query).should if isinstance(condition.match, MatchText)]
-
-
-def _exact_variants(query: str) -> List[str]:
-    """The words of the exact-match fallback condition (fails if there is none)."""
-    (fallback,) = [condition for condition in QdrantStore._keyword_filter(query).should if isinstance(condition.match, MatchAny)]
-    return fallback.match.any
 
 
 def _texts(query: str) -> List[str]:
@@ -33,14 +27,12 @@ def test_each_word_is_matched_as_text_on_the_keywords_field() -> None:
     assert _texts("HAREKAZE Kuma") == ["HAREKAZE", "Kuma"]
 
 
-def test_without_the_text_index_a_lowercase_keyword_is_still_found_by_an_uppercase_query() -> None:
-    """If the index cannot be built the text match is case-sensitive; the old exact lowercase match stays as a floor."""
-    assert "harekaze" in _exact_variants("HAREKAZE")
-    assert "HAREKAZE" in _exact_variants("HAREKAZE")
+def test_without_the_text_index_the_old_exact_lowercase_match_is_used_alone() -> None:
+    """A text match without its index is a case-sensitive substring scan that can crowd out exact hits (sql vs NoSQL)."""
+    conditions = QdrantStore._keyword_filter("HAREKAZE Kuma", text_index=False).should
 
-
-def test_the_fallback_has_each_word_once() -> None:
-    assert sorted(_exact_variants("kuma Kuma")) == ["Kuma", "kuma"]
+    assert len(conditions) == 1 and isinstance(conditions[0].match, MatchAny)
+    assert conditions[0].match.any == ["harekaze", "kuma"]
 
 
 def test_any_word_may_match_not_all_of_them() -> None:
@@ -93,13 +85,53 @@ async def test_the_indexes_are_created_on_the_metadata_fields_the_filters_use() 
     assert isinstance(keywords, TextIndexParams) and keywords.lowercase is True
 
 
+ALL_FIELDS = {"metadata.keywords", "metadata.author_ids", "metadata.channel_id", "metadata.guild_id"}
+
+
 @pytest.mark.asyncio
-async def test_one_refused_index_does_not_stop_the_others() -> None:
-    client = _Client(failing_field="metadata.keywords")
+@pytest.mark.parametrize("refused", sorted(ALL_FIELDS))
+async def test_one_refused_index_does_not_stop_the_others(refused: str) -> None:
+    """Whichever index is refused, the rest are still built (refusing only the last one proves nothing)."""
+    client = _Client(failing_field=refused)
 
     await _store(client).ensure_storage()
 
-    assert {field for field, _ in client.created} == {"metadata.author_ids", "metadata.channel_id", "metadata.guild_id"}
+    assert {field for field, _ in client.created} == ALL_FIELDS - {refused}
+
+
+@pytest.mark.asyncio
+async def test_the_text_match_is_only_used_once_its_index_exists() -> None:
+    built, refused = _store(_Client()), _store(_Client(failing_field="metadata.keywords"))
+    assert built._keyword_index_ready is False and refused._keyword_index_ready is False, "nothing is built yet"
+
+    await built.ensure_storage()
+    await refused.ensure_storage()
+
+    assert built._keyword_index_ready is True
+    assert refused._keyword_index_ready is False
+
+
+class _QueryClient:
+    def __init__(self) -> None:
+        self.filters: List[Any] = []
+
+    def query_points(self, **kwargs: Any) -> Any:
+        self.filters.append(kwargs["query_filter"])
+        return SimpleNamespace(points=[])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ready, expected", [(True, MatchText), (False, MatchAny)])
+async def test_the_search_builds_the_filter_for_the_index_state(ready: bool, expected: type) -> None:
+    client = _QueryClient()
+    store = _store(client)
+    store.embedding_dim = 2
+    store._keyword_index_ready = ready
+
+    await store.search_memories_by_keyword("Kuma", guild_id="9")
+
+    keyword_filter = [part for part in client.filters[0].must if isinstance(part, Filter)]
+    assert len(keyword_filter) == 1 and isinstance(keyword_filter[0].should[0].match, expected)
 
 
 # ---------------------------------------------------------------- what the model is told
