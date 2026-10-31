@@ -32,9 +32,6 @@ from addons.logging import get_logger
 import re
 from typing import Any, Dict, List, Optional, Union, cast
 
-# Module-level logger
-log = get_logger(server_id="Bot", source=__name__)
-
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -46,6 +43,7 @@ from pydantic import BaseModel, Field
 from addons.settings import prompt_config
 from cogs.memory.users.manager import SQLiteUserManager
 from cogs.memory.users.models import UserInfo
+from cogs.memory.users.source_label import tag_with_source
 from cogs.memory.db.knowledge_storage import MAX_KNOWLEDGE_CHARS, KnowledgeStorage
 from function import func
 from addons.discord_text import reply_in_chunks
@@ -54,6 +52,9 @@ from llm.utils.model_init import create_model_instance
 from llm.utils.send_message import safe_edit_message
 
 from .language_manager import LanguageManager
+
+# Module-level logger
+log = get_logger(server_id="Bot", source=__name__)
 
 # Fallback translations for when LanguageManager is unavailable
 FALLBACK_TRANSLATIONS = {
@@ -482,7 +483,10 @@ class UserDataCog(commands.Cog):
             f"Existing user data:\n{existing_data_str}\n\n"
             f"New data to add:\n{new_data}\n\n"
             "Please merge these intelligently and return the complete merged result. "
-            "Keep each piece of information in the language it was given in; do not translate it."
+            "Keep each piece of information in the language it was given in; do not translate it. "
+            "A fact may end with a [source: ...] tag saying where it was told. Keep that tag "
+            "attached to its fact; when the same fact comes from several places keep every tag. "
+            "Never add a tag to a fact that has none and never change a tag."
         )
 
         # Direct invocation for better performance
@@ -725,9 +729,10 @@ class UserDataCog(commands.Cog):
  
             # Invoke AI agent to merge data
             try:
+                # The memory is global, so every fact keeps the place it was told in.
                 merged_data = await self._invoke_ai_merge_agent(
                     existing_data,
-                    user_data,
+                    tag_with_source(user_data, context),
                     user_id,
                     guild_id=guild_id or "0",
                 )
