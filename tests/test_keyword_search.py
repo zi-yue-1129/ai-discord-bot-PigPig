@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 from typing import Any, List, Tuple
 
@@ -114,3 +115,38 @@ async def test_an_empty_result_tells_the_model_not_to_search_again_with_a_longer
 
     assert answer.startswith("No relevant memories found.")
     assert "do not" in answer.lower() and "retry" in answer.lower()
+
+
+@pytest.mark.asyncio
+async def test_an_empty_semantic_search_is_not_told_to_stop_searching() -> None:
+    """The retry warning is about keyword queries; a semantic query may still be worth trying."""
+    answer = await _tool().ainvoke({"vector_query": "what did we talk about"})
+
+    assert answer == "No relevant memories found."
+
+
+@pytest.mark.asyncio
+async def test_the_empty_keyword_answer_points_to_a_semantic_search_instead() -> None:
+    answer = await _tool().ainvoke({"keyword_query": "something"})
+
+    assert "vector_query" in answer
+
+
+class _ThreadRecordingClient(_Client):
+    def __init__(self) -> None:
+        super().__init__()
+        self.threads: List[int] = []
+
+    def create_payload_index(self, collection_name: str, field_name: str, field_schema: Any) -> None:
+        self.threads.append(threading.get_ident())
+        super().create_payload_index(collection_name, field_name, field_schema)
+
+
+@pytest.mark.asyncio
+async def test_building_the_indexes_does_not_block_the_event_loop() -> None:
+    """On the live 67k-point collection the server call can take many seconds."""
+    client = _ThreadRecordingClient()
+
+    await _store(client).ensure_storage()
+
+    assert client.threads and threading.get_ident() not in client.threads

@@ -129,7 +129,9 @@ class QdrantStore(VectorStoreInterface):
             # (or, for keywords, case-sensitive).
             for field_name, field_schema in self.PAYLOAD_INDEXES:
                 try:
-                    self.client.create_payload_index(
+                    # In a thread: on a large collection the server call can take many seconds.
+                    await asyncio.to_thread(
+                        self.client.create_payload_index,
                         collection_name=self.collection_name,
                         field_name=field_name,
                         field_schema=field_schema,

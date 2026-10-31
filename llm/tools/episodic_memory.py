@@ -110,7 +110,12 @@ class EpisodicMemoryTools:
                     fragments = without_hidden_participants(fragments, await hidden_in_guild_async(bot, guild.id))
 
                 if not fragments:
-                    return "No relevant memories found. Do not retry with a longer or reworded query; answer without it."
+                    if keyword_query:
+                        return (
+                            "No relevant memories found. Do not retry with a longer or reworded keyword query; "
+                            "try a vector_query or answer without the memory."
+                        )
+                    return "No relevant memories found."
     
                 formatted: List[str] = []
                 for frag in fragments:
