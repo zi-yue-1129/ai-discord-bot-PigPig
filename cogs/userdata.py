@@ -43,7 +43,7 @@ from pydantic import BaseModel, Field
 from addons.settings import prompt_config
 from cogs.memory.users.manager import SQLiteUserManager
 from cogs.memory.users.models import UserInfo
-from cogs.memory.users.source_label import tag_with_source
+from cogs.memory.users.source_label import SOURCE_TAG_INSTRUCTION, tag_with_source
 from cogs.memory.db.knowledge_storage import MAX_KNOWLEDGE_CHARS, KnowledgeStorage
 from function import func
 from addons.discord_text import reply_in_chunks
@@ -484,9 +484,7 @@ class UserDataCog(commands.Cog):
             f"New data to add:\n{new_data}\n\n"
             "Please merge these intelligently and return the complete merged result. "
             "Keep each piece of information in the language it was given in; do not translate it. "
-            "A fact may end with a [source: ...] tag saying where it was told. Keep that tag "
-            "attached to its fact; when the same fact comes from several places keep every tag. "
-            "Never add a tag to a fact that has none and never change a tag."
+            f"{SOURCE_TAG_INSTRUCTION}"
         )
 
         # Direct invocation for better performance
