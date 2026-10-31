@@ -43,7 +43,7 @@ from pydantic import BaseModel, Field
 from addons.settings import prompt_config
 from cogs.memory.users.manager import SQLiteUserManager
 from cogs.memory.users.models import UserInfo
-from cogs.memory.users.source_label import SOURCE_TAG_INSTRUCTION, tag_with_source
+from llm.memory.source_label import SOURCE_TAG_INSTRUCTION, render_sources, tag_with_source
 from cogs.memory.db.knowledge_storage import MAX_KNOWLEDGE_CHARS, KnowledgeStorage
 from function import func
 from addons.discord_text import reply_in_chunks
@@ -405,9 +405,11 @@ class UserDataCog(commands.Cog):
 
             if user_info:
                 display_names = ', '.join(user_info.display_names) if user_info.display_names else 'None'
+                # Tags name the server by id; the reader sees "this server" or "another server".
+                here = guild_id or None
                 return (
-                    f"**Preference:** {user_info.procedural_memory}\n"
-                    f"**Background:** {user_info.user_background}\n"
+                    f"**Preference:** {render_sources(str(user_info.procedural_memory), here)}\n"
+                    f"**Background:** {render_sources(str(user_info.user_background), here)}\n"
                     f"**Display Names:** {display_names}"
                 )
 
