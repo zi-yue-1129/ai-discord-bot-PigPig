@@ -201,3 +201,28 @@ def test_a_malformed_tag_the_model_invented_cannot_pass_as_text_with_a_server_id
     result = reattach_source_tags("likes jazz [source: server  id=9]", [f"likes jazz {A}"], f"x {B}")
 
     assert "[source: server  id=9]" not in result and "[source" in result and A in result
+
+
+# ------------------------------------------------------- Codex review (third round)
+
+
+def test_a_repeated_fact_in_other_words_keeps_the_tag_the_model_merged_in() -> None:
+    """'likes jazz' told in A, then 'I like jazz' in B: the model merges them and rightly keeps both tags."""
+    result = reattach_source_tags(f"likes jazz {A} {B}", [f"likes jazz {A}"], f"I like jazz {B}")
+
+    assert result == f"likes jazz {A} {B}"
+
+
+def test_when_the_model_tagged_a_reworded_line_its_known_tags_win_over_the_guess() -> None:
+    """Old 'Uses C++ [A]', new 'I write software in C# [B]'; the model wrote 'Uses C# ... [B]': not told in A."""
+    result = reattach_source_tags(
+        f"Uses C# for programming {B}", [f"Uses C++ for programming {A}"], f"I write software in C# {B}"
+    )
+
+    assert result == f"Uses C# for programming {B}"
+
+
+def test_an_exact_match_still_drops_a_tag_nobody_knows() -> None:
+    result = reattach_source_tags(f"likes jazz {A} [source: server id=999]", [f"likes jazz {A}"], f"x {B}")
+
+    assert result == f"likes jazz {A}"

@@ -185,11 +185,12 @@ def reattach_source_tags(
     The model is asked to keep the tags, but it may drop, move or invent them, so the code decides.
     Each merged line is matched with the earlier facts and the facts being saved:
 
-    * identical to a known fact: exactly that fact's tags;
+    * identical to a known fact: that fact's tags plus the known tags the model gave it (the same
+      fact told in other words elsewhere, merged by the model);
     * containing known facts (whole words): their tags plus the known tags the model gave it;
-    * similar to a known fact (reworded): that fact's tags; if it was an earlier fact that has
-      tags, this save's tags are added too, since the change can only come from this save. An
-      earlier fact stored without a tag stays without one;
+    * similar to a known fact (reworded): the known tags the model gave it if any, else that fact's
+      tags; if it was an earlier fact that has tags, this save's tags are added too, since the
+      change can only come from this save. An earlier fact stored without a tag stays without one;
     * nothing: the known tags the model gave it, else this save's tags if it resembles what is being
       saved, else none. A wrong "told here" is worse than a missing tag.
 
@@ -235,14 +236,15 @@ def reattach_source_tags(
         given = tuple(tag for tag in present if tag in known_tags)
         tags: Tuple[str, ...]
         if key in facts:
-            tags = facts[key]
+            # The same fact told in other words elsewhere: the model merged them and kept both tags.
+            tags = _union(facts[key], given)
         elif allow_similarity and (contained := [t for f, t in facts.items() if len(f) >= _MIN_CONTAINED_CHARS and _contains(f, key)]):
             tags = _union(*contained, given)
         elif allow_similarity and (similar := _most_similar(key, facts, _MIN_SIMILARITY, deadline)) is not None:
-            tags = facts[similar]
-            if similar not in new_facts and tags:
+            # Similarity is a guess: when the model tagged the line itself, its known tags win.
+            tags = given or facts[similar]
+            if not given and similar not in new_facts and tags:
                 tags = _union(tags, new_tags)
-            tags = _union(tags, given)
         elif given:
             tags = given
         elif allow_similarity and (like_new := _most_similar(key, new_facts, _MIN_SIMILARITY_TO_NEW, deadline)) is not None:
