@@ -33,34 +33,66 @@ def test_first_calls_are_left_alone() -> None:
     assert _apply(middleware, HumanMessage(content="hi"), reply) == {}
 
 
-def test_a_call_already_made_in_an_earlier_round_is_dropped_and_the_run_ends() -> None:
-    middleware = ToolCallBudgetMiddleware(max_tool_calls=8)
-    first = AIMessage(content="", id="a1", tool_calls=[_call("search", "c1", q="x")])
-    result = ToolMessage(content="found", tool_call_id="c1", name="search")
-    again = AIMessage(content="", id="a2", tool_calls=[_call("search", "c2", q="x")])
+def _rounds(*round_calls: List[Dict[str, Any]]) -> List[Any]:
+    """AI message plus one result per call, for each earlier round."""
+    messages: List[Any] = [HumanMessage(content="hi")]
+    for number, calls in enumerate(round_calls):
+        messages.append(AIMessage(content="", id=f"a{number}", tool_calls=calls))
+        messages.extend(ToolMessage(content="r", tool_call_id=call["id"], name=call["name"]) for call in calls)
+    return messages
 
-    update = _apply(middleware, HumanMessage(content="hi"), first, result, again)
+
+def test_a_call_repeated_too_often_across_rounds_is_dropped_and_the_run_ends() -> None:
+    middleware = ToolCallBudgetMiddleware(max_tool_calls=8, max_identical_calls=2)
+    earlier = _rounds([_call("search", "c1", q="x")], [_call("search", "c2", q="x")])
+    again = AIMessage(content="", id="a9", tool_calls=[_call("search", "c3", q="x")])
+
+    update = _apply(middleware, *earlier, again)
 
     assert update["jump_to"] == "end"
-    assert update["messages"][0].id == "a2" and update["messages"][0].tool_calls == []
+    assert update["messages"][0].id == "a9" and update["messages"][0].tool_calls == []
+
+
+def test_one_repeat_is_allowed_because_a_reroll_is_legitimate() -> None:
+    """"Roll a d6; if it is 1, roll once more" asks for the same roll_dice call in a later round."""
+    middleware = ToolCallBudgetMiddleware(max_tool_calls=8, max_identical_calls=2)
+    earlier = _rounds([_call("roll_dice", "c1", notation="d6")])
+    reroll = AIMessage(content="", id="a9", tool_calls=[_call("roll_dice", "c2", notation="d6")])
+
+    assert _apply(middleware, *earlier, reroll) == {}
+
+
+def test_dropped_calls_also_leave_the_provider_content_blocks() -> None:
+    """Anthropic keeps each call as a tool_use block in the content; a block without a result is invalid history."""
+    middleware = ToolCallBudgetMiddleware(max_tool_calls=1)
+    content = [
+        {"type": "text", "text": "looking"},
+        {"type": "tool_use", "id": "c1", "name": "a", "input": {}},
+        {"type": "tool_use", "id": "c2", "name": "b", "input": {}},
+    ]
+    reply = AIMessage(content=content, id="a1", tool_calls=[_call("a", "c1"), _call("b", "c2")])
+
+    kept = _apply(middleware, HumanMessage(content="hi"), reply)["messages"][0]
+
+    assert [call["id"] for call in kept.tool_calls] == ["c1"]
+    assert [block["id"] for block in kept.content if block["type"] == "tool_use"] == ["c1"]
+    assert any(block["type"] == "text" for block in kept.content)
 
 
 def test_same_tool_with_other_arguments_is_a_new_call() -> None:
-    middleware = ToolCallBudgetMiddleware(max_tool_calls=8)
-    first = AIMessage(content="", id="a1", tool_calls=[_call("search", "c1", q="x")])
-    result = ToolMessage(content="found", tool_call_id="c1", name="search")
+    middleware = ToolCallBudgetMiddleware(max_tool_calls=8, max_identical_calls=1)
+    earlier = _rounds([_call("search", "c1", q="x")])
     other = AIMessage(content="", id="a2", tool_calls=[_call("search", "c2", q="y")])
 
-    assert _apply(middleware, HumanMessage(content="hi"), first, result, other) == {}
+    assert _apply(middleware, *earlier, other) == {}
 
 
 def test_argument_order_does_not_hide_a_repeat() -> None:
-    middleware = ToolCallBudgetMiddleware(max_tool_calls=8)
-    first = AIMessage(content="", id="a1", tool_calls=[_call("find", "c1", a=1, b=2)])
-    result = ToolMessage(content="r", tool_call_id="c1", name="find")
+    middleware = ToolCallBudgetMiddleware(max_tool_calls=8, max_identical_calls=1)
+    earlier = _rounds([_call("find", "c1", a=1, b=2)])
     again = AIMessage(content="", id="a2", tool_calls=[_call("find", "c2", b=2, a=1)])
 
-    assert _apply(middleware, first, result, again)["jump_to"] == "end"
+    assert _apply(middleware, *earlier, again)["jump_to"] == "end"
 
 
 def test_calls_over_the_budget_are_cut_and_the_run_ends_after_them() -> None:
@@ -102,10 +134,12 @@ def test_a_reply_without_tool_calls_is_left_alone() -> None:
 def test_budget_must_be_positive() -> None:
     with pytest.raises(ValueError, match="max_tool_calls"):
         ToolCallBudgetMiddleware(max_tool_calls=0)
+    with pytest.raises(ValueError, match="max_identical_calls"):
+        ToolCallBudgetMiddleware(max_tool_calls=8, max_identical_calls=0)
 
 
 @pytest.mark.asyncio
-async def test_a_model_that_repeats_one_call_forever_runs_the_tool_once() -> None:
+async def test_a_model_that_repeats_one_call_forever_runs_the_tool_twice_at_most() -> None:
     """The live failure: 80 identical search calls in a row, one per model round."""
     runs: List[str] = []
 
@@ -126,12 +160,12 @@ async def test_a_model_that_repeats_one_call_forever_runs_the_tool_once() -> Non
             return self
 
     agent = create_agent(
-        model=_Model(messages=endless()), tools=[search], middleware=[ToolCallBudgetMiddleware(max_tool_calls=8)]
+        model=_Model(messages=endless()), tools=[search], middleware=[ToolCallBudgetMiddleware(max_tool_calls=8, max_identical_calls=2)]
     )
 
     result = await agent.ainvoke({"messages": [HumanMessage(content="find it")]}, config={"recursion_limit": 60})
 
-    assert runs == ["same"]
+    assert runs == ["same", "same"]
     assert any(isinstance(message, ToolMessage) and "result for same" in message.content for message in result["messages"])
 
 
@@ -143,8 +177,12 @@ def test_the_budget_comes_from_llm_yaml_with_a_default(tmp_path: Any) -> None:
     empty = tmp_path / "empty.yaml"
     empty.write_text("model_priorities: []\n", encoding="utf-8")
 
+    configured.write_text("info_agent_max_tool_calls: 3\ninfo_agent_max_identical_calls: 1\n", encoding="utf-8")
+
     assert LLMConfig(str(configured)).info_agent_max_tool_calls == 3
+    assert LLMConfig(str(configured)).info_agent_max_identical_calls == 1
     assert LLMConfig(str(empty)).info_agent_max_tool_calls == 8
+    assert LLMConfig(str(empty)).info_agent_max_identical_calls == 2
 
 
 def test_the_orchestrator_installs_the_budget_middleware() -> None:
@@ -153,5 +191,5 @@ def test_the_orchestrator_installs_the_budget_middleware() -> None:
     from llm import orchestrator
 
     source = inspect.getsource(orchestrator)
-    assert "ToolCallBudgetMiddleware(llm_config.info_agent_max_tool_calls)" in source
+    assert "llm_config.info_agent_max_identical_calls" in source and "ToolCallBudgetMiddleware(" in source
     assert "DirectToolOutputMiddleware" not in source, "the no-op middleware (after_tools is no hook) is gone"

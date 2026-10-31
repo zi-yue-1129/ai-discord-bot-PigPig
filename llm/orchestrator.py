@@ -603,7 +603,9 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                             model=info_model_instance,
                             tools=info_agent_tools,
                             system_prompt=model_specific_prompt,
-                            middleware=[ToolCallBudgetMiddleware(llm_config.info_agent_max_tool_calls)],
+                            middleware=[ToolCallBudgetMiddleware(
+                                llm_config.info_agent_max_tool_calls, llm_config.info_agent_max_identical_calls
+                            )],
                         )
 
                         sanitized_messages = await self._sanitize_messages_for_model(info_agent_input, current_info_model, image_cache)

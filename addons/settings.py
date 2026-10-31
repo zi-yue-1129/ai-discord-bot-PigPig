@@ -259,6 +259,8 @@ class LLMConfig:
         self.llm_call_timeout: float = float(self.data.get("llm_call_timeout", 60))
         # Most tool calls the info agent may make for one message (repeats of an earlier round are dropped).
         self.info_agent_max_tool_calls: int = int(self.data.get("info_agent_max_tool_calls", 8))
+        # How often the same tool with the same arguments may run across the rounds of one message.
+        self.info_agent_max_identical_calls: int = int(self.data.get("info_agent_max_identical_calls", 2))
         # Most tokens one chat model call may generate (reasoning included); 0 means no cap.
         self.max_output_tokens: int = int(self.data.get("max_output_tokens", 8192))
         # Optional tool groups and the channels they are limited to (see llm/tools_factory.py).
