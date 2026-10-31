@@ -23,45 +23,52 @@ SOURCE_TAG_INSTRUCTION = (
 )
 
 # A tag typed into the fact itself would pass for a real one (the merge prompt keeps every tag).
-_TYPED_TAG = re.compile(r"\[\s*source\s*:[^\]]*\]", re.IGNORECASE)
+# Everything here must run in linear time: the dashboard calls it on member-supplied text on the
+# bot's event loop, so no unbounded scan from each "[" and no repeated passes.
+_TAG_OPEN = r"(?i:\[(?=\s{0,20}source))"
+_STORED_TAG = re.compile(r"\[source: (?:server id=\d+|direct message)\]")
 _SERVER_TAG = re.compile(r"\[source: server id=(\d+)\]")
 
 
-def _remove_tags(text: str, keep: "frozenset[str]") -> str:
-    """Remove every ``[source: ...]`` tag in ``text`` except the ones in ``keep``.
+def _neutralize_tags(text: str, keep: "frozenset[str]") -> str:
+    """Make every typed ``[source`` opening harmless, except the exact tags in ``keep``.
+
+    The ``[`` of an opening becomes ``(``, so the text can no longer pass for a tag. Nothing is
+    removed, so a pass cannot join the rest of the text into a new tag, and one pass is enough.
 
     Args:
         text: Text that may hold typed tags.
-        keep: Exact tag strings that stay.
+        keep: Exact tag strings that stay as they are.
 
     Returns:
-        The text without the other tags. Removal repeats until nothing changes, because taking out
-        an inner tag can join the rest into a new one (``[s[source: x]ource: ...]``).
+        The text with the other tag openings neutralized.
     """
-    previous = None
-    while previous != text:
-        previous = text
-        text = _TYPED_TAG.sub(lambda match: match.group(0) if match.group(0) in keep else "", text)
-    return text
+    if keep:
+        kept = "|".join(re.escape(tag) for tag in sorted(keep, key=len, reverse=True))
+        pattern = re.compile(f"(?P<keep>{kept})|{_TAG_OPEN}")
+    else:
+        pattern = re.compile(_TAG_OPEN)
+    return pattern.sub(lambda match: match.group(0) if match.groupdict().get("keep") else "(", text)
 
 
 def drop_unknown_tags(new_text: str, stored_text: Optional[str]) -> str:
-    """Remove tags a member typed into their memory themselves.
+    """Neutralize tags a member typed into their memory themselves.
 
     For memory edited outside the bot (the dashboard), where ``tag_with_source`` never runs. The
     member sees the stored tags and sends them back with their edit, so a tag stays only when the
-    stored text of that field already had it.
+    stored text of that field already had it. A kept tag is not tied to its original fact: a member
+    can move one onto another of their own facts. That is their own data and tags are a hint about
+    where something was said, not a security boundary.
 
     Args:
         new_text: The edited memory text.
         stored_text: What is stored now, or ``None``.
 
     Returns:
-        ``new_text`` with every tag that was not already stored removed.
+        ``new_text`` with every tag that was not already stored neutralized.
     """
-    known = frozenset(_TYPED_TAG.findall(stored_text or ""))
-    cleaned = _remove_tags(new_text, known)
-    return "\n".join(line.rstrip() for line in cleaned.split("\n")).strip()
+    known = frozenset(_STORED_TAG.findall(stored_text or ""))
+    return _neutralize_tags(new_text, known).strip()
 
 
 def tag_with_source(text: str, context: Optional[Any]) -> str:
@@ -73,11 +80,11 @@ def tag_with_source(text: str, context: Optional[Any]) -> str:
 
     Returns:
         ``text`` followed by ``[source: server id=<id>]`` or ``[source: direct message]``. Any tag
-        already typed into ``text`` is removed. Without a context the text is returned unchanged.
+        already typed into ``text`` is neutralized. Without a context the text is returned unchanged.
     """
     if context is None:
         return text
-    text = _remove_tags(text, keep=frozenset())
+    text = _neutralize_tags(text, keep=frozenset())
     guild = getattr(context, "guild", None)
     tag = "[source: direct message]" if guild is None else f"[source: server id={guild.id}]"
     # Every line is its own fact; the merge keeps a tag next to its fact and never tags an untagged one.
