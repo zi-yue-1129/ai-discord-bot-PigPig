@@ -45,11 +45,10 @@ def tag_with_source(text: str, context: Optional[Any]) -> str:
     while previous != text:
         previous = text
         text = _TYPED_TAG.sub("", text)
-    text = text.strip()
     guild = getattr(context, "guild", None)
-    if guild is None:
-        return f"{text} [source: direct message]"
-    return f"{text} [source: server id={guild.id}]"
+    tag = "[source: direct message]" if guild is None else f"[source: server id={guild.id}]"
+    # Every line is its own fact; the merge keeps a tag next to its fact and never tags an untagged one.
+    return "\n".join(f"{line.strip()} {tag}" if line.strip() else "" for line in text.strip().split("\n"))
 
 
 def render_sources(text: str, current_guild_id: Optional[str]) -> str:

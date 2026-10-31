@@ -221,3 +221,12 @@ async def test_the_save_answer_shows_relative_sources_not_server_ids() -> None:
 
     assert "likes jazz [source: another server]" in answer and "likes tea [source: this server]" in answer
     assert "id=" not in answer
+
+
+def test_every_line_of_a_multi_fact_save_gets_its_own_tag() -> None:
+    """The merge keeps a tag next to its fact and never tags an untagged one, so each fact needs its own."""
+    tagged = tag_with_source("Always reply in English.\n\nI live in Taipei.", _message("Jazz Club"))
+
+    assert tagged == (
+        "Always reply in English. [source: server id=42]\n\nI live in Taipei. [source: server id=42]"
+    )
