@@ -184,3 +184,40 @@ async def test_merge_agent_is_told_to_keep_the_source_tags(monkeypatch: pytest.M
 def test_the_merge_instruction_says_keep_every_tag_and_never_invent_one() -> None:
     assert "[source:" in SOURCE_TAG_INSTRUCTION
     assert "Keep that tag" in SOURCE_TAG_INSTRUCTION and "Never add a tag" in SOURCE_TAG_INSTRUCTION
+
+
+@pytest.mark.asyncio
+async def test_the_save_answer_shows_relative_sources_not_server_ids() -> None:
+    """The answer goes back to the model and the channel, so it must not carry raw server ids."""
+    from cogs.memory.users.models import UserInfo
+
+    class _Users:
+        async def get_user_info(self, user_id: str) -> Any:
+            return UserInfo(discord_id=TARGET, discord_name="n")
+
+        async def update_user_data(self, user_id: str, merged: Any, **kwargs: Any) -> bool:
+            return True
+
+    class _Logger:
+        def info(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+        warning = error = debug = info
+
+    async def merge(old: Any, new: str, user_id: str, guild_id: str) -> Any:
+        return UserInfo(
+            discord_id=TARGET, discord_name="n",
+            procedural_memory="likes jazz [source: server id=42]",
+            user_background="likes tea [source: server id=99]",
+        )
+
+    cog = SimpleNamespace(
+        user_manager=_Users(), _invoke_ai_merge_agent=merge, logger=_Logger(),
+        _translate=lambda guild_id, *path, fallback_key="", **kwargs: kwargs.get("data", "no data"),
+        _get_guild_id_from_context=lambda context: "99", bot=SimpleNamespace(orchestrator=None),
+    )
+
+    answer = await UserDataCog._save_user_data(cog, TARGET, "n", "likes tea", _message("Tea House", 99))
+
+    assert "likes jazz [source: another server]" in answer and "likes tea [source: this server]" in answer
+    assert "id=" not in answer

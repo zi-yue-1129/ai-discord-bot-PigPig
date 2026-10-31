@@ -781,9 +781,10 @@ class UserDataCog(commands.Cog):
                 
                 # Format merged_data for display
                 display_names = ', '.join(merged_data.display_names) if merged_data.display_names else 'None'
+                here = guild_id or None
                 data_str = (
-                    f"**Preference:** {merged_data.procedural_memory}\n"
-                    f"**Background:** {merged_data.user_background}\n"
+                    f"**Preference:** {render_sources(str(merged_data.procedural_memory), here)}\n"
+                    f"**Background:** {render_sources(str(merged_data.user_background), here)}\n"
                     f"**Display Names:** {display_names}"
                 )
 
