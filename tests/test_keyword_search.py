@@ -7,15 +7,21 @@ from types import SimpleNamespace
 from typing import Any, List, Tuple
 
 import pytest
-from qdrant_client.models import PayloadSchemaType, TextIndexParams
+from qdrant_client.models import MatchAny, MatchText, PayloadSchemaType, TextIndexParams
 
 from cogs.memory.vector_stores.qdrant_store import QdrantStore
 from llm.tools.episodic_memory import EpisodicMemoryTools
 
 
 def _conditions(query: str) -> list:
-    """The 'any of these words' conditions of the keyword filter (fails if there is no filter)."""
-    return QdrantStore._keyword_filter(query).should
+    """The text-match conditions of the keyword filter (fails if there is no filter)."""
+    return [condition for condition in QdrantStore._keyword_filter(query).should if isinstance(condition.match, MatchText)]
+
+
+def _exact_variants(query: str) -> List[str]:
+    """The words of the exact-match fallback condition (fails if there is none)."""
+    (fallback,) = [condition for condition in QdrantStore._keyword_filter(query).should if isinstance(condition.match, MatchAny)]
+    return fallback.match.any
 
 
 def _texts(query: str) -> List[str]:
@@ -25,6 +31,16 @@ def _texts(query: str) -> List[str]:
 def test_each_word_is_matched_as_text_on_the_keywords_field() -> None:
     assert {condition.key for condition in _conditions("HAREKAZE Kuma")} == {"metadata.keywords"}
     assert _texts("HAREKAZE Kuma") == ["HAREKAZE", "Kuma"]
+
+
+def test_without_the_text_index_a_lowercase_keyword_is_still_found_by_an_uppercase_query() -> None:
+    """If the index cannot be built the text match is case-sensitive; the old exact lowercase match stays as a floor."""
+    assert "harekaze" in _exact_variants("HAREKAZE")
+    assert "HAREKAZE" in _exact_variants("HAREKAZE")
+
+
+def test_the_fallback_has_each_word_once() -> None:
+    assert sorted(_exact_variants("kuma Kuma")) == ["Kuma", "kuma"]
 
 
 def test_any_word_may_match_not_all_of_them() -> None:

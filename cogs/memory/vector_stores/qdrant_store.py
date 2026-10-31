@@ -16,6 +16,7 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    MatchAny,
     MatchText,
     PayloadSchemaType,
     TextIndexParams,
@@ -366,7 +367,12 @@ class QdrantStore(VectorStoreInterface):
         words = query_text.split()[: cls.MAX_KEYWORD_QUERY_WORDS]
         if not words:
             return None
-        return Filter(should=[FieldCondition(key="metadata.keywords", match=MatchText(text=word)) for word in words])
+        conditions = [FieldCondition(key="metadata.keywords", match=MatchText(text=word)) for word in words]
+        # Floor when the text index is missing (the text match is then case-sensitive): the words as
+        # typed and lowercased, matched exactly as keyword search always did.
+        variants = list(dict.fromkeys(variant for word in words for variant in (word, word.lower())))
+        conditions.append(FieldCondition(key="metadata.keywords", match=MatchAny(any=variants)))
+        return Filter(should=conditions)
 
     async def search_memories_by_keyword(
         self,
