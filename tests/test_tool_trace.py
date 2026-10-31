@@ -36,6 +36,20 @@ def test_a_tool_that_failed_is_reported_as_an_error() -> None:
     assert calls[0].status == "error"
 
 
+def test_a_tool_that_returns_an_error_string_is_reported_as_an_error() -> None:
+    # Most tools report failure by returning "Error: ..." instead of raising, so LangChain marks the call successful.
+    for answer in ("Error: InternetSearchCog not found.", "Error updating memory: disk full"):
+        calls = collect_tool_calls(_round(answer), history_length=1)
+
+        assert calls[0].status == "error", answer
+
+
+def test_an_answer_that_merely_starts_with_the_letters_error_is_not_an_error() -> None:
+    calls = collect_tool_calls(_round("Errorless sunny day"), history_length=1)
+
+    assert calls[0].status == "ok"
+
+
 def test_a_call_without_a_result_is_reported_as_such() -> None:
     messages = _round()[:2]
 
@@ -143,6 +157,20 @@ def test_the_callback_logs_a_failing_tool_at_error_level() -> None:
     assert level == "error"
     assert "play_music" in message
     assert "no voice channel" in message
+
+
+def test_the_callback_logs_an_error_answer_at_error_level() -> None:
+    logger = _RecordingLogger()
+    handler = ToolLogCallbackHandler(logger, clock=_Clock(0.5))
+    run_id = uuid4()
+
+    asyncio.run(handler.on_tool_start({"name": "internet_search"}, "{}", run_id=run_id))
+    asyncio.run(handler.on_tool_end("Error: InternetSearchCog not found.", run_id=run_id))
+
+    level, message = logger.records[-1]
+    assert level == "error"
+    assert "internet_search" in message
+    assert "InternetSearchCog not found" in message
 
 
 def test_a_finish_without_a_start_still_logs_instead_of_crashing() -> None:

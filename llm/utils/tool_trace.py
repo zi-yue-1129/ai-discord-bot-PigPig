@@ -52,6 +52,21 @@ def _content_text(content: Any) -> str:
     return str(content)
 
 
+def is_error_answer(text: str) -> bool:
+    """Tells whether a tool's answer is a failure report.
+
+    Most of the bot's tools do not raise when they fail; they return ``"Error: ..."`` or
+    ``"Error updating ..."``, which LangChain counts as a success.
+
+    Args:
+        text: The tool's answer.
+
+    Returns:
+        True when the answer starts with ``Error:`` or ``Error `` (ignoring leading whitespace).
+    """
+    return text.lstrip().startswith(("Error:", "Error "))
+
+
 def collect_tool_calls(messages: Sequence[BaseMessage], history_length: int) -> List[ToolCallRecord]:
     """Lists the tool calls the info agent made, in the order it made them.
 
@@ -76,8 +91,10 @@ def collect_tool_calls(messages: Sequence[BaseMessage], history_length: int) -> 
                 }
         elif isinstance(message, ToolMessage) and message.tool_call_id in pending:
             entry = pending[message.tool_call_id]
-            entry["status"] = "error" if getattr(message, "status", "success") == "error" else "ok"
-            entry["result_chars"] = len(_content_text(message.content))
+            text = _content_text(message.content)
+            failed = getattr(message, "status", "success") == "error" or is_error_answer(text)
+            entry["status"] = "error" if failed else "ok"
+            entry["result_chars"] = len(text)
     return [ToolCallRecord(**entry) for entry in pending.values()]
 
 

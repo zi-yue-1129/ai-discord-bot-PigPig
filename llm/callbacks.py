@@ -7,6 +7,7 @@ from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.outputs import LLMResult
 
 from llm.utils.send_message import safe_edit_message
+from llm.utils.tool_trace import is_error_answer
 
 
 class ToolFeedbackCallbackHandler(AsyncCallbackHandler):
@@ -119,8 +120,12 @@ class ToolLogCallbackHandler(AsyncCallbackHandler):
     async def on_tool_end(self, output: Any, *, run_id: UUID, **kwargs: Any) -> None:
         """Logs that a tool finished, how long it took and how long its answer was."""
         name, elapsed = self._finish(run_id)
-        chars = len(str(getattr(output, "content", output)))
-        self._logger.info(f"Tool finished: {name} in {elapsed}, {chars} chars")
+        text = str(getattr(output, "content", output))
+        if is_error_answer(text):
+            # Most tools report failure by returning "Error: ..." rather than raising.
+            self._logger.error(f"Tool returned an error: {name} in {elapsed}: {text[:200]}")
+            return
+        self._logger.info(f"Tool finished: {name} in {elapsed}, {len(text)} chars")
 
     async def on_tool_error(self, error: BaseException, *, run_id: UUID, **kwargs: Any) -> None:
         """Logs that a tool raised an error."""
