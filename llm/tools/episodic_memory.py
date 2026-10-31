@@ -47,17 +47,24 @@ class EpisodicMemoryTools:
             Search episodic memory using semantic vectors and/or keyword matching.
     
             Use `vector_query` for broad, semantic searches (e.g., "what was our last discussion
-            about database optimization?"). This will find conceptually similar fragments even if
-            wording differs. Use `keyword_query` for exact-term searches (e.g., "Qdrant migration")
-            to find memories containing precise tokens or phrases. You can provide both parameters
-            together for a hybrid search that benefits from semantic recall and exact-match filtering.
-    
+            about database optimization?"). It finds conceptually similar fragments even if the
+            wording differs, so it is the better choice for a question or a sentence.
+
+            Use `keyword_query` only for a few single topic words separated by spaces (e.g.,
+            "Qdrant migration"); letter case does not matter and a fragment matches if it is tagged
+            with ANY of the words. It is not a text search: do not put a user ID, a mention, a whole
+            sentence or a long list of words in it, those find nothing. You can provide both
+            parameters together for a hybrid search.
+
+            If a keyword_query finds nothing, do not repeat it with a longer or reworded list of
+            words: try a vector_query or answer without the memory.
+
             Parameters:
                 vector_query (Optional[str]): Natural-language semantic query for vector search.
-                keyword_query (Optional[str]): Exact-term query for keyword-based matching.
+                keyword_query (Optional[str]): A few single topic words, space separated, no IDs or sentences.
                 user_id (Optional[str]): If provided, filter memories to the specified user.
                 global_search (bool): If True, search across all channels of this server. If False, search only in current channel. Default is False.
-    
+
             Returns:
                 str: A human-readable, plain-text summary of matched MemoryFragment entries,
                      including content and key metadata (author, timestamp, jump_url). If no
@@ -103,6 +110,11 @@ class EpisodicMemoryTools:
                     fragments = without_hidden_participants(fragments, await hidden_in_guild_async(bot, guild.id))
 
                 if not fragments:
+                    if keyword_query:
+                        return (
+                            "No relevant memories found. Do not retry with a longer or reworded keyword query; "
+                            "try a vector_query or answer without the memory."
+                        )
                     return "No relevant memories found."
     
                 formatted: List[str] = []
