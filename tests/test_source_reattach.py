@@ -52,10 +52,11 @@ def test_a_fact_the_model_rewrote_still_finds_its_source() -> None:
     assert result == f"喜歡吃拉麵 {A}"
 
 
-def test_a_line_that_matches_nothing_is_new_in_this_save() -> None:
+def test_a_line_that_matches_nothing_stays_untagged() -> None:
+    """Changed from 'gets this save's tag': a wrong 'told here' claim is worse than a missing tag (review)."""
     result = reattach_source_tags("lives in Taipei", [f"likes jazz {A}"], f"likes tea {B}")
 
-    assert result == f"lives in Taipei {B}"
+    assert result == "lives in Taipei"
 
 
 def test_nothing_is_invented_when_the_save_has_no_tag() -> None:
@@ -118,3 +119,41 @@ async def test_saving_puts_the_tags_back_even_when_the_merge_model_drops_them() 
     await UserDataCog._save_user_data(cog, "1", "n", "likes tea", message)
 
     assert saved[0].procedural_memory == f"likes jazz {A}\nlikes tea {B}"
+
+
+# ----------------------------------------------------------------- review findings
+
+
+def test_reworded_long_lines_cannot_stall_the_matching() -> None:
+    """Fuzzy comparison is quadratic in line length; a 16,000 character rewrite took 5 seconds."""
+    started = time.monotonic()
+    result = reattach_source_tags("ba" * 8000, [f"{'ab' * 8000} {A}"], f"x {B}")
+
+    assert time.monotonic() - started < 1.0
+    assert result is not None
+
+
+def test_a_joined_line_keeps_the_tag_the_model_gave_for_the_part_that_was_reworded() -> None:
+    """'likes jazz' is found inside the line; 'likes tea' was shortened, so only the model's own tag knows it."""
+    result = reattach_source_tags(f"likes jazz and tea {A} {B}", [f"likes jazz {A}"], f"likes tea {B}")
+
+    assert A in result and B in result
+
+
+def test_facts_that_differ_only_in_symbols_are_not_the_same_fact() -> None:
+    result = reattach_source_tags(f"Programs in C# {B}", [f"Programs in C++ {A}"], f"Programs in C# {B}")
+
+    assert result == f"Programs in C# {B}"
+
+
+def test_a_reworded_old_fact_is_not_claimed_by_this_save() -> None:
+    """Wrongly saying 'told here' is worse than a missing tag, so an unmatched line stays untagged."""
+    result = reattach_source_tags("My favorite drink is tea", ["Enjoys drinking tea"], f"lives in Taipei {B}")
+
+    assert result == "My favorite drink is tea"
+
+
+def test_a_reworded_new_fact_still_gets_this_saves_tag() -> None:
+    result = reattach_source_tags("living in Taipei", [f"likes jazz {A}"], f"lives in Taipei {B}")
+
+    assert result == f"living in Taipei {B}"
