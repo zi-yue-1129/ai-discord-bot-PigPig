@@ -56,7 +56,9 @@ class QdrantStore(VectorStoreInterface):
         ("metadata.guild_id", PayloadSchemaType.KEYWORD),
         (
             "metadata.keywords",
-            TextIndexParams(type=TextIndexType.TEXT, tokenizer=TokenizerType.WORD, lowercase=True, min_token_len=1),
+            # Whitespace tokens: keywords are whole tags (C++ and C# stay apart, foo does not match
+            # foo-bar); only the letter case is ignored.
+            TextIndexParams(type=TextIndexType.TEXT, tokenizer=TokenizerType.WHITESPACE, lowercase=True, min_token_len=1),
         ),
     ]
 

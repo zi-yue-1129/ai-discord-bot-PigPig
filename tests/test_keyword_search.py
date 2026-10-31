@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import Any, List, Tuple
 
 import pytest
-from qdrant_client.models import Filter, MatchAny, MatchText, PayloadSchemaType, TextIndexParams
+from qdrant_client.models import Filter, MatchAny, MatchText, PayloadSchemaType, TextIndexParams, TokenizerType
 
 from cogs.memory.vector_stores.qdrant_store import QdrantStore
 from llm.tools.episodic_memory import EpisodicMemoryTools
@@ -83,6 +83,9 @@ async def test_the_indexes_are_created_on_the_metadata_fields_the_filters_use() 
     assert created["metadata.guild_id"] == PayloadSchemaType.KEYWORD
     keywords = created["metadata.keywords"]
     assert isinstance(keywords, TextIndexParams) and keywords.lowercase is True
+    # Whitespace only: the word tokenizer cuts C++, C# and C down to the same token "c" and would
+    # match foo-bar for foo; keywords are matched as whole tags, only the letter case is ignored.
+    assert keywords.tokenizer == TokenizerType.WHITESPACE
 
 
 ALL_FIELDS = {"metadata.keywords", "metadata.author_ids", "metadata.channel_id", "metadata.guild_id"}
