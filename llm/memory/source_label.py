@@ -27,6 +27,43 @@ _TYPED_TAG = re.compile(r"\[\s*source\s*:[^\]]*\]", re.IGNORECASE)
 _SERVER_TAG = re.compile(r"\[source: server id=(\d+)\]")
 
 
+def _remove_tags(text: str, keep: "frozenset[str]") -> str:
+    """Remove every ``[source: ...]`` tag in ``text`` except the ones in ``keep``.
+
+    Args:
+        text: Text that may hold typed tags.
+        keep: Exact tag strings that stay.
+
+    Returns:
+        The text without the other tags. Removal repeats until nothing changes, because taking out
+        an inner tag can join the rest into a new one (``[s[source: x]ource: ...]``).
+    """
+    previous = None
+    while previous != text:
+        previous = text
+        text = _TYPED_TAG.sub(lambda match: match.group(0) if match.group(0) in keep else "", text)
+    return text
+
+
+def drop_unknown_tags(new_text: str, stored_text: Optional[str]) -> str:
+    """Remove tags a member typed into their memory themselves.
+
+    For memory edited outside the bot (the dashboard), where ``tag_with_source`` never runs. The
+    member sees the stored tags and sends them back with their edit, so a tag stays only when the
+    stored text of that field already had it.
+
+    Args:
+        new_text: The edited memory text.
+        stored_text: What is stored now, or ``None``.
+
+    Returns:
+        ``new_text`` with every tag that was not already stored removed.
+    """
+    known = frozenset(_TYPED_TAG.findall(stored_text or ""))
+    cleaned = _remove_tags(new_text, known)
+    return "\n".join(line.rstrip() for line in cleaned.split("\n")).strip()
+
+
 def tag_with_source(text: str, context: Optional[Any]) -> str:
     """Append the place ``text`` was told in to it.
 
@@ -40,11 +77,7 @@ def tag_with_source(text: str, context: Optional[Any]) -> str:
     """
     if context is None:
         return text
-    # Repeat until nothing changes: removing an inner tag can join the rest into a new one.
-    previous = None
-    while previous != text:
-        previous = text
-        text = _TYPED_TAG.sub("", text)
+    text = _remove_tags(text, keep=frozenset())
     guild = getattr(context, "guild", None)
     tag = "[source: direct message]" if guild is None else f"[source: server id={guild.id}]"
     # Every line is its own fact; the merge keeps a tag next to its fact and never tags an untagged one.
