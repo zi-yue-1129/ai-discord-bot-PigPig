@@ -226,3 +226,39 @@ def test_an_exact_match_still_drops_a_tag_nobody_knows() -> None:
     result = reattach_source_tags(f"likes jazz {A} [source: server id=999]", [f"likes jazz {A}"], f"x {B}")
 
     assert result == f"likes jazz {A}"
+
+
+# ------------------------------------------------------- Codex review (fourth round)
+
+S1 = "[source: server id=1]"
+S2 = "[source: server id=2]"
+S3 = "[source: server id=3]"
+
+
+def test_containment_cannot_run_past_the_time_budget() -> None:
+    """100 facts of repeated letters against a 40,000 letter line took 2.8 s in the containment step alone."""
+    earlier = "\n".join("a" * length for length in range(400, 500))
+
+    started = time.monotonic()
+    result = reattach_source_tags("a" * 40_000, [earlier], f"x {B}")
+
+    assert time.monotonic() - started < 1.0
+    assert result is not None
+
+
+def test_this_saves_tags_do_not_include_the_history_of_a_fact_it_repeated() -> None:
+    """Saving 'Likes jazz' from server 2 again must not hand server 1 to an unrelated rewritten fact."""
+    result = reattach_source_tags(
+        "Likes jazz\nLives in central Taipei",
+        [f"Likes jazz {S1}\nLives in Taipei {S3}"],
+        f"Likes jazz {S2}",
+    )
+
+    assert result == f"Likes jazz {S1} {S2}\nLives in central Taipei {S3} {S2}"
+
+
+def test_a_symbol_that_belongs_to_the_word_is_not_a_boundary() -> None:
+    """'Uses C' is not inside 'Uses C++ daily' (and not C# either)."""
+    result = reattach_source_tags(f"Uses C++ daily {S2}", [f"Uses C {S1}"], f"I program in C++ {S2}")
+
+    assert result == f"Uses C++ daily {S2}"

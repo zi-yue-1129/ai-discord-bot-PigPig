@@ -105,6 +105,7 @@ _MAX_FUZZY_CHARS = 400
 _MAX_CONTAIN_WORK = 20_000_000
 _FUZZY_BUDGET_SECONDS = 0.4
 _MIN_CONTAINED_CHARS = 4
+_MAX_CONTAIN_TRIES = 1_000  # occurrences of one fact in one line that are checked for word boundaries
 _MIN_SIMILARITY = 0.7
 _MIN_SIMILARITY_TO_NEW = 0.65  # unrelated short sentences already reach 0.58; reworded ones 0.67+
 
@@ -123,14 +124,19 @@ def _split_fact(line: str) -> Tuple[str, Tuple[str, ...]]:
 
 
 def _is_word_char(char: str) -> bool:
-    """Whether ``char`` continues a Latin word (CJK text has no word boundaries to respect)."""
-    return char.isascii() and char.isalnum()
+    """Whether ``char`` belongs to a Latin word; ``+`` and ``#`` do too, so ``C`` is not inside ``C++``/``C#``.
+
+    CJK text has no word boundaries to respect.
+    """
+    return (char.isascii() and char.isalnum()) or char in "+#"
 
 
 def _contains(fact: str, key: str) -> bool:
     """Whether ``fact`` occurs in ``key`` as whole words: ``likes jazz`` is not in ``dislikes jazz``."""
     start = key.find(fact)
-    while start != -1:
+    for _ in range(_MAX_CONTAIN_TRIES):
+        if start == -1:
+            return False
         end = start + len(fact)
         starts_clean = not (_is_word_char(fact[0]) and start > 0 and _is_word_char(key[start - 1]))
         ends_clean = not (_is_word_char(fact[-1]) and end < len(key) and _is_word_char(key[end]))
@@ -138,6 +144,17 @@ def _contains(fact: str, key: str) -> bool:
             return True
         start = key.find(fact, start + 1)
     return False
+
+
+def _contained_tags(key: str, facts: Dict[str, Tuple[str, ...]], deadline: float) -> List[Tuple[str, ...]]:
+    """The tags of every known fact that occurs in ``key`` as whole words (stops at the deadline)."""
+    found: List[Tuple[str, ...]] = []
+    for fact, tags in facts.items():
+        if time.monotonic() > deadline:
+            break
+        if len(fact) >= _MIN_CONTAINED_CHARS and _contains(fact, key):
+            found.append(tags)
+    return found
 
 
 def _most_similar(key: str, candidates: Dict[str, Tuple[str, ...]], minimum: float, deadline: float) -> Optional[str]:
@@ -209,7 +226,7 @@ def reattach_source_tags(
     if not merged_text:
         return merged_text
     facts: Dict[str, Tuple[str, ...]] = {}
-    new_facts: Dict[str, Tuple[str, ...]] = {}
+    new_facts: Dict[str, Tuple[str, ...]] = {}  # only the tags of this save, not the history of the same text
     sources = [(earlier, False) for earlier in earlier_texts] + [(new_tagged_text, True)]
     for text, is_new in sources:
         for line in (text or "").split("\n"):
@@ -218,7 +235,7 @@ def reattach_source_tags(
             if key:
                 facts[key] = _union(facts.get(key, ()), tags)
                 if is_new:
-                    new_facts[key] = facts[key]
+                    new_facts[key] = _union(new_facts.get(key, ()), tags)
     known_tags = {tag for tags in facts.values() for tag in tags}
     new_tags = _union(*new_facts.values())
 
@@ -238,7 +255,7 @@ def reattach_source_tags(
         if key in facts:
             # The same fact told in other words elsewhere: the model merged them and kept both tags.
             tags = _union(facts[key], given)
-        elif allow_similarity and (contained := [t for f, t in facts.items() if len(f) >= _MIN_CONTAINED_CHARS and _contains(f, key)]):
+        elif allow_similarity and (contained := _contained_tags(key, facts, deadline)):
             tags = _union(*contained, given)
         elif allow_similarity and (similar := _most_similar(key, facts, _MIN_SIMILARITY, deadline)) is not None:
             # Similarity is a guess: when the model tagged the line itself, its known tags win.
