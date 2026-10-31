@@ -177,6 +177,14 @@ async def write_config(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    if file == "llm":
+        # A budget below 1 makes the bot fail to build its info agent, which breaks every chat.
+        for budget_key in ("info_agent_max_tool_calls", "info_agent_max_identical_calls"):
+            if budget_key in config_data:
+                value = config_data[budget_key]
+                if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                    raise HTTPException(status_code=400, detail=f"'{budget_key}' must be a whole number of at least 1")
+
     path = _config_path(file)
 
     # Merge: read existing config, overwrite only the submitted top-level keys.
