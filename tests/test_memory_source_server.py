@@ -193,7 +193,9 @@ async def test_the_save_answer_shows_relative_sources_not_server_ids() -> None:
 
     class _Users:
         async def get_user_info(self, user_id: str) -> Any:
-            return UserInfo(discord_id=TARGET, discord_name="n")
+            # "likes jazz" was really stored earlier from server 42; a tag for a fact that never existed
+            # is treated as invented by the merge reconciliation and dropped.
+            return UserInfo(discord_id=TARGET, discord_name="n", procedural_memory="likes jazz [source: server id=42]")
 
         async def update_user_data(self, user_id: str, merged: Any, **kwargs: Any) -> bool:
             return True

@@ -13,7 +13,8 @@ member belongs to.
 from __future__ import annotations
 
 import re
-from typing import Any, Optional
+from difflib import SequenceMatcher
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # Added to the merge prompt so the merge model keeps the tags next to their facts.
 SOURCE_TAG_INSTRUCTION = (
@@ -89,6 +90,103 @@ def tag_with_source(text: str, context: Optional[Any]) -> str:
     tag = "[source: direct message]" if guild is None else f"[source: server id={guild.id}]"
     # Every line is its own fact; the merge keeps a tag next to its fact and never tags an untagged one.
     return "\n".join(f"{line.strip()} {tag}" if line.strip() else "" for line in text.strip().split("\n"))
+
+
+# Reattaching tags after a merge compares every merged line with every earlier fact; past this many
+# comparisons only identical lines are matched, so a huge memory cannot stall the bot.
+_MAX_FUZZY_PAIRS = 200_000
+_MIN_CONTAINED_CHARS = 4
+_MIN_SIMILARITY = 0.7
+
+
+def _normalize(text: str) -> str:
+    """Reduce a fact to letters and digits so wording changes in spacing or punctuation do not matter."""
+    return re.sub(r"[\W_]+", "", text.casefold())
+
+
+def _split_fact(line: str) -> Tuple[str, Tuple[str, ...]]:
+    """Split a line into its text and the stored tags it carries (in order, without repeats)."""
+    return _STORED_TAG.sub("", line).strip(), tuple(dict.fromkeys(_STORED_TAG.findall(line)))
+
+
+def _match_tags(merged: str, facts: Dict[str, Tuple[str, ...]], allow_fuzzy: bool) -> Optional[Tuple[str, ...]]:
+    """Find the tags of the earlier fact(s) a merged line comes from.
+
+    Args:
+        merged: Normalized merged line.
+        facts: Normalized earlier facts mapped to their tags.
+        allow_fuzzy: Whether to compare against every fact (False for huge memories).
+
+    Returns:
+        The tags of the matching fact(s), an empty tuple when the match is an untagged fact, or
+        ``None`` when nothing matches.
+    """
+    if merged in facts:
+        return facts[merged]
+    if not allow_fuzzy:
+        return None
+    # The model may have joined several facts into one line: every fact it contains counts.
+    contained = [tags for fact, tags in facts.items() if len(fact) >= _MIN_CONTAINED_CHARS and fact in merged]
+    if contained:
+        return tuple(dict.fromkeys(tag for tags in contained for tag in tags))
+    # Otherwise it may have reworded one fact: take the most similar one.
+    matcher = SequenceMatcher(None, autojunk=False)
+    matcher.set_seq2(merged)
+    best_ratio, best_tags = 0.0, None
+    for fact, tags in facts.items():
+        matcher.set_seq1(fact)
+        if matcher.real_quick_ratio() < _MIN_SIMILARITY or matcher.quick_ratio() < _MIN_SIMILARITY:
+            continue
+        ratio = matcher.ratio()
+        if ratio > best_ratio:
+            best_ratio, best_tags = ratio, tags
+    return best_tags if best_ratio >= _MIN_SIMILARITY else None
+
+
+def reattach_source_tags(
+    merged_text: Optional[str], earlier_texts: Sequence[Optional[str]], new_tagged_text: str
+) -> Optional[str]:
+    """Put each fact's source tag back after the merge model rewrote the memory.
+
+    The model is asked to keep the tags, but it may drop, move or invent them, so the code decides.
+    Every merged line gets the tags of the earlier or newly saved fact it comes from; a tag the
+    model made up is dropped; a fact that was stored without a tag stays without one; a line that
+    matches nothing is new in this save and gets this save's tag (none when the save had none).
+
+    Args:
+        merged_text: One field of the merged memory.
+        earlier_texts: The memory fields stored before this save.
+        new_tagged_text: What is being saved, already tagged by ``tag_with_source``.
+
+    Returns:
+        ``merged_text`` with the tags put back (``None`` and the empty string are returned as they are).
+    """
+    if not merged_text:
+        return merged_text
+    facts: Dict[str, Tuple[str, ...]] = {}
+    for text in [*earlier_texts, new_tagged_text]:
+        for line in (text or "").split("\n"):
+            clean, tags = _split_fact(line)
+            key = _normalize(clean)
+            if key:
+                facts[key] = tuple(dict.fromkeys([*facts.get(key, ()), *tags]))
+    new_tags = tuple(dict.fromkeys(tag for line in new_tagged_text.split("\n") for tag in _split_fact(line)[1]))
+    known_tags = {tag for tags in facts.values() for tag in tags}
+
+    lines = merged_text.split("\n")
+    allow_fuzzy = len(facts) * len(lines) <= _MAX_FUZZY_PAIRS
+    result: List[str] = []
+    for line in lines:
+        clean, present = _split_fact(line)
+        key = _normalize(clean)
+        if not key:
+            result.append(clean)
+            continue
+        tags = _match_tags(key, facts, allow_fuzzy)
+        if tags is None:
+            tags = tuple(tag for tag in present if tag in known_tags) or new_tags
+        result.append(f"{clean} {' '.join(tags)}" if tags else clean)
+    return "\n".join(result)
 
 
 def render_sources(text: str, current_guild_id: Optional[str]) -> str:
