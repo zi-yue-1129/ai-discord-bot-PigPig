@@ -46,10 +46,11 @@ def test_an_old_fact_without_a_tag_stays_without_one() -> None:
     assert result == f"plays go\nlikes tea {B}"
 
 
-def test_a_fact_the_model_rewrote_still_finds_its_source() -> None:
+def test_a_fact_the_model_rewrote_keeps_its_source_and_gains_this_saves() -> None:
+    """Reworded: it still came from A, and the change can only come from this save (B)."""
     result = reattach_source_tags("喜歡吃拉麵", [f"喜歡拉麵 {A}"], f"喜歡茶 {B}")
 
-    assert result == f"喜歡吃拉麵 {A}"
+    assert result == f"喜歡吃拉麵 {A} {B}"
 
 
 def test_a_line_that_matches_nothing_stays_untagged() -> None:
@@ -73,14 +74,15 @@ def test_empty_memory_stays_empty() -> None:
 
 
 def test_huge_memories_are_handled_in_bounded_time() -> None:
+    """Every merged line is reworded, so each needs a similarity search: without the time budget this takes minutes."""
     lines = [f"fact number {number} about something {A}" for number in range(3000)]
-    merged = "\n".join(line.replace(f" {A}", "") for line in lines)
+    merged = "\n".join(f"fact no. {number} about something" for number in range(3000))
 
     started = time.monotonic()
     result = reattach_source_tags(merged, ["\n".join(lines)], f"new {B}")
 
     assert time.monotonic() - started < 2.0
-    assert result is not None and result.count(A) >= 1
+    assert result is not None and len(result.split("\n")) == 3000
 
 
 # ------------------------------------------------------------ through the save path
@@ -135,7 +137,7 @@ def test_reworded_long_lines_cannot_stall_the_matching() -> None:
 
 def test_a_joined_line_keeps_the_tag_the_model_gave_for_the_part_that_was_reworded() -> None:
     """'likes jazz' is found inside the line; 'likes tea' was shortened, so only the model's own tag knows it."""
-    result = reattach_source_tags(f"likes jazz and tea {A} {B}", [f"likes jazz {A}"], f"likes tea {B}")
+    result = reattach_source_tags(f"likes jazz and tea {B}", [f"likes jazz {A}"], f"likes tea {B}")
 
     assert A in result and B in result
 
@@ -157,3 +159,45 @@ def test_a_reworded_new_fact_still_gets_this_saves_tag() -> None:
     result = reattach_source_tags("living in Taipei", [f"likes jazz {A}"], f"lives in Taipei {B}")
 
     assert result == f"living in Taipei {B}"
+
+
+# ---------------------------------------------------- independent review (second round)
+
+
+def test_a_superseded_fact_keeps_the_old_source_and_gains_the_new_one() -> None:
+    result = reattach_source_tags("Is 26 years old", [f"Is 25 years old {A}"], f"Just turned 26 {B}")
+
+    assert result == f"Is 26 years old {A} {B}"
+
+
+def test_a_reworded_untagged_legacy_fact_is_not_claimed_by_this_save() -> None:
+    result = reattach_source_tags("Is 26 years old", ["Is 25 years old"], f"Just turned 26 {B}")
+
+    assert result == "Is 26 years old"
+
+
+def test_a_fact_inside_a_longer_word_is_not_contained() -> None:
+    """'use go' is in 'use goat farming tools' only as the start of another word."""
+    result = reattach_source_tags("use goat farming tools", [f"use go {A}"], f"likes tea {B}")
+
+    assert result == "use goat farming tools"
+
+
+def test_seventy_reworded_lines_all_keep_their_tags() -> None:
+    """There used to be a silent cliff at about 64 lines where all matching was switched off."""
+    earlier = "\n".join(f"fact number {number} about something {A}" for number in range(70))
+    merged = "\n".join(f"fact no. {number} about something" for number in range(70))
+
+    result = reattach_source_tags(merged, [earlier], f"new fact {B}")
+
+    assert result.count(A) == 70
+
+
+def test_indentation_of_a_nested_list_is_kept() -> None:
+    assert reattach_source_tags("  - jazz", [f"  - jazz {A}"], f"x {B}") == f"  - jazz {A}"
+
+
+def test_a_malformed_tag_the_model_invented_cannot_pass_as_text_with_a_server_id() -> None:
+    result = reattach_source_tags("likes jazz [source: server  id=9]", [f"likes jazz {A}"], f"x {B}")
+
+    assert "[source: server  id=9]" not in result and "[source" in result and A in result
