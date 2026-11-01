@@ -17,6 +17,7 @@ from addons.settings import memory_config, MemoryConfig
 from cogs.memory.interfaces.storage_interface import StorageInterface
 from cogs.memory.interfaces.vector_store_interface import MemoryFragment
 from cogs.memory.services.message_tracker import MessageTracker
+from llm.memory.fragment_time import fragment_time_range
 
 if TYPE_CHECKING:
     from bot import PigPig
@@ -94,7 +95,7 @@ class EpisodicMemoryService(commands.Cog):
         Returns:
             The results as text, followed by a count of the results that were left out.
         """
-        from datetime import datetime
+        from datetime import datetime, timezone
 
         def label(key: str, **kwargs: Any) -> str:
             return self._translate_text(lang_manager, guild_id, "commands", "memory", "search", key, **kwargs)
@@ -105,9 +106,10 @@ class EpisodicMemoryService(commands.Cog):
             formatted += label("result_content", content=result.content) + "\n"
             if result.score is not None:
                 formatted += label("result_score", score=f"{result.score:.3f}") + "\n"
-            if result.metadata.get('timestamp'):
-                timestamp = datetime.fromtimestamp(result.metadata['timestamp'])
-                formatted += label("result_time", time=timestamp.strftime('%Y-%m-%d %H:%M:%S')) + "\n"
+            span = fragment_time_range(result.metadata)
+            if span is not None:
+                started = datetime.fromtimestamp(span[0], tz=timezone.utc)
+                formatted += label("result_time", time=started.strftime('%Y-%m-%d %H:%M:%S UTC')) + "\n"
             formatted_results.append(formatted)
 
         text = "\n\n".join(formatted_results)
