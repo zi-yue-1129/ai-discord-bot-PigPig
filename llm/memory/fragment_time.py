@@ -17,12 +17,17 @@ def _usable_timestamp(value: Any) -> Optional[float]:
         value: A stored metadata value.
 
     Returns:
-        The seconds as a float, or None for missing, non-numeric, non-finite or negative values.
+        The seconds as a float, or None for missing, non-numeric, non-finite, negative values or
+        values no date can hold (past the year 9999).
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     seconds = float(value)
     if not math.isfinite(seconds) or seconds < 0:
+        return None
+    try:
+        datetime.fromtimestamp(seconds, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
         return None
     return seconds
 
@@ -68,7 +73,9 @@ def describe_fragment_time(metadata: Mapping[str, Any], now: Optional[datetime] 
     end = datetime.fromtimestamp(span[1], tz=timezone.utc)
     current = now or datetime.now(timezone.utc)
 
-    if start.date() == end.date():
+    if start.replace(second=0, microsecond=0) == end.replace(second=0, microsecond=0):
+        window = f"{start:%Y-%m-%d %H:%M}"
+    elif start.date() == end.date():
         window = f"{start:%Y-%m-%d %H:%M} - {end:%H:%M}"
     else:
         window = f"{start:%Y-%m-%d %H:%M} - {end:%Y-%m-%d %H:%M}"

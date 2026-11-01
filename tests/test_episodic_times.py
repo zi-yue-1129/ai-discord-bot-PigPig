@@ -103,3 +103,35 @@ async def test_an_unusable_stored_time_is_reported_as_unknown(value: Optional[An
     output = await _tool_output({"fragment_id": "x", "start_timestamp": value})
 
     assert "Time: unknown" in output
+
+
+# 253402300800 is one second past the year 9999: a number, finite and positive, that no date can hold.
+BEYOND_YEAR_9999 = 253402300800
+
+
+@pytest.mark.asyncio
+async def test_one_out_of_range_time_does_not_discard_the_other_memories() -> None:
+    """Codex review: the conversion error aborted the whole search and the bot got only an error message."""
+    bad = _fragment({"fragment_id": "bad", "start_timestamp": BEYOND_YEAR_9999})
+    good = _fragment(STORED_METADATA)
+    bot = SimpleNamespace(vector_manager=SimpleNamespace(store=_Store([bad, good])))
+    runtime = SimpleNamespace(bot=bot, message=SimpleNamespace(channel=SimpleNamespace(id=5), guild=None), logger=None)
+    (tool,) = [t for t in EpisodicMemoryTools(runtime).get_tools() if t.name == "search_episodic_memory"]
+
+    output = await tool.ainvoke({"vector_query": "concert"})
+
+    assert "An error occurred" not in output
+    assert "Time: unknown" in output and "2025-12-27" in output
+
+
+@pytest.mark.asyncio
+async def test_an_out_of_range_end_time_falls_back_to_the_start() -> None:
+    output = await _tool_output({**STORED_METADATA, "end_timestamp": BEYOND_YEAR_9999})
+
+    assert "2025-12-27 00:24 UTC" in output
+
+
+def test_the_slash_command_survives_an_out_of_range_time() -> None:
+    text = _slash_command_text({"fragment_id": "x", "start_timestamp": BEYOND_YEAR_9999})
+
+    assert "Time:" not in text
