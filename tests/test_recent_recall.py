@@ -243,3 +243,45 @@ async def test_a_search_in_another_channel_is_not_retold_here() -> None:
     bot.state["found"] = []
 
     assert await provider.get(_message(FOLLOW_UP)) is None
+
+
+# ------------------------------------------------------- Codex review of the first version
+
+
+@pytest.mark.asyncio
+async def test_a_search_answered_from_the_cache_still_renews_what_it_told() -> None:
+    """Repeating a question served from the cache must keep its fragment recalled for the follow-up."""
+    bot = _bot(set(), [_fragment("plan", "we planned the concert at the Fox")])
+    provider = EpisodicMemoryProvider(bot)
+    await provider.get(_message(QUESTION))
+    provider.remember(str(CHANNEL), [_fragment(f"other{n}", f"unrelated talk {n}") for n in range(5)])
+    bot.state["found"] = []
+
+    await provider.get(_message(QUESTION))  # the cached answer, the store is not asked again
+    follow_up = await provider.get(_message(FOLLOW_UP))
+
+    assert follow_up is not None and "the concert at the Fox" in follow_up
+
+
+@pytest.mark.asyncio
+async def test_one_oversized_recalled_fragment_does_not_hide_the_smaller_ones() -> None:
+    bot = _bot(set(), [])
+    provider = EpisodicMemoryProvider(bot)
+    provider.remember(str(CHANNEL), [_fragment("short", "we planned the concert at the Fox")])
+    provider.remember(str(CHANNEL), [_fragment("huge", "long " * 400)])  # newest, 2,000 characters
+
+    follow_up = await provider.get(_message(FOLLOW_UP))
+
+    assert follow_up is not None and "the concert at the Fox" in follow_up
+
+
+@pytest.mark.asyncio
+async def test_the_new_and_the_recalled_memories_together_stay_within_the_limit() -> None:
+    bot = _bot(set(), [_fragment("new", "n" * 650)])
+    provider = EpisodicMemoryProvider(bot, max_chars=1500)
+    provider.remember(str(CHANNEL), [_fragment("old", "o" * 650)])
+
+    text = await provider.get(_message(QUESTION))
+
+    assert text is not None and "n" * 650 in text
+    assert len(text) <= 1500

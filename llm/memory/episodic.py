@@ -76,7 +76,7 @@ def _format_entry(label: str, content: str, metadata: Any) -> str:
         The formatted line.
     """
     when = describe_fragment_time(metadata)
-    when_text = "" if when == "unknown" else f" ({when})"
+    when_text = "" if when == "unknown" else f" \u2014 {when}"
     return f"[{label}] {content}{when_text}{_source_label(metadata)}"
 
 
@@ -126,8 +126,9 @@ class EpisodicMemoryProvider:
         self.max_cache_size = max_cache_size
         self.cache_ttl = cache_ttl
         # key: (channel_id: str, query: str), value: (formatted_str: Optional[str], expire_at: float monotonic,
-        # ids of the people in the fragments formatted_str retells: checked again when the entry is served)
-        self._cache: Dict[Tuple[str, str], Tuple[Optional[str], float, FrozenSet[int]]] = {}
+        # ids of the people in the fragments formatted_str retells: checked again when the entry is served,
+        # the fragments it retells: served again, they are recalled again)
+        self._cache: Dict[Tuple[str, str], Tuple[Optional[str], float, FrozenSet[int], Tuple[Any, ...]]] = {}
         # prevents cache stampedes
         self._pending_queries: Dict[Tuple[str, str], asyncio.Event] = {}
         # What was recalled lately in each channel, for the follow-up messages that search finds nothing for
@@ -172,8 +173,8 @@ class EpisodicMemoryProvider:
             return set()
         return await hidden_in_guild_async(self.bot, guild.id)
 
-    def _lookup(self, cache_key: Tuple[str, str], hidden: Set[int]) -> Optional[Tuple[Optional[str]]]:
-        """The usable cached result for ``cache_key`` as a 1-tuple, or None when there is none.
+    def _lookup(self, cache_key: Tuple[str, str], hidden: Set[int]) -> Optional[Tuple[Optional[str], Tuple[Any, ...]]]:
+        """The usable cached result for ``cache_key`` as ``(text, fragments told)``, or None when there is none.
 
         Synchronous on purpose (no await between reading the entry and using it, so an invalidation
         cannot slip in). A result is checked against the opt-out list each time it is served: someone in
@@ -182,11 +183,11 @@ class EpisodicMemoryProvider:
         entry = self._cache.get(cache_key)
         if entry is None or entry[1] <= time.monotonic():
             return None
-        text, _expire_at, participants = entry
+        text, _expire_at, participants, told = entry
         if hidden & participants:
             self._cache.pop(cache_key, None)
             return None
-        return (text,)
+        return (text, told)
 
     async def get(self, message: discord.Message) -> Optional[str]:
         """Return the episodic context for a message: what it matches now plus what was recalled lately.
@@ -235,19 +236,23 @@ class EpisodicMemoryProvider:
         if hidden is None:
             return None
         self.recent.recall(channel_id, hidden)  # forgets the ones of members who hid themselves
+        # Both blocks together stay within max_chars: this one gets what the fresh block left, and its own
+        # header and footer count (the fresh block's footer is already in its text).
+        budget = self.max_chars - (len(fresh) + 1 if fresh else 0)
         lines = ["--- Recently Recalled Memories ---"]
-        total_chars = len(lines[0])
+        footer = "--- End Recently Recalled Memories ---"
+        total_chars = len(lines[0]) + len(footer) + 1
         for number, fragment in enumerate([f for f in earlier if not f.participants & hidden], 1):
             if fresh is not None and fragment.content in fresh:
                 continue
             entry = _format_entry(f"recalled #{number}", fragment.content, fragment.metadata)
-            if total_chars + len(entry) + 1 > self.max_chars:
-                break
+            if total_chars + len(entry) + 1 > budget:
+                continue  # too long for what is left; a shorter one behind it may still fit
             lines.append(entry)
             total_chars += len(entry) + 1
         if len(lines) == 1:
             return None
-        lines.append("--- End Recently Recalled Memories ---")
+        lines.append(footer)
         return "\n".join(lines)
 
     async def _search(self, message: discord.Message) -> Optional[str]:
@@ -286,6 +291,7 @@ class EpisodicMemoryProvider:
         while True:
             cached = self._lookup(cache_key, hidden)
             if cached is not None:
+                self.recent.remember(channel_id, cached[1])  # told again: recalled again
                 return cached[0]
             if cache_key not in self._pending_queries:
                 break
@@ -328,12 +334,12 @@ class EpisodicMemoryProvider:
                 return None
             fragments = without_hidden_participants(fragments, hidden)
 
+            injected: list = []
             if not fragments:
                 formatted_result = None
             else:
                 lines = ["--- Relevant Past Memories ---"]
                 total_chars = len(lines[0])
-                injected: list = []
 
                 for i, frag in enumerate(fragments, 1):
                     entry_str = _format_entry(f"memory #{i}", frag.content, frag.metadata)
@@ -352,7 +358,7 @@ class EpisodicMemoryProvider:
             # Update cache
             expire_at = now + self.cache_ttl
             participants = frozenset().union(*(fragment_user_ids(frag.metadata) for frag in fragments))
-            self._cache[cache_key] = (formatted_result, expire_at, participants)
+            self._cache[cache_key] = (formatted_result, expire_at, participants, tuple(injected))
 
             # Prune expired items if cache is getting large
             if len(self._cache) > self.max_cache_size:
