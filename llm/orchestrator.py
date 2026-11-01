@@ -109,7 +109,9 @@ class Orchestrator:
                 top_k=memory_config.episodic_top_k,
                 max_chars=memory_config.episodic_max_chars,
                 max_cache_size=memory_config.episodic_max_cache_size,
-                cache_ttl=memory_config.episodic_cache_ttl
+                cache_ttl=memory_config.episodic_cache_ttl,
+                recent_ttl=memory_config.episodic_recent_ttl,
+                recent_max=memory_config.episodic_recent_max,
             )
 
         self.bot = bot

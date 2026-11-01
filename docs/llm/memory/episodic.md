@@ -24,6 +24,15 @@ Relevant fragments are formatted into a clear section for the LLM:
 --- End Past Memories ---
 ```
 - **Source Linking**: Each memory fragment includes a Discord "Jump URL" and a relative timestamp (e.g., "3 months ago") using Discord's `<t:timestamp:R>` format.
+- **Time in words**: the model cannot read a date out of Discord's `<t:...:R>` markup, so each line also states when the conversation happened in UTC and how long ago, e.g. `— 2025-12-27 00:24 - 01:33 UTC (308 days ago)`.
+
+### Recently Recalled Memories
+The context of every message is built from scratch, so a fragment found for one message used to be gone at the next one, and a short follow-up ("when was that?") found nothing in the vector search. `RecentRecall` (`llm/memory/recent_recall.py`) keeps, per channel, the fragments that were injected or that `search_episodic_memory` returned, and `get()` tells them again as a `--- Recently Recalled Memories ---` block:
+- **Scope**: strictly the same channel (a DM is its own channel); never across servers.
+- **Lifetime**: `episodic_recent_ttl` seconds (default 600) after the last recall, at most `episodic_recent_max` (default 5) fragments per channel, newest first; in process memory only, a restart forgets them.
+- **Privacy**: the opt-out list (`/leaderboard optout`) is read again every time; a fragment with a member who has hidden is dropped for good, and nothing is told while the list cannot be read.
+- **Not twice**: only what was recalled *before* the message is told, and not what the message's own search already found.
+- **Budget**: the block shares `max_chars` with the message's own memories (together never more); a fragment too long for what is left is skipped, not the shorter ones behind it. A search answered from the cache renews the fragments it tells.
 
 ## Performance Optimization
 
@@ -43,6 +52,8 @@ The provider maintains a thread-safe cache of recent search results:
 | `top_k` | 3 | Number of fragments to retrieve. |
 | `max_chars` | 1500 | Maximum total length of the context string. |
 | `cache_ttl` | 300.0 | Seconds before a cache entry expires. |
+| `recent_ttl` | 600.0 | Seconds a recalled fragment is told to the channel's next messages (`episodic_recent_ttl`). |
+| `recent_max` | 5 | Recalled fragments kept per channel (`episodic_recent_max`). |
 
 ---
 *This provider allows the bot to maintain a sense of history and "remember" facts that were never explicitly saved to procedural memory.*

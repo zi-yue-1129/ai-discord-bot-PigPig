@@ -96,6 +96,8 @@ class EpisodicMemoryTools:
                 
                 # Delegate to the vector store's search implementation, forwarding both
                 # semantic and keyword parameters for a hybrid search when available.
+                provider = getattr(getattr(getattr(bot, "orchestrator", None), "context_manager", None), "episodic_provider", None)
+                generation = provider.generation(current_channel_id) if provider is not None and current_channel_id is not None else None
                 fragments: List[MemoryFragment] = await vector_manager.store.search(
                     vector_query=vector_query,
                     keyword_query=keyword_query,
@@ -107,6 +109,11 @@ class EpisodicMemoryTools:
                 # What a hidden member (/leaderboard optout) said is not retold; without the list nothing is.
                 if fragments and guild is not None:
                     fragments = without_hidden_participants(fragments, await hidden_in_guild_async(bot, guild.id))
+
+                if fragments and current_channel_id is not None:
+                    # The next messages of this channel still get what was found (see llm/memory/recent_recall.py).
+                    if provider is not None:
+                        provider.remember(current_channel_id, fragments, generation)
 
                 if not fragments:
                     if keyword_query:

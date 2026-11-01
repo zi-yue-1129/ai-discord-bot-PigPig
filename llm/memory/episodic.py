@@ -9,13 +9,15 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from typing import Any, Dict, FrozenSet, Optional, Set, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
 import discord
 
 from addons.logging import get_logger
 from function import func
+from llm.memory.fragment_time import describe_fragment_time
 from llm.memory.privacy import fragment_user_ids, hidden_in_guild_async, without_hidden_participants
+from llm.memory.recent_recall import RecalledFragment, RecentRecall
 
 _LOGGER = get_logger(server_id="Bot", source="llm.memory.episodic")
 
@@ -28,11 +30,57 @@ _MIN_QUERY_TOKENS = 4
 # arithmetic) peak at 0.63-0.65, while questions about real past topics hit 0.69-0.79.
 _MIN_RELEVANCE_SCORE = 0.68
 
+# No participants: the result names nobody who could opt out
+_NOBODY: FrozenSet[int] = frozenset()
+
 # Pattern to strip Discord mention tags from message content
 _MENTION_RE = re.compile(r"<@!?\d+>")
 
 # CJK ideographs, kana and hangul: these scripts do not separate words with spaces
 _CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]")
+
+
+def _source_label(metadata: Any) -> str:
+    """The link to the original conversation, with Discord's relative time when the time is known.
+
+    Args:
+        metadata: The fragment's metadata.
+
+    Returns:
+        For example `` [[Source <t:1766795064:R>](url)]``, or an empty string without link and time.
+    """
+    ts = metadata.get("start_timestamp") or metadata.get("timestamp")
+    jump_url = metadata.get("jump_url")
+    try:
+        unix_ts = int(float(ts)) if ts else None
+    except (TypeError, ValueError, OverflowError):
+        unix_ts = None
+    if jump_url and unix_ts is not None:
+        return f" [[Source <t:{unix_ts}:R>]({jump_url})]"
+    if jump_url:
+        return f" [[Source]({jump_url})]"
+    if unix_ts is not None:
+        return f" [<t:{unix_ts}:R>]"
+    return ""
+
+
+def _format_entry(label: str, content: str, metadata: Any) -> str:
+    """One injected memory line: the summary, when it happened in words, and the source link.
+
+    Discord's ``<t:...:R>`` markup is not something the model can read a date from, so the date is
+    also written out.
+
+    Args:
+        label: The line's tag, such as ``memory #1``.
+        content: The fragment's summary.
+        metadata: The fragment's metadata.
+
+    Returns:
+        The formatted line.
+    """
+    when = describe_fragment_time(metadata)
+    when_text = "" if when == "unknown" else f" \u2014 {when}"
+    return f"[{label}] {content}{when_text}{_source_label(metadata)}"
 
 
 def _query_tokens(query: str) -> int:
@@ -59,9 +107,20 @@ class EpisodicMemoryProvider:
         max_chars: Hard character limit for the returned string. Default 1500.
         max_cache_size: Maximum number of entries to retain in the cache. Default 1000.
         cache_ttl: Cache Time-To-Live in seconds. Default 300.0.
+        recent_ttl: Seconds a recalled fragment is still told to the channel's next messages. Default 600.0.
+        recent_max: Recalled fragments kept per channel. Default 5.
     """
 
-    def __init__(self, bot: Any, top_k: int = 3, max_chars: int = 1500, max_cache_size: int = 1000, cache_ttl: float = 300.0) -> None:
+    def __init__(
+        self,
+        bot: Any,
+        top_k: int = 3,
+        max_chars: int = 1500,
+        max_cache_size: int = 1000,
+        cache_ttl: float = 300.0,
+        recent_ttl: float = 600.0,
+        recent_max: int = 5,
+    ) -> None:
         if max_cache_size < 0:
             raise ValueError("max_cache_size must be >= 0")
         self.bot = bot
@@ -70,20 +129,71 @@ class EpisodicMemoryProvider:
         self.max_cache_size = max_cache_size
         self.cache_ttl = cache_ttl
         # key: (channel_id: str, query: str), value: (formatted_str: Optional[str], expire_at: float monotonic,
-        # ids of the people in the fragments formatted_str retells: checked again when the entry is served)
-        self._cache: Dict[Tuple[str, str], Tuple[Optional[str], float, FrozenSet[int]]] = {}
+        # ids of the people in the fragments formatted_str retells: checked again when the entry is served,
+        # the fragments it retells: served again, they are recalled again)
+        self._cache: Dict[Tuple[str, str], Tuple[Optional[str], float, FrozenSet[int], Tuple[Any, ...]]] = {}
         # prevents cache stampedes
         self._pending_queries: Dict[Tuple[str, str], asyncio.Event] = {}
+        # What was recalled lately in each channel, for the follow-up messages that search finds nothing for
+        self.recent = RecentRecall(ttl=recent_ttl, max_per_channel=recent_max)
+        # Bumped by every invalidation of a channel: a request that started before it tells nothing from before
+        self._generation: Dict[str, int] = {}
+        # Bumped when a member's memory is deleted, which concerns every channel
+        self._epoch = 0
+
+    def generation(self, channel_id: str) -> int:
+        """A number that changes whenever ``channel_id`` is invalidated; read it before a search starts.
+
+        Args:
+            channel_id: The Discord channel ID.
+
+        Returns:
+            The channel's current generation.
+        """
+        return self._generation.get(channel_id, 0) + self._epoch
+
+    def forget_user(self, user_id: int) -> None:
+        """Forget everything recalled or cached of a member whose memory was deleted.
+
+        Searches in flight are voided as for an invalidation of every channel.
+
+        Args:
+            user_id: The member's Discord id.
+        """
+        self._epoch += 1
+        self.recent.forget_user(user_id)
+        for key in [key for key, entry in self._cache.items() if user_id in entry[2]]:
+            self._cache.pop(key, None)
+        for key in list(self._pending_queries):
+            event = self._pending_queries.pop(key, None)
+            if event:
+                event.set()
+
+    def remember(self, channel_id: str, fragments: Any, generation: Optional[int] = None) -> None:
+        """Keep fragments the search tool found, so the next messages of the channel still get them.
+
+        Args:
+            channel_id: The channel the tool ran in.
+            fragments: Memory fragments the tool returned (hidden members' ones already left out).
+            generation: The channel's ``generation()`` from before the search started. When the channel
+                was invalidated since, the fragments may be outdated and are not kept.
+        """
+        if generation is not None and generation != self.generation(channel_id):
+            return
+        self.recent.remember(channel_id, fragments)
 
     async def invalidate(self, channel_id: str) -> None:
         """Invalidate all cached episodic queries for a specific channel.
 
         In-flight results are also discarded. Their callers receive None, while
-        waiting callers may start a fresh search after invalidation.
+        waiting callers may start a fresh search after invalidation. What was recalled lately in
+        the channel is forgotten too.
 
         Args:
             channel_id: The Discord channel ID.
         """
+        self._generation[channel_id] = self._generation.get(channel_id, 0) + 1
+        self.recent.forget_channel(channel_id)
         keys_to_remove = [k for k in self._cache.keys() if k[0] == channel_id]
         for k in keys_to_remove:
             self._cache.pop(k, None)
@@ -105,8 +215,8 @@ class EpisodicMemoryProvider:
             return set()
         return await hidden_in_guild_async(self.bot, guild.id)
 
-    def _lookup(self, cache_key: Tuple[str, str], hidden: Set[int]) -> Optional[Tuple[Optional[str]]]:
-        """The usable cached result for ``cache_key`` as a 1-tuple, or None when there is none.
+    def _lookup(self, cache_key: Tuple[str, str], hidden: Set[int]) -> Optional[Tuple[Optional[str], Tuple[Any, ...], FrozenSet[int]]]:
+        """The usable cached result for ``cache_key`` as ``(text, fragments told, people in them)``, or None when there is none.
 
         Synchronous on purpose (no await between reading the entry and using it, so an invalidation
         cannot slip in). A result is checked against the opt-out list each time it is served: someone in
@@ -115,14 +225,14 @@ class EpisodicMemoryProvider:
         entry = self._cache.get(cache_key)
         if entry is None or entry[1] <= time.monotonic():
             return None
-        text, _expire_at, participants = entry
+        text, _expire_at, participants, told = entry
         if hidden & participants:
             self._cache.pop(cache_key, None)
             return None
-        return (text,)
+        return (text, told, participants)
 
     async def get(self, message: discord.Message) -> Optional[str]:
-        """Return formatted episodic context string, or None if nothing relevant.
+        """Return the episodic context for a message: what it matches now plus what was recalled lately.
 
         Runs in parallel with ProceduralMemoryProvider via asyncio.gather in
         ContextManager, so it does not add serial latency to the pipeline.
@@ -133,9 +243,71 @@ class EpisodicMemoryProvider:
         Returns:
             Formatted string with past memory fragments, or None.
         """
+        # What was recalled before this message: taken now, before any await, so what this message's own
+        # search (or a concurrent one) recalls is not told twice and an invalidated search stays discarded.
+        channel_id = str(message.channel.id)
+        generation = self.generation(channel_id)
+        earlier = self.recent.recall(channel_id, set())
+        fresh, fresh_people = await self._search(message)
+        if not earlier:
+            return fresh
+
+        # The last read of the opt-out list decides for everything told, the new search included.
+        hidden = await self._read_hidden(getattr(message, "guild", None))
+        if hidden is None or self.generation(channel_id) != generation:
+            return None  # the list cannot be read, or the channel was invalidated while this request ran
+        self.recent.recall(channel_id, hidden)  # forgets the ones of members who hid themselves
+        earlier = [fragment for fragment in earlier if self.recent.is_alive(fragment)]  # expired during the search
+        if fresh_people & hidden:
+            fresh = None
+        recent = self._recent_block(earlier, hidden, fresh)
+        if recent is None:
+            return fresh
+        return recent if fresh is None else f"{fresh}\n{recent}"
+
+    def _recent_block(self, earlier: List[RecalledFragment], hidden: Set[int], fresh: Optional[str]) -> Optional[str]:
+        """The fragments recalled before this message that ``fresh`` does not already tell.
+
+        Args:
+            earlier: The channel's recalled fragments as they were when the message arrived, newest first.
+            hidden: The members who hid themselves; their fragments are left out.
+            fresh: The block the message's own search produced, or None.
+
+        Returns:
+            A formatted block within ``max_chars``, or None when nothing usable is left.
+        """
+        # Both blocks together stay within max_chars: this one gets what the fresh block left, and its own
+        # header and footer count (the fresh block's footer is already in its text).
+        budget = self.max_chars - (len(fresh) + 1 if fresh else 0)
+        lines = ["--- Recently Recalled Memories ---"]
+        footer = "--- End Recently Recalled Memories ---"
+        total_chars = len(lines[0]) + len(footer) + 1
+        for number, fragment in enumerate([f for f in earlier if not f.participants & hidden], 1):
+            if fresh is not None and fragment.content in fresh:
+                continue
+            entry = _format_entry(f"recalled #{number}", fragment.content, fragment.metadata)
+            if total_chars + len(entry) + 1 > budget:
+                continue  # too long for what is left; a shorter one behind it may still fit
+            lines.append(entry)
+            total_chars += len(entry) + 1
+        if len(lines) == 1:
+            return None
+        lines.append(footer)
+        return "\n".join(lines)
+
+    async def _search(self, message: discord.Message) -> Tuple[Optional[str], FrozenSet[int]]:
+        """Search the vector store for the message and format what is relevant (cached by query).
+
+        Args:
+            message: Current Discord message (provides query text and channel scope).
+
+        Returns:
+            The formatted string with past memory fragments (or None) and the Discord ids of the
+            people in those fragments, for the final opt-out check.
+        """
         vector_manager = getattr(self.bot, "vector_manager", None)
         if not vector_manager or not hasattr(vector_manager, "store"):
-            return None
+            return None, _NOBODY
 
         # Clean query: strip mentions and whitespace
         raw = getattr(message, "content", "") or ""
@@ -143,7 +315,7 @@ class EpisodicMemoryProvider:
 
         # Skip trivially short messages (greetings, reactions, single words)
         if _query_tokens(query) < _MIN_QUERY_TOKENS:
-            return None
+            return None, _NOBODY
 
         channel_id = str(message.channel.id)
         cache_key = (channel_id, query)
@@ -153,14 +325,15 @@ class EpisodicMemoryProvider:
         # Without the opt-out list nothing is injected, cached or not.
         hidden = await self._read_hidden(guild)
         if hidden is None:
-            return None
+            return None, _NOBODY
 
         # Thundering herd protection logic. From the lookup to taking ownership below there is no await,
         # so two requests cannot both decide to search, and an invalidation cannot slip in between.
         while True:
             cached = self._lookup(cache_key, hidden)
             if cached is not None:
-                return cached[0]
+                self.recent.remember(channel_id, cached[1])  # told again: recalled again
+                return cached[0], cached[2]
             if cache_key not in self._pending_queries:
                 break
             await self._pending_queries[cache_key].wait()
@@ -168,7 +341,7 @@ class EpisodicMemoryProvider:
             # loop again in case another task picked up the query.
             hidden = await self._read_hidden(guild)
             if hidden is None:
-                return None
+                return None, _NOBODY
 
         now = time.monotonic()
 
@@ -185,7 +358,7 @@ class EpisodicMemoryProvider:
                 )
             except Exception as e:
                 await func.report_error(e, "EpisodicMemoryProvider.get: vector search failed")
-                return None
+                return None, _NOBODY
 
             # What a hidden member (/leaderboard optout) said is not retold, whoever asks; the cached
             # result is already filtered. The list is read again here: someone may have opted out during
@@ -197,11 +370,12 @@ class EpisodicMemoryProvider:
             # or cache a result from the invalidated generation. Checked after
             # the last await, so nothing can invalidate between check and use.
             if self._pending_queries.get(cache_key) is not event:
-                return None
+                return None, _NOBODY
             if hidden is None:
-                return None
+                return None, _NOBODY
             fragments = without_hidden_participants(fragments, hidden)
 
+            injected: list = []
             if not fragments:
                 formatted_result = None
             else:
@@ -209,42 +383,23 @@ class EpisodicMemoryProvider:
                 total_chars = len(lines[0])
 
                 for i, frag in enumerate(fragments, 1):
-                    ts = frag.metadata.get("start_timestamp") or frag.metadata.get("timestamp")
-                    jump_url = frag.metadata.get("jump_url")
-
-                    # Build source label: prefer a Discord message link over plain timestamp
-                    if jump_url and ts:
-                        try:
-                            unix_ts = int(float(ts))
-                            source_str = f" [[Source <t:{unix_ts}:R>]({jump_url})]"
-                        except Exception:
-                            source_str = f" [[Source]({jump_url})]"
-                    elif jump_url:
-                        source_str = f" [[Source]({jump_url})]"
-                    elif ts:
-                        try:
-                            unix_ts = int(float(ts))
-                            source_str = f" [<t:{unix_ts}:R>]"
-                        except Exception:
-                            source_str = ""
-                    else:
-                        source_str = ""
-
-                    entry_str = f"[memory #{i}] {frag.content}{source_str}"
+                    entry_str = _format_entry(f"memory #{i}", frag.content, frag.metadata)
 
                     if total_chars + len(entry_str) + 1 > self.max_chars:
                         break
                     lines.append(entry_str)
                     total_chars += len(entry_str) + 1
+                    injected.append(frag)
 
                 lines.append("--- End Past Memories ---")
                 _LOGGER.debug(f"Injecting {len(lines) - 2} episodic fragments into context.")
                 formatted_result = "\n".join(lines)
+                self.recent.remember(channel_id, injected)
 
             # Update cache
             expire_at = now + self.cache_ttl
             participants = frozenset().union(*(fragment_user_ids(frag.metadata) for frag in fragments))
-            self._cache[cache_key] = (formatted_result, expire_at, participants)
+            self._cache[cache_key] = (formatted_result, expire_at, participants, tuple(injected))
 
             # Prune expired items if cache is getting large
             if len(self._cache) > self.max_cache_size:
@@ -256,7 +411,7 @@ class EpisodicMemoryProvider:
                     oldest_key = next(iter(self._cache))
                     self._cache.pop(oldest_key, None)
 
-            return formatted_result
+            return formatted_result, participants
         finally:
             # Always ensure the event is cleaned up and waiting tasks are notified
             # without removing a replacement search after invalidation, including
