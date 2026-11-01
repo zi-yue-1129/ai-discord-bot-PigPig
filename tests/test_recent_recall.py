@@ -349,3 +349,58 @@ async def test_a_request_in_flight_during_an_invalidation_gets_nothing_from_befo
     gate.set()
 
     assert await request is None
+
+
+# ------------------------------------------------ Codex review, third round: a tool search in flight, expiry mid-request
+
+
+def _gated_bot(gate: asyncio.Event, found: List[Any]) -> Any:
+    """A bot whose searches (tool and automatic) wait for ``gate`` before answering ``found``."""
+
+    class SlowStore:
+        async def search_memories_by_vector(self, **kwargs: Any) -> list:
+            await gate.wait()
+            return list(found)
+
+        async def search(self, **kwargs: Any) -> list:
+            await gate.wait()
+            return list(found)
+
+    known = {"LeaderboardCog": SimpleNamespace(store=SimpleNamespace(read_optouts=lambda guild_id: set()))}
+    return SimpleNamespace(get_cog=known.get, vector_manager=SimpleNamespace(store=SlowStore()))
+
+
+@pytest.mark.asyncio
+async def test_a_tool_search_finishing_after_an_invalidation_does_not_recall_the_old_fragment() -> None:
+    gate = asyncio.Event()
+    bot = _gated_bot(gate, [_fragment("old", "the outdated concert plan")])
+    provider = EpisodicMemoryProvider(bot)
+    bot.orchestrator = SimpleNamespace(context_manager=SimpleNamespace(episodic_provider=provider))
+    runtime = SimpleNamespace(bot=bot, message=_message("find the concert"), logger=None)
+    (tool,) = [t for t in EpisodicMemoryTools(runtime).get_tools() if t.name == "search_episodic_memory"]
+
+    search = asyncio.create_task(tool.ainvoke({"vector_query": "concert"}))
+    await asyncio.sleep(0.05)  # the tool has asked the store
+    await provider.invalidate(str(CHANNEL))  # the channel's memory was replaced meanwhile
+    gate.set()
+    await search
+
+    assert await provider.get(_message(FOLLOW_UP)) is None
+
+
+@pytest.mark.asyncio
+async def test_a_fragment_that_expires_while_the_request_runs_is_not_told() -> None:
+    clock = _Clock()
+    gate = asyncio.Event()
+    bot = _gated_bot(gate, [])
+    provider = EpisodicMemoryProvider(bot)
+    provider.recent = RecentRecall(ttl=10.0, max_per_channel=5, clock=clock)
+    provider.remember(str(CHANNEL), [_fragment("a", "we planned the concert at the Fox")])
+
+    clock.now += 9  # still alive when the request starts
+    request = asyncio.create_task(provider.get(_message(QUESTION)))
+    await asyncio.sleep(0.05)
+    clock.now += 2  # expired while the search ran
+    gate.set()
+
+    assert await request is None

@@ -139,13 +139,28 @@ class EpisodicMemoryProvider:
         # Bumped by every invalidation of a channel: a request that started before it tells nothing from before
         self._generation: Dict[str, int] = {}
 
-    def remember(self, channel_id: str, fragments: Any) -> None:
+    def generation(self, channel_id: str) -> int:
+        """A number that changes whenever ``channel_id`` is invalidated; read it before a search starts.
+
+        Args:
+            channel_id: The Discord channel ID.
+
+        Returns:
+            The channel's current generation.
+        """
+        return self._generation.get(channel_id, 0)
+
+    def remember(self, channel_id: str, fragments: Any, generation: Optional[int] = None) -> None:
         """Keep fragments the search tool found, so the next messages of the channel still get them.
 
         Args:
             channel_id: The channel the tool ran in.
             fragments: Memory fragments the tool returned (hidden members' ones already left out).
+            generation: The channel's ``generation()`` from before the search started. When the channel
+                was invalidated since, the fragments may be outdated and are not kept.
         """
+        if generation is not None and generation != self.generation(channel_id):
+            return
         self.recent.remember(channel_id, fragments)
 
     async def invalidate(self, channel_id: str) -> None:
@@ -223,6 +238,7 @@ class EpisodicMemoryProvider:
         if hidden is None or self._generation.get(channel_id, 0) != generation:
             return None  # the list cannot be read, or the channel was invalidated while this request ran
         self.recent.recall(channel_id, hidden)  # forgets the ones of members who hid themselves
+        earlier = [fragment for fragment in earlier if self.recent.is_alive(fragment)]  # expired during the search
         if fresh_people & hidden:
             fresh = None
         recent = self._recent_block(earlier, hidden, fresh)

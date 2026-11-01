@@ -105,6 +105,17 @@ class RecentRecall:
         while len(self._channels) > self.max_channels:
             self._channels.popitem(last=False)
 
+    def is_alive(self, fragment: RecalledFragment) -> bool:
+        """Whether ``fragment`` has not expired yet, by this store's clock.
+
+        Args:
+            fragment: A fragment this store returned earlier.
+
+        Returns:
+            False once its time limit has passed, even while it is still held in a snapshot.
+        """
+        return fragment.expires_at > self._clock()
+
     def forget_channel(self, channel_id: str) -> None:
         """Forget everything kept for ``channel_id`` (its memory changed or was deleted).
 
