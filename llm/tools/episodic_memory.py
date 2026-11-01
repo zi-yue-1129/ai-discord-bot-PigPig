@@ -108,6 +108,12 @@ class EpisodicMemoryTools:
                 if fragments and guild is not None:
                     fragments = without_hidden_participants(fragments, await hidden_in_guild_async(bot, guild.id))
 
+                if fragments and current_channel_id is not None:
+                    # The next messages of this channel still get what was found (see llm/memory/recent_recall.py).
+                    provider = getattr(getattr(getattr(bot, "orchestrator", None), "context_manager", None), "episodic_provider", None)
+                    if provider is not None:
+                        provider.remember(current_channel_id, fragments)
+
                 if not fragments:
                     if keyword_query:
                         return (

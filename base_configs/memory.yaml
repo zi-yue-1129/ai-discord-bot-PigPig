@@ -30,6 +30,10 @@ provider_options:
   # google:
   #   project_id: your-google-project
 
+# Memories the bot recalled stay in that channel's context for follow-up messages
+episodic_recent_ttl: 600.0 # Seconds a recalled fragment is still told to the channel's next messages
+episodic_recent_max: 5 # Recalled fragments kept per channel (the newest win)
+
 vector_search_k: 5
 keyword_search_k: 3
 message_threshold: 100 # Number of messages to trigger memory processing

@@ -9,13 +9,15 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from typing import Any, Dict, FrozenSet, Optional, Set, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
 import discord
 
 from addons.logging import get_logger
 from function import func
+from llm.memory.fragment_time import describe_fragment_time
 from llm.memory.privacy import fragment_user_ids, hidden_in_guild_async, without_hidden_participants
+from llm.memory.recent_recall import RecalledFragment, RecentRecall
 
 _LOGGER = get_logger(server_id="Bot", source="llm.memory.episodic")
 
@@ -33,6 +35,49 @@ _MENTION_RE = re.compile(r"<@!?\d+>")
 
 # CJK ideographs, kana and hangul: these scripts do not separate words with spaces
 _CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]")
+
+
+def _source_label(metadata: Any) -> str:
+    """The link to the original conversation, with Discord's relative time when the time is known.
+
+    Args:
+        metadata: The fragment's metadata.
+
+    Returns:
+        For example `` [[Source <t:1766795064:R>](url)]``, or an empty string without link and time.
+    """
+    ts = metadata.get("start_timestamp") or metadata.get("timestamp")
+    jump_url = metadata.get("jump_url")
+    try:
+        unix_ts = int(float(ts)) if ts else None
+    except (TypeError, ValueError, OverflowError):
+        unix_ts = None
+    if jump_url and unix_ts is not None:
+        return f" [[Source <t:{unix_ts}:R>]({jump_url})]"
+    if jump_url:
+        return f" [[Source]({jump_url})]"
+    if unix_ts is not None:
+        return f" [<t:{unix_ts}:R>]"
+    return ""
+
+
+def _format_entry(label: str, content: str, metadata: Any) -> str:
+    """One injected memory line: the summary, when it happened in words, and the source link.
+
+    Discord's ``<t:...:R>`` markup is not something the model can read a date from, so the date is
+    also written out.
+
+    Args:
+        label: The line's tag, such as ``memory #1``.
+        content: The fragment's summary.
+        metadata: The fragment's metadata.
+
+    Returns:
+        The formatted line.
+    """
+    when = describe_fragment_time(metadata)
+    when_text = "" if when == "unknown" else f" ({when})"
+    return f"[{label}] {content}{when_text}{_source_label(metadata)}"
 
 
 def _query_tokens(query: str) -> int:
@@ -59,9 +104,20 @@ class EpisodicMemoryProvider:
         max_chars: Hard character limit for the returned string. Default 1500.
         max_cache_size: Maximum number of entries to retain in the cache. Default 1000.
         cache_ttl: Cache Time-To-Live in seconds. Default 300.0.
+        recent_ttl: Seconds a recalled fragment is still told to the channel's next messages. Default 600.0.
+        recent_max: Recalled fragments kept per channel. Default 5.
     """
 
-    def __init__(self, bot: Any, top_k: int = 3, max_chars: int = 1500, max_cache_size: int = 1000, cache_ttl: float = 300.0) -> None:
+    def __init__(
+        self,
+        bot: Any,
+        top_k: int = 3,
+        max_chars: int = 1500,
+        max_cache_size: int = 1000,
+        cache_ttl: float = 300.0,
+        recent_ttl: float = 600.0,
+        recent_max: int = 5,
+    ) -> None:
         if max_cache_size < 0:
             raise ValueError("max_cache_size must be >= 0")
         self.bot = bot
@@ -74,6 +130,17 @@ class EpisodicMemoryProvider:
         self._cache: Dict[Tuple[str, str], Tuple[Optional[str], float, FrozenSet[int]]] = {}
         # prevents cache stampedes
         self._pending_queries: Dict[Tuple[str, str], asyncio.Event] = {}
+        # What was recalled lately in each channel, for the follow-up messages that search finds nothing for
+        self.recent = RecentRecall(ttl=recent_ttl, max_per_channel=recent_max)
+
+    def remember(self, channel_id: str, fragments: Any) -> None:
+        """Keep fragments the search tool found, so the next messages of the channel still get them.
+
+        Args:
+            channel_id: The channel the tool ran in.
+            fragments: Memory fragments the tool returned (hidden members' ones already left out).
+        """
+        self.recent.remember(channel_id, fragments)
 
     async def invalidate(self, channel_id: str) -> None:
         """Invalidate all cached episodic queries for a specific channel.
@@ -122,10 +189,69 @@ class EpisodicMemoryProvider:
         return (text,)
 
     async def get(self, message: discord.Message) -> Optional[str]:
-        """Return formatted episodic context string, or None if nothing relevant.
+        """Return the episodic context for a message: what it matches now plus what was recalled lately.
 
         Runs in parallel with ProceduralMemoryProvider via asyncio.gather in
         ContextManager, so it does not add serial latency to the pipeline.
+
+        Args:
+            message: Current Discord message (provides query text and channel scope).
+
+        Returns:
+            Formatted string with past memory fragments, or None.
+        """
+        # What was recalled before this message: taken now, before any await, so what this message's own
+        # search (or a concurrent one) recalls is not told twice and an invalidated search stays discarded.
+        channel_id = str(message.channel.id)
+        earlier = self.recent.recall(channel_id, set())
+        fresh = await self._search(message)
+        recent = await self._recent_block(message, channel_id, earlier, fresh)
+        if recent is None:
+            return fresh
+        return recent if fresh is None else f"{fresh}\n{recent}"
+
+    async def _recent_block(
+        self,
+        message: discord.Message,
+        channel_id: str,
+        earlier: List[RecalledFragment],
+        fresh: Optional[str],
+    ) -> Optional[str]:
+        """The fragments recalled before this message that ``fresh`` does not already tell.
+
+        Args:
+            message: The current message (its guild is needed for the opt-out list).
+            channel_id: The channel the fragments belong to.
+            earlier: The channel's recalled fragments as they were when the message arrived, newest first.
+            fresh: The block the message's own search produced, or None.
+
+        Returns:
+            A formatted block within ``max_chars``, or None when nothing usable is left. Nothing is
+            told while the opt-out list cannot be read.
+        """
+        if not earlier:
+            return None
+        hidden = await self._read_hidden(getattr(message, "guild", None))
+        if hidden is None:
+            return None
+        self.recent.recall(channel_id, hidden)  # forgets the ones of members who hid themselves
+        lines = ["--- Recently Recalled Memories ---"]
+        total_chars = len(lines[0])
+        for number, fragment in enumerate([f for f in earlier if not f.participants & hidden], 1):
+            if fresh is not None and fragment.content in fresh:
+                continue
+            entry = _format_entry(f"recalled #{number}", fragment.content, fragment.metadata)
+            if total_chars + len(entry) + 1 > self.max_chars:
+                break
+            lines.append(entry)
+            total_chars += len(entry) + 1
+        if len(lines) == 1:
+            return None
+        lines.append("--- End Recently Recalled Memories ---")
+        return "\n".join(lines)
+
+    async def _search(self, message: discord.Message) -> Optional[str]:
+        """Search the vector store for the message and format what is relevant (cached by query).
 
         Args:
             message: Current Discord message (provides query text and channel scope).
@@ -207,39 +333,21 @@ class EpisodicMemoryProvider:
             else:
                 lines = ["--- Relevant Past Memories ---"]
                 total_chars = len(lines[0])
+                injected: list = []
 
                 for i, frag in enumerate(fragments, 1):
-                    ts = frag.metadata.get("start_timestamp") or frag.metadata.get("timestamp")
-                    jump_url = frag.metadata.get("jump_url")
-
-                    # Build source label: prefer a Discord message link over plain timestamp
-                    if jump_url and ts:
-                        try:
-                            unix_ts = int(float(ts))
-                            source_str = f" [[Source <t:{unix_ts}:R>]({jump_url})]"
-                        except Exception:
-                            source_str = f" [[Source]({jump_url})]"
-                    elif jump_url:
-                        source_str = f" [[Source]({jump_url})]"
-                    elif ts:
-                        try:
-                            unix_ts = int(float(ts))
-                            source_str = f" [<t:{unix_ts}:R>]"
-                        except Exception:
-                            source_str = ""
-                    else:
-                        source_str = ""
-
-                    entry_str = f"[memory #{i}] {frag.content}{source_str}"
+                    entry_str = _format_entry(f"memory #{i}", frag.content, frag.metadata)
 
                     if total_chars + len(entry_str) + 1 > self.max_chars:
                         break
                     lines.append(entry_str)
                     total_chars += len(entry_str) + 1
+                    injected.append(frag)
 
                 lines.append("--- End Past Memories ---")
                 _LOGGER.debug(f"Injecting {len(lines) - 2} episodic fragments into context.")
                 formatted_result = "\n".join(lines)
+                self.recent.remember(channel_id, injected)
 
             # Update cache
             expire_at = now + self.cache_ttl

@@ -118,3 +118,48 @@ async def test_a_positive_integer_tool_budget_is_saved(tmp_path: Path, monkeypat
     await admin.write_config("llm", _JsonRequest({"config": {"info_agent_max_tool_calls": 5}}), user={"sub": "owner"})
 
     assert yaml.safe_load(path.read_text(encoding="utf-8"))["info_agent_max_tool_calls"] == 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "key, bad_value",
+    [
+        ("episodic_recent_ttl", 0), ("episodic_recent_ttl", -5), ("episodic_recent_ttl", "600"),
+        ("episodic_recent_ttl", True), ("episodic_recent_ttl", None), ("episodic_recent_ttl", float("inf")),
+        ("episodic_recent_max", 0), ("episodic_recent_max", -1), ("episodic_recent_max", 2.5),
+        ("episodic_recent_max", "5"), ("episodic_recent_max", True), ("episodic_recent_max", None),
+    ],
+)
+async def test_a_recent_recall_limit_the_bot_could_not_start_with_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, key: str, bad_value: object
+) -> None:
+    """A limit of 0 (or text) makes the bot fail when it builds the episodic provider, so it never comes back up."""
+    from fastapi import HTTPException
+
+    from dashboard.routers import admin
+
+    path = tmp_path / "memory.yaml"
+    path.write_text("enabled: true\n", encoding="utf-8")
+    monkeypatch.setattr(admin, "_config_path", lambda file: str(path))
+
+    with pytest.raises(HTTPException) as refused:
+        await admin.write_config("memory", _JsonRequest({"config": {key: bad_value}}), user={"sub": "owner"})
+
+    assert refused.value.status_code == 400 and key in refused.value.detail
+    assert path.read_text(encoding="utf-8") == "enabled: true\n"
+
+
+@pytest.mark.asyncio
+async def test_valid_recent_recall_limits_are_saved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from dashboard.routers import admin
+
+    path = tmp_path / "memory.yaml"
+    path.write_text("enabled: true\n", encoding="utf-8")
+    monkeypatch.setattr(admin, "_config_path", lambda file: str(path))
+
+    await admin.write_config(
+        "memory", _JsonRequest({"config": {"episodic_recent_ttl": 120.5, "episodic_recent_max": 3}}), user={"sub": "owner"}
+    )
+
+    saved = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert saved["episodic_recent_ttl"] == 120.5 and saved["episodic_recent_max"] == 3

@@ -575,6 +575,9 @@ class MemoryConfig:
         self.short_term_limit: int = data.get("short_term_limit", 15)
         self.episodic_top_k: int = data.get("episodic_top_k", 3)
         self.episodic_max_chars: int = data.get("episodic_max_chars", 1500)
+        # Recalled fragments stay in a channel's context this many seconds / up to this many fragments
+        self.episodic_recent_ttl: float = float(data.get("episodic_recent_ttl", 600.0))
+        self.episodic_recent_max: int = int(data.get("episodic_recent_max", 5))
 
         # Message threshold for triggering memory processing
         self.message_threshold: int = data.get("message_threshold", 100)

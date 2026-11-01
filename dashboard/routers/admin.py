@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import tempfile
 import time
@@ -109,7 +110,7 @@ _CONFIG_ALLOWED_KEYS: dict[str, set[str]] = {
         "ollama_url", "vllm_url", "provider_options", "vector_search_k", "keyword_search_k",
         "fetch_batch_size", "process_batch_size",
         "message_threshold", "time_threshold", "processing_concurrency", "processing_delay",
-        "procedural_max_cache_size",
+        "procedural_max_cache_size", "episodic_recent_ttl", "episodic_recent_max",
     },
     "music": {
         "music_temp_base", "ffmpeg", "youtube_cookies_path",
@@ -184,6 +185,17 @@ async def write_config(
                 value = config_data[budget_key]
                 if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                     raise HTTPException(status_code=400, detail=f"'{budget_key}' must be a whole number of at least 1")
+
+    if file == "memory":
+        # Either limit unusable makes the bot fail when it builds the episodic provider, so it cannot start.
+        if "episodic_recent_ttl" in config_data:
+            ttl = config_data["episodic_recent_ttl"]
+            if isinstance(ttl, bool) or not isinstance(ttl, (int, float)) or not math.isfinite(ttl) or ttl <= 0:
+                raise HTTPException(status_code=400, detail="'episodic_recent_ttl' must be a number of seconds above 0")
+        if "episodic_recent_max" in config_data:
+            limit = config_data["episodic_recent_max"]
+            if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+                raise HTTPException(status_code=400, detail="'episodic_recent_max' must be a whole number of at least 1")
 
     path = _config_path(file)
 
