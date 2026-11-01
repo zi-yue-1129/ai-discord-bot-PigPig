@@ -1,12 +1,11 @@
 # MIT License
 # Episodic memory retrieval tools for LLM integration.
 from typing import Optional, Any, List
-from datetime import datetime
-
 from langchain.tools import tool
 
 from function import func
 from cogs.memory.interfaces.vector_store_interface import MemoryFragment
+from llm.memory.fragment_time import describe_fragment_time
 from llm.memory.privacy import hidden_in_guild_async, without_hidden_participants
 
 class EpisodicMemoryTools:
@@ -67,7 +66,7 @@ class EpisodicMemoryTools:
 
             Returns:
                 str: A human-readable, plain-text summary of matched MemoryFragment entries,
-                     including content and key metadata (author, timestamp, jump_url). If no
+                     including content and key metadata (participants, when it happened in UTC, jump_url). If no
                      memories are found or an error occurs, returns an appropriate message.
             """
             bot = get_bot()
@@ -121,29 +120,20 @@ class EpisodicMemoryTools:
                 for frag in fragments:
                     meta = frag.metadata or {}
                     
-                    # Handle both single author and multiple user_ids
-                    user_ids = meta.get("user_ids")
-                    if user_ids and isinstance(user_ids, list):
-                        author = f"Users: {', '.join(map(str, user_ids))}"
+                    # Fragments store the people who took part as ``author_ids``.
+                    participants = meta.get("author_ids") or meta.get("user_ids")
+                    if participants and isinstance(participants, list):
+                        author = f"Users: {', '.join(map(str, participants))}"
                     else:
                         author = meta.get("author", meta.get("author_id", "Unknown"))
-                    
-                    timestamp = meta.get("timestamp")
-                    if isinstance(timestamp, (int, float)):
-                        try:
-                            ts_str = datetime.utcfromtimestamp(float(timestamp)).isoformat() + "Z"
-                        except Exception:
-                            ts_str = str(timestamp)
-                    else:
-                        ts_str = str(timestamp or "Unknown Time")
-    
+
                     jump_url = meta.get("jump_url", meta.get("jumpUrl", "N/A"))
                     fragment_id = meta.get("fragment_id", meta.get("id", "N/A"))
     
                     entry = (
                         f"Fragment ID: {fragment_id}\n"
                         f"Author: {author}\n"
-                        f"Timestamp: {ts_str}\n"
+                        f"Time: {describe_fragment_time(meta)}\n"
                         f"Jump URL: {jump_url}\n"
                         f"Summary: {frag.content}"
                     )
