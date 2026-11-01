@@ -138,6 +138,8 @@ class EpisodicMemoryProvider:
         self.recent = RecentRecall(ttl=recent_ttl, max_per_channel=recent_max)
         # Bumped by every invalidation of a channel: a request that started before it tells nothing from before
         self._generation: Dict[str, int] = {}
+        # Bumped when a member's memory is deleted, which concerns every channel
+        self._epoch = 0
 
     def generation(self, channel_id: str) -> int:
         """A number that changes whenever ``channel_id`` is invalidated; read it before a search starts.
@@ -148,7 +150,24 @@ class EpisodicMemoryProvider:
         Returns:
             The channel's current generation.
         """
-        return self._generation.get(channel_id, 0)
+        return self._generation.get(channel_id, 0) + self._epoch
+
+    def forget_user(self, user_id: int) -> None:
+        """Forget everything recalled or cached of a member whose memory was deleted.
+
+        Searches in flight are voided as for an invalidation of every channel.
+
+        Args:
+            user_id: The member's Discord id.
+        """
+        self._epoch += 1
+        self.recent.forget_user(user_id)
+        for key in [key for key, entry in self._cache.items() if user_id in entry[2]]:
+            self._cache.pop(key, None)
+        for key in list(self._pending_queries):
+            event = self._pending_queries.pop(key, None)
+            if event:
+                event.set()
 
     def remember(self, channel_id: str, fragments: Any, generation: Optional[int] = None) -> None:
         """Keep fragments the search tool found, so the next messages of the channel still get them.
@@ -227,7 +246,7 @@ class EpisodicMemoryProvider:
         # What was recalled before this message: taken now, before any await, so what this message's own
         # search (or a concurrent one) recalls is not told twice and an invalidated search stays discarded.
         channel_id = str(message.channel.id)
-        generation = self._generation.get(channel_id, 0)
+        generation = self.generation(channel_id)
         earlier = self.recent.recall(channel_id, set())
         fresh, fresh_people = await self._search(message)
         if not earlier:
@@ -235,7 +254,7 @@ class EpisodicMemoryProvider:
 
         # The last read of the opt-out list decides for everything told, the new search included.
         hidden = await self._read_hidden(getattr(message, "guild", None))
-        if hidden is None or self._generation.get(channel_id, 0) != generation:
+        if hidden is None or self.generation(channel_id) != generation:
             return None  # the list cannot be read, or the channel was invalidated while this request ran
         self.recent.recall(channel_id, hidden)  # forgets the ones of members who hid themselves
         earlier = [fragment for fragment in earlier if self.recent.is_alive(fragment)]  # expired during the search

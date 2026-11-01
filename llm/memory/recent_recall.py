@@ -83,12 +83,14 @@ class RecentRecall:
 
         Args:
             channel_id: The channel they were recalled in.
-            fragments: Memory fragments with ``content`` and ``metadata``. The caller has already
-                left out the ones of hidden members; they are checked again when read.
+            fragments: Memory fragments with ``content`` and ``metadata``, best match first (as a
+                search returns them). Of a result bigger than the limit the best are kept, and the
+                best of one result is the first one read back. The caller has already left out the
+                ones of hidden members; they are checked again when read.
         """
         expires_at = self._clock() + self.ttl
         kept = self._channels.setdefault(channel_id, OrderedDict())
-        for fragment in fragments:
+        for fragment in reversed(list(fragments)[: self.max_per_channel]):
             key = self._key(fragment)
             metadata = dict(getattr(fragment, "metadata", None) or {})
             kept.pop(key, None)
@@ -104,6 +106,19 @@ class RecentRecall:
         self._channels.move_to_end(channel_id)
         while len(self._channels) > self.max_channels:
             self._channels.popitem(last=False)
+
+    def forget_user(self, user_id: int) -> None:
+        """Forget, in every channel, the fragments a member took part in (their memory was deleted).
+
+        Args:
+            user_id: The member's Discord id.
+        """
+        for channel_id in list(self._channels):
+            kept = self._channels[channel_id]
+            for key in [key for key, fragment in kept.items() if user_id in fragment.participants]:
+                del kept[key]
+            if not kept:
+                del self._channels[channel_id]
 
     def is_alive(self, fragment: RecalledFragment) -> bool:
         """Whether ``fragment`` has not expired yet, by this store's clock.

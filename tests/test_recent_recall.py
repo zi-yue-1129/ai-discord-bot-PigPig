@@ -79,11 +79,39 @@ def test_recalling_a_fragment_again_renews_it_without_a_duplicate() -> None:
     assert [f.content for f in recall.recall("c1", set())] == ["one"]
 
 
-def test_only_the_newest_fragments_of_a_channel_are_kept_newest_first() -> None:
+def test_only_the_newest_recalls_of_a_channel_are_kept_newest_first() -> None:
     recall = _recall(_Clock())
-    recall.remember("c1", [_fragment(name, name) for name in ("a", "b", "c", "d")])
+    for name in ("a", "b", "c", "d"):
+        recall.remember("c1", [_fragment(name, name)])
 
     assert [f.content for f in recall.recall("c1", set())] == ["d", "c", "b"]
+
+
+def test_a_search_result_bigger_than_the_limit_keeps_its_best_matches() -> None:
+    """Codex review: results come best first, and the old code kept the last ones, i.e. the worst."""
+    recall = _recall(_Clock())
+    recall.remember("c1", [_fragment(name, name) for name in ("best", "second", "third", "fourth", "worst")])
+
+    assert [f.content for f in recall.recall("c1", set())] == ["best", "second", "third"]
+
+
+def test_a_later_search_comes_before_an_earlier_one() -> None:
+    recall = _recall(_Clock())
+    recall.remember("c1", [_fragment("old best", "old best"), _fragment("old second", "old second")])
+    recall.remember("c1", [_fragment("new best", "new best")])
+
+    assert [f.content for f in recall.recall("c1", set())] == ["new best", "old best", "old second"]
+
+
+def test_forgetting_a_member_removes_their_fragments_from_every_channel() -> None:
+    recall = _recall(_Clock())
+    recall.remember("c1", [_fragment("a", "with the member", [HIDDEN]), _fragment("b", "without the member")])
+    recall.remember("c2", [_fragment("c", "also with the member", [HIDDEN, VISIBLE])])
+
+    recall.forget_user(HIDDEN)
+
+    assert [f.content for f in recall.recall("c1", set())] == ["without the member"]
+    assert recall.recall("c2", set()) == []
 
 
 def test_another_channel_never_sees_the_fragments() -> None:
@@ -404,3 +432,50 @@ async def test_a_fragment_that_expires_while_the_request_runs_is_not_told() -> N
     gate.set()
 
     assert await request is None
+
+
+# ------------------------------------------ Codex review, fourth round: deleting a member's memory forgets it here too
+
+
+@pytest.mark.asyncio
+async def test_forgetting_a_member_stops_their_recalled_and_cached_conversations() -> None:
+    bot = _bot(set(), [_fragment("a", "the concert plan of the deleted member", [HIDDEN])])
+    provider = EpisodicMemoryProvider(bot)
+    await provider.get(_message(QUESTION))  # told, remembered and cached
+    bot.state["found"] = []
+
+    provider.forget_user(HIDDEN)
+
+    assert await provider.get(_message(FOLLOW_UP)) is None
+    assert await provider.get(_message(QUESTION)) is None, "the cached answer is gone as well"
+
+
+@pytest.mark.asyncio
+async def test_forgetting_a_member_leaves_other_peoples_memories_alone() -> None:
+    bot = _bot(set(), [_fragment("a", "the concert plan of someone else", [VISIBLE])])
+    provider = EpisodicMemoryProvider(bot)
+    await provider.get(_message(QUESTION))
+    bot.state["found"] = []
+
+    provider.forget_user(HIDDEN)
+
+    follow_up = await provider.get(_message(FOLLOW_UP))
+    assert follow_up is not None and "someone else" in follow_up
+
+
+@pytest.mark.asyncio
+async def test_a_tool_search_in_flight_during_a_member_deletion_is_not_recalled() -> None:
+    gate = asyncio.Event()
+    bot = _gated_bot(gate, [_fragment("a", "the concert plan of the deleted member", [HIDDEN])])
+    provider = EpisodicMemoryProvider(bot)
+    bot.orchestrator = SimpleNamespace(context_manager=SimpleNamespace(episodic_provider=provider))
+    runtime = SimpleNamespace(bot=bot, message=_message("find the concert"), logger=None)
+    (tool,) = [t for t in EpisodicMemoryTools(runtime).get_tools() if t.name == "search_episodic_memory"]
+
+    search = asyncio.create_task(tool.ainvoke({"vector_query": "concert"}))
+    await asyncio.sleep(0.05)
+    provider.forget_user(HIDDEN)
+    gate.set()
+    await search
+
+    assert await provider.get(_message(FOLLOW_UP)) is None

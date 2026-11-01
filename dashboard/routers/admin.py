@@ -552,6 +552,11 @@ async def admin_delete_user_memory(
             log.warning(f"Qdrant vector deletion failed for {user_id}: {exc}")
             deleted["qdrant_vectors"] = 0
 
+    # What the running bot recalled or cached of this member must go too, not just the stored vectors
+    provider = getattr(getattr(getattr(bot, "orchestrator", None), "context_manager", None), "episodic_provider", None)
+    if provider is not None and user_id.isdigit():
+        provider.forget_user(int(user_id))
+
     log.info(f"Admin GDPR deletion for user {user_id} by owner: {deleted}")
     return JSONResponse({"detail": "User memory deleted", "user_id": user_id, "deleted_rows": deleted})
 
