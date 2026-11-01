@@ -7,6 +7,7 @@ and the tool gave a bare ``Jump URL`` line the bot did not cite (live report).
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
@@ -259,12 +260,27 @@ async def test_an_injected_single_moment_has_no_range() -> None:
     assert f"<t:{START}:F>" in text and " - <t:" not in text
 
 
-@pytest.mark.asyncio
-async def test_a_short_range_across_a_minute_or_date_boundary_keeps_both_ends() -> None:
-    """Codex review: 23:59:55 to 00:00:05 was collapsed into one moment because it is under 60 seconds."""
-    output = await _tool_output({**STORED_METADATA, "end_timestamp": float(START + 10)})
+def _utc(year: int, month: int, day: int, hour: int, minute: int, second: int) -> int:
+    return int(datetime(year, month, day, hour, minute, second, tzinfo=timezone.utc).timestamp())
 
-    assert f"<t:{START}:F> - <t:{START + 10}:t>" in output
+
+# Ten seconds long each, across a minute boundary, across midnight, and across the end of a year.
+SHORT_RANGES = [
+    (_utc(2026, 10, 31, 12, 24, 55), _utc(2026, 10, 31, 12, 25, 5)),
+    (_utc(2026, 10, 31, 23, 59, 55), _utc(2026, 11, 1, 0, 0, 5)),
+    (_utc(2026, 12, 31, 23, 59, 55), _utc(2027, 1, 1, 0, 0, 5)),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("started, ended", SHORT_RANGES)
+async def test_a_short_range_across_a_minute_or_date_boundary_keeps_both_ends(started: int, ended: int) -> None:
+    """Codex review: 23:59:55 to 00:00:05 was collapsed into one moment because it is under 60 seconds."""
+    output = await _tool_output({**STORED_METADATA, "start_timestamp": float(started), "end_timestamp": float(ended)})
+    text = await _injected({**STORED_METADATA, "start_timestamp": float(started), "end_timestamp": float(ended)})
+
+    assert f"<t:{started}:F> - <t:{ended}:t>" in output
+    assert f"<t:{started}:F> - <t:{ended}:t>" in text
 
 
 def test_the_prompt_covers_every_place_a_memory_is_given_to_the_bot() -> None:
