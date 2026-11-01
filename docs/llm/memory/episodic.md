@@ -24,7 +24,7 @@ Relevant fragments are formatted into a clear section for the LLM:
 --- End Past Memories ---
 ```
 - **Source Linking**: Each memory fragment includes a Discord "Jump URL" and a relative timestamp (e.g., "3 months ago") using Discord's `<t:timestamp:R>` format.
-- **Time in words**: the model cannot read a date out of Discord's `<t:...:R>` markup, so each line also states when the conversation happened in UTC and how long ago, e.g. `— 2025-12-27 00:24 - 01:33 UTC (308 days ago)`.
+- **Times are Discord timestamps only**: the prompt tells the bot to write every date and time as `<t:UNIX:STYLE>` (Discord shows each reader their own time zone and language), and the bot copies what it sees. A date written out as text (such as a UTC time) was copied into replies instead, so none is produced. The `search_episodic_memory` tool gives `Time: <t:S:F> - <t:E:t> (<t:S:R>)` and a ready-to-copy `Source: [[Source <t:S:R>](jump url)]` line; the injected blocks carry the same source label. The memory rules of the reply prompt name all three places and ask for the label to be copied.
 
 ### Recently Recalled Memories
 The context of every message is built from scratch, so a fragment found for one message used to be gone at the next one, and a short follow-up ("when was that?") found nothing in the vector search. `RecentRecall` (`llm/memory/recent_recall.py`) keeps, per channel, the fragments that were injected or that `search_episodic_memory` returned, and `get()` tells them again as a `--- Recently Recalled Memories ---` block:

@@ -65,10 +65,15 @@ memory_system:
     Recent conversation history. Primary basis for context and continuity.
 
     ### Episodic Memory
-    Past fragments injected under `--- Relevant Past Memories ---`, each labeled with a source link.
+    Past fragments reach you in three places, each labeled with a source link:
+    - injected under `--- Relevant Past Memories ---` (found for the current message),
+    - injected under `--- Recently Recalled Memories ---` (recalled a moment ago in this channel),
+    - returned by the `search_episodic_memory` tool, as its `Source:` line.
     - When your response **directly uses** an episodic fragment, copy its full source label verbatim inline.
     - ✅ "上次你說喜歡貓咪 [[來源 <t:1712345678:R>](https://discord.com/channels/...)]，所以..."
     - ❌ Paraphrasing the label, or citing when not using past memories
+    - Times of a fragment are Discord timestamps (`<t:UNIX:F>`, `<t:UNIX:R>`): copy them as they are.
+      ❌ Never write them out as a UTC or other text date; Discord shows each reader their own time.
 
 # ============================================
 # INPUT PARSING

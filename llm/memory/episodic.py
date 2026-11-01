@@ -15,7 +15,7 @@ import discord
 
 from addons.logging import get_logger
 from function import func
-from llm.memory.fragment_time import describe_fragment_time
+from llm.memory.fragment_time import source_label
 from llm.memory.privacy import fragment_user_ids, hidden_in_guild_async, without_hidden_participants
 from llm.memory.recent_recall import RecalledFragment, RecentRecall
 
@@ -40,35 +40,11 @@ _MENTION_RE = re.compile(r"<@!?\d+>")
 _CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]")
 
 
-def _source_label(metadata: Any) -> str:
-    """The link to the original conversation, with Discord's relative time when the time is known.
-
-    Args:
-        metadata: The fragment's metadata.
-
-    Returns:
-        For example `` [[Source <t:1766795064:R>](url)]``, or an empty string without link and time.
-    """
-    ts = metadata.get("start_timestamp") or metadata.get("timestamp")
-    jump_url = metadata.get("jump_url")
-    try:
-        unix_ts = int(float(ts)) if ts else None
-    except (TypeError, ValueError, OverflowError):
-        unix_ts = None
-    if jump_url and unix_ts is not None:
-        return f" [[Source <t:{unix_ts}:R>]({jump_url})]"
-    if jump_url:
-        return f" [[Source]({jump_url})]"
-    if unix_ts is not None:
-        return f" [<t:{unix_ts}:R>]"
-    return ""
-
-
 def _format_entry(label: str, content: str, metadata: Any) -> str:
-    """One injected memory line: the summary, when it happened in words, and the source link.
+    """One injected memory line: the summary and its source label, which the bot copies when it uses it.
 
-    Discord's ``<t:...:R>`` markup is not something the model can read a date from, so the date is
-    also written out.
+    The label carries the time as a Discord timestamp. No date is written out as text: the bot copies
+    what it sees, and its prompt wants Discord timestamps.
 
     Args:
         label: The line's tag, such as ``memory #1``.
@@ -78,9 +54,8 @@ def _format_entry(label: str, content: str, metadata: Any) -> str:
     Returns:
         The formatted line.
     """
-    when = describe_fragment_time(metadata)
-    when_text = "" if when == "unknown" else f" \u2014 {when}"
-    return f"[{label}] {content}{when_text}{_source_label(metadata)}"
+    source = source_label(metadata)
+    return f"[{label}] {content}{' ' + source if source else ''}"
 
 
 def _query_tokens(query: str) -> int:

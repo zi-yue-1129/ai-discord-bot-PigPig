@@ -1,4 +1,9 @@
-"""When an episodic memory fragment happened, read from the fields the vector store really keeps."""
+"""When an episodic memory fragment happened and where it came from, as Discord renders them.
+
+Times are given as Discord timestamps (``<t:UNIX:STYLE>``), which Discord shows in the viewer's own time
+zone and language. The bot's prompt tells it to write every date and time that way; a date written out as
+text (such as a UTC time) is copied into replies instead, so no text date is ever produced here.
+"""
 
 from __future__ import annotations
 
@@ -6,8 +11,9 @@ import math
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional, Tuple
 
-_SECONDS_PER_DAY = 86_400
 _UNKNOWN = "unknown"
+_SECONDS_PER_MINUTE = 60
+_SECONDS_PER_DAY = 86_400
 
 
 def _usable_timestamp(value: Any) -> Optional[float]:
@@ -55,38 +61,47 @@ def fragment_time_range(metadata: Mapping[str, Any]) -> Optional[Tuple[float, fl
     return start, end
 
 
-def describe_fragment_time(metadata: Mapping[str, Any], now: Optional[datetime] = None) -> str:
-    """Describe when a fragment happened, in UTC, with how long ago that was.
+def describe_fragment_time(metadata: Mapping[str, Any]) -> str:
+    """Describe when a fragment happened as Discord timestamps, with the relative time.
 
     Args:
         metadata: The fragment's metadata.
-        now: The current time, for tests; defaults to the present moment.
 
     Returns:
-        For example ``2025-12-27 00:24 - 01:33 UTC (308 days ago)``, or ``unknown`` when the
-        fragment has no usable time (nothing is guessed).
+        For example ``<t:1766795064:F> - <t:1766799202:t> (<t:1766795064:R>)``: the start, the end
+        (as a clock time when it is within a day of the start, in full otherwise, left out when it
+        is the same minute) and the relative time Discord keeps current ("308 days ago"). ``unknown``
+        when the fragment has no usable time; nothing is guessed.
     """
     span = fragment_time_range(metadata)
     if span is None:
         return _UNKNOWN
-    start = datetime.fromtimestamp(span[0], tz=timezone.utc)
-    end = datetime.fromtimestamp(span[1], tz=timezone.utc)
-    current = now or datetime.now(timezone.utc)
-
-    if start.replace(second=0, microsecond=0) == end.replace(second=0, microsecond=0):
-        window = f"{start:%Y-%m-%d %H:%M}"
-    elif start.date() == end.date():
-        window = f"{start:%Y-%m-%d %H:%M} - {end:%H:%M}"
+    start, end = int(span[0]), int(span[1])
+    if end - start < _SECONDS_PER_MINUTE:
+        window = f"<t:{start}:F>"
+    elif end - start < _SECONDS_PER_DAY:
+        window = f"<t:{start}:F> - <t:{end}:t>"
     else:
-        window = f"{start:%Y-%m-%d %H:%M} - {end:%Y-%m-%d %H:%M}"
+        window = f"<t:{start}:F> - <t:{end}:F>"
+    return f"{window} (<t:{start}:R>)"
 
-    days_ago = (current - start).days
-    if current < start:
-        age = "in the future"  # a clock that runs behind, or a wrong stored time: never "yesterday"
-    elif days_ago < 1:
-        age = "today" if current.date() == start.date() else "yesterday"
-    elif days_ago == 1:
-        age = "1 day ago"
-    else:
-        age = f"{days_ago} days ago"
-    return f"{window} UTC ({age})"
+
+def source_label(metadata: Mapping[str, Any]) -> str:
+    """The label the bot copies when it uses a fragment: a link to the conversation and its relative time.
+
+    Args:
+        metadata: The fragment's metadata.
+
+    Returns:
+        For example ``[[Source <t:1766795064:R>](https://discord.com/channels/1/2/3)]``; without a
+        usable time ``[[Source](url)]``; without a link ``[<t:1766795064:R>]``; empty with neither.
+    """
+    span = fragment_time_range(metadata)
+    jump_url = metadata.get("jump_url")
+    if jump_url and span is not None:
+        return f"[[Source <t:{int(span[0])}:R>]({jump_url})]"
+    if jump_url:
+        return f"[[Source]({jump_url})]"
+    if span is not None:
+        return f"[<t:{int(span[0])}:R>]"
+    return ""

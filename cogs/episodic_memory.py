@@ -95,8 +95,6 @@ class EpisodicMemoryService(commands.Cog):
         Returns:
             The results as text, followed by a count of the results that were left out.
         """
-        from datetime import datetime, timezone
-
         def label(key: str, **kwargs: Any) -> str:
             return self._translate_text(lang_manager, guild_id, "commands", "memory", "search", key, **kwargs)
 
@@ -108,8 +106,8 @@ class EpisodicMemoryService(commands.Cog):
                 formatted += label("result_score", score=f"{result.score:.3f}") + "\n"
             span = fragment_time_range(result.metadata)
             if span is not None:
-                started = datetime.fromtimestamp(span[0], tz=timezone.utc)
-                formatted += label("result_time", time=started.strftime('%Y-%m-%d %H:%M:%S UTC')) + "\n"
+                # A Discord timestamp: shown in the reader's own time zone and language
+                formatted += label("result_time", time=f"<t:{int(span[0])}:F>") + "\n"
             formatted_results.append(formatted)
 
         text = "\n\n".join(formatted_results)

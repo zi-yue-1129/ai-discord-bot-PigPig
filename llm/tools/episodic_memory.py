@@ -5,7 +5,7 @@ from langchain.tools import tool
 
 from function import func
 from cogs.memory.interfaces.vector_store_interface import MemoryFragment
-from llm.memory.fragment_time import describe_fragment_time
+from llm.memory.fragment_time import describe_fragment_time, source_label
 from llm.memory.privacy import hidden_in_guild_async, without_hidden_participants
 
 class EpisodicMemoryTools:
@@ -66,8 +66,13 @@ class EpisodicMemoryTools:
 
             Returns:
                 str: A human-readable, plain-text summary of matched MemoryFragment entries,
-                     including content and key metadata (participants, when it happened in UTC, jump_url). If no
+                     including content, participants, when it happened and a source label. If no
                      memories are found or an error occurs, returns an appropriate message.
+
+                     Times are Discord timestamps such as <t:1700000000:F> and <t:1700000000:R>; copy
+                     them as they are into your answer, never write them out as a UTC or other text
+                     date. When you use a memory, also copy its `Source:` label as it is, e.g.
+                     [[Source <t:1700000000:R>](https://discord.com/channels/...)].
             """
             bot = get_bot()
             if not bot:
@@ -134,17 +139,19 @@ class EpisodicMemoryTools:
                     else:
                         author = meta.get("author", meta.get("author_id", "Unknown"))
 
-                    jump_url = meta.get("jump_url", meta.get("jumpUrl", "N/A"))
+                    jump_url = meta.get("jump_url") or meta.get("jumpUrl")
                     fragment_id = meta.get("fragment_id", meta.get("id", "N/A"))
-    
-                    entry = (
-                        f"Fragment ID: {fragment_id}\n"
-                        f"Author: {author}\n"
-                        f"Time: {describe_fragment_time(meta)}\n"
-                        f"Jump URL: {jump_url}\n"
-                        f"Summary: {frag.content}"
-                    )
-                    formatted.append(entry)
+
+                    lines = [
+                        f"Fragment ID: {fragment_id}",
+                        f"Author: {author}",
+                        f"Time: {describe_fragment_time(meta)}",
+                    ]
+                    if jump_url:
+                        # Ready to copy into the answer: the link to the conversation and its relative time
+                        lines.append(f"Source: {source_label({**meta, 'jump_url': jump_url})}")
+                    lines.append(f"Summary: {frag.content}")
+                    formatted.append("\n".join(lines))
     
                 return "\n\n---\n\n".join(formatted)
     

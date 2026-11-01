@@ -238,12 +238,27 @@ async def test_nothing_is_retold_while_the_opt_out_list_cannot_be_read() -> None
 
 
 @pytest.mark.asyncio
-async def test_a_recalled_fragment_tells_when_it_happened_in_words() -> None:
+async def test_a_recalled_fragment_carries_a_source_label_with_a_discord_timestamp_and_no_text_date() -> None:
+    """The model copies what it sees: a written-out UTC date came back in replies (live report)."""
     bot = _bot(set(), [_fragment("a", "we planned the concert at the Fox")])
 
     text = await EpisodicMemoryProvider(bot).get(_message(QUESTION))
 
-    assert text is not None and "2025-12-27" in text and "UTC" in text
+    assert f"[[Source <t:{int(START)}:R>](https://discord.com/channels/1/2/a)]" in text
+    assert "UTC" not in text and "2025-12-27" not in text
+
+
+@pytest.mark.asyncio
+async def test_a_recently_recalled_fragment_keeps_its_source_label() -> None:
+    """Live report: the source was forgotten; the follow-up block must carry the same copyable label."""
+    bot = _bot(set(), [_fragment("a", "we planned the concert at the Fox")])
+    provider = EpisodicMemoryProvider(bot)
+    await provider.get(_message(QUESTION))
+    bot.state["found"] = []
+
+    follow_up = await provider.get(_message(FOLLOW_UP))
+
+    assert f"[[Source <t:{int(START)}:R>](https://discord.com/channels/1/2/a)]" in follow_up
 
 
 @pytest.mark.asyncio
