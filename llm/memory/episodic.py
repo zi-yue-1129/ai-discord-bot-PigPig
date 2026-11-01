@@ -30,6 +30,9 @@ _MIN_QUERY_TOKENS = 4
 # arithmetic) peak at 0.63-0.65, while questions about real past topics hit 0.69-0.79.
 _MIN_RELEVANCE_SCORE = 0.68
 
+# No participants: the result names nobody who could opt out
+_NOBODY: FrozenSet[int] = frozenset()
+
 # Pattern to strip Discord mention tags from message content
 _MENTION_RE = re.compile(r"<@!?\d+>")
 
@@ -133,6 +136,8 @@ class EpisodicMemoryProvider:
         self._pending_queries: Dict[Tuple[str, str], asyncio.Event] = {}
         # What was recalled lately in each channel, for the follow-up messages that search finds nothing for
         self.recent = RecentRecall(ttl=recent_ttl, max_per_channel=recent_max)
+        # Bumped by every invalidation of a channel: a request that started before it tells nothing from before
+        self._generation: Dict[str, int] = {}
 
     def remember(self, channel_id: str, fragments: Any) -> None:
         """Keep fragments the search tool found, so the next messages of the channel still get them.
@@ -147,11 +152,14 @@ class EpisodicMemoryProvider:
         """Invalidate all cached episodic queries for a specific channel.
 
         In-flight results are also discarded. Their callers receive None, while
-        waiting callers may start a fresh search after invalidation.
+        waiting callers may start a fresh search after invalidation. What was recalled lately in
+        the channel is forgotten too.
 
         Args:
             channel_id: The Discord channel ID.
         """
+        self._generation[channel_id] = self._generation.get(channel_id, 0) + 1
+        self.recent.forget_channel(channel_id)
         keys_to_remove = [k for k in self._cache.keys() if k[0] == channel_id]
         for k in keys_to_remove:
             self._cache.pop(k, None)
@@ -173,8 +181,8 @@ class EpisodicMemoryProvider:
             return set()
         return await hidden_in_guild_async(self.bot, guild.id)
 
-    def _lookup(self, cache_key: Tuple[str, str], hidden: Set[int]) -> Optional[Tuple[Optional[str], Tuple[Any, ...]]]:
-        """The usable cached result for ``cache_key`` as ``(text, fragments told)``, or None when there is none.
+    def _lookup(self, cache_key: Tuple[str, str], hidden: Set[int]) -> Optional[Tuple[Optional[str], Tuple[Any, ...], FrozenSet[int]]]:
+        """The usable cached result for ``cache_key`` as ``(text, fragments told, people in them)``, or None when there is none.
 
         Synchronous on purpose (no await between reading the entry and using it, so an invalidation
         cannot slip in). A result is checked against the opt-out list each time it is served: someone in
@@ -187,7 +195,7 @@ class EpisodicMemoryProvider:
         if hidden & participants:
             self._cache.pop(cache_key, None)
             return None
-        return (text, told)
+        return (text, told, participants)
 
     async def get(self, message: discord.Message) -> Optional[str]:
         """Return the episodic context for a message: what it matches now plus what was recalled lately.
@@ -204,38 +212,35 @@ class EpisodicMemoryProvider:
         # What was recalled before this message: taken now, before any await, so what this message's own
         # search (or a concurrent one) recalls is not told twice and an invalidated search stays discarded.
         channel_id = str(message.channel.id)
+        generation = self._generation.get(channel_id, 0)
         earlier = self.recent.recall(channel_id, set())
-        fresh = await self._search(message)
-        recent = await self._recent_block(message, channel_id, earlier, fresh)
+        fresh, fresh_people = await self._search(message)
+        if not earlier:
+            return fresh
+
+        # The last read of the opt-out list decides for everything told, the new search included.
+        hidden = await self._read_hidden(getattr(message, "guild", None))
+        if hidden is None or self._generation.get(channel_id, 0) != generation:
+            return None  # the list cannot be read, or the channel was invalidated while this request ran
+        self.recent.recall(channel_id, hidden)  # forgets the ones of members who hid themselves
+        if fresh_people & hidden:
+            fresh = None
+        recent = self._recent_block(earlier, hidden, fresh)
         if recent is None:
             return fresh
         return recent if fresh is None else f"{fresh}\n{recent}"
 
-    async def _recent_block(
-        self,
-        message: discord.Message,
-        channel_id: str,
-        earlier: List[RecalledFragment],
-        fresh: Optional[str],
-    ) -> Optional[str]:
+    def _recent_block(self, earlier: List[RecalledFragment], hidden: Set[int], fresh: Optional[str]) -> Optional[str]:
         """The fragments recalled before this message that ``fresh`` does not already tell.
 
         Args:
-            message: The current message (its guild is needed for the opt-out list).
-            channel_id: The channel the fragments belong to.
             earlier: The channel's recalled fragments as they were when the message arrived, newest first.
+            hidden: The members who hid themselves; their fragments are left out.
             fresh: The block the message's own search produced, or None.
 
         Returns:
-            A formatted block within ``max_chars``, or None when nothing usable is left. Nothing is
-            told while the opt-out list cannot be read.
+            A formatted block within ``max_chars``, or None when nothing usable is left.
         """
-        if not earlier:
-            return None
-        hidden = await self._read_hidden(getattr(message, "guild", None))
-        if hidden is None:
-            return None
-        self.recent.recall(channel_id, hidden)  # forgets the ones of members who hid themselves
         # Both blocks together stay within max_chars: this one gets what the fresh block left, and its own
         # header and footer count (the fresh block's footer is already in its text).
         budget = self.max_chars - (len(fresh) + 1 if fresh else 0)
@@ -255,18 +260,19 @@ class EpisodicMemoryProvider:
         lines.append(footer)
         return "\n".join(lines)
 
-    async def _search(self, message: discord.Message) -> Optional[str]:
+    async def _search(self, message: discord.Message) -> Tuple[Optional[str], FrozenSet[int]]:
         """Search the vector store for the message and format what is relevant (cached by query).
 
         Args:
             message: Current Discord message (provides query text and channel scope).
 
         Returns:
-            Formatted string with past memory fragments, or None.
+            The formatted string with past memory fragments (or None) and the Discord ids of the
+            people in those fragments, for the final opt-out check.
         """
         vector_manager = getattr(self.bot, "vector_manager", None)
         if not vector_manager or not hasattr(vector_manager, "store"):
-            return None
+            return None, _NOBODY
 
         # Clean query: strip mentions and whitespace
         raw = getattr(message, "content", "") or ""
@@ -274,7 +280,7 @@ class EpisodicMemoryProvider:
 
         # Skip trivially short messages (greetings, reactions, single words)
         if _query_tokens(query) < _MIN_QUERY_TOKENS:
-            return None
+            return None, _NOBODY
 
         channel_id = str(message.channel.id)
         cache_key = (channel_id, query)
@@ -284,7 +290,7 @@ class EpisodicMemoryProvider:
         # Without the opt-out list nothing is injected, cached or not.
         hidden = await self._read_hidden(guild)
         if hidden is None:
-            return None
+            return None, _NOBODY
 
         # Thundering herd protection logic. From the lookup to taking ownership below there is no await,
         # so two requests cannot both decide to search, and an invalidation cannot slip in between.
@@ -292,7 +298,7 @@ class EpisodicMemoryProvider:
             cached = self._lookup(cache_key, hidden)
             if cached is not None:
                 self.recent.remember(channel_id, cached[1])  # told again: recalled again
-                return cached[0]
+                return cached[0], cached[2]
             if cache_key not in self._pending_queries:
                 break
             await self._pending_queries[cache_key].wait()
@@ -300,7 +306,7 @@ class EpisodicMemoryProvider:
             # loop again in case another task picked up the query.
             hidden = await self._read_hidden(guild)
             if hidden is None:
-                return None
+                return None, _NOBODY
 
         now = time.monotonic()
 
@@ -317,7 +323,7 @@ class EpisodicMemoryProvider:
                 )
             except Exception as e:
                 await func.report_error(e, "EpisodicMemoryProvider.get: vector search failed")
-                return None
+                return None, _NOBODY
 
             # What a hidden member (/leaderboard optout) said is not retold, whoever asks; the cached
             # result is already filtered. The list is read again here: someone may have opted out during
@@ -329,9 +335,9 @@ class EpisodicMemoryProvider:
             # or cache a result from the invalidated generation. Checked after
             # the last await, so nothing can invalidate between check and use.
             if self._pending_queries.get(cache_key) is not event:
-                return None
+                return None, _NOBODY
             if hidden is None:
-                return None
+                return None, _NOBODY
             fragments = without_hidden_participants(fragments, hidden)
 
             injected: list = []
@@ -370,7 +376,7 @@ class EpisodicMemoryProvider:
                     oldest_key = next(iter(self._cache))
                     self._cache.pop(oldest_key, None)
 
-            return formatted_result
+            return formatted_result, participants
         finally:
             # Always ensure the event is cleaned up and waiting tasks are notified
             # without removing a replacement search after invalidation, including

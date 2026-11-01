@@ -105,6 +105,14 @@ class RecentRecall:
         while len(self._channels) > self.max_channels:
             self._channels.popitem(last=False)
 
+    def forget_channel(self, channel_id: str) -> None:
+        """Forget everything kept for ``channel_id`` (its memory changed or was deleted).
+
+        Args:
+            channel_id: The channel to forget.
+        """
+        self._channels.pop(channel_id, None)
+
     def recall(self, channel_id: str, hidden: Set[int]) -> List[RecalledFragment]:
         """The fragments still kept for ``channel_id``, newest first.
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Set
 
@@ -285,3 +286,66 @@ async def test_the_new_and_the_recalled_memories_together_stay_within_the_limit(
 
     assert text is not None and "n" * 650 in text
     assert len(text) <= 1500
+
+
+# -------------------------------------------- Codex review, second round: privacy at the last await, invalidation
+
+
+def _bot_with_reads(reads: List[Set[int]], found: List[Any]) -> Any:
+    """A bot whose successive opt-out reads answer ``reads`` in order (the last one repeats)."""
+    remaining = list(reads)
+
+    def optouts(guild_id: int) -> Set[int]:
+        return set(remaining.pop(0) if len(remaining) > 1 else remaining[0])
+
+    class Store:
+        async def search_memories_by_vector(self, **kwargs: Any) -> list:
+            return list(found)
+
+    known = {"LeaderboardCog": SimpleNamespace(store=SimpleNamespace(read_optouts=optouts))}
+    return SimpleNamespace(get_cog=known.get, vector_manager=SimpleNamespace(store=Store()))
+
+
+@pytest.mark.asyncio
+async def test_a_member_who_hides_during_the_last_read_is_not_retold_by_the_new_search_either() -> None:
+    """The searched fragment passed the check after the search; the last read (for the recalled ones) saw the opt-out."""
+    bot = _bot_with_reads([set(), set(), {HIDDEN}], [_fragment("new", "the concert plan of the hider", [HIDDEN])])
+    provider = EpisodicMemoryProvider(bot)
+    provider.remember(str(CHANNEL), [_fragment("old", "an older chat about the Fox", [VISIBLE])])
+
+    text = await provider.get(_message(QUESTION))
+
+    assert text is None or "the hider" not in text
+
+
+@pytest.mark.asyncio
+async def test_an_invalidated_channel_forgets_what_it_recalled() -> None:
+    bot = _bot(set(), [])
+    provider = EpisodicMemoryProvider(bot)
+    provider.remember(str(CHANNEL), [_fragment("a", "we planned the concert at the Fox")])
+
+    await provider.invalidate(str(CHANNEL))
+
+    assert await provider.get(_message(FOLLOW_UP)) is None
+
+
+@pytest.mark.asyncio
+async def test_a_request_in_flight_during_an_invalidation_gets_nothing_from_before() -> None:
+    gate = asyncio.Event()
+
+    class SlowStore:
+        async def search_memories_by_vector(self, **kwargs: Any) -> list:
+            await gate.wait()
+            return []
+
+    known = {"LeaderboardCog": SimpleNamespace(store=SimpleNamespace(read_optouts=lambda guild_id: set()))}
+    bot = SimpleNamespace(get_cog=known.get, vector_manager=SimpleNamespace(store=SlowStore()))
+    provider = EpisodicMemoryProvider(bot)
+    provider.remember(str(CHANNEL), [_fragment("a", "we planned the concert at the Fox")])
+
+    request = asyncio.create_task(provider.get(_message(QUESTION)))
+    await asyncio.sleep(0.05)  # the request has taken its snapshot and waits for the search
+    await provider.invalidate(str(CHANNEL))
+    gate.set()
+
+    assert await request is None
