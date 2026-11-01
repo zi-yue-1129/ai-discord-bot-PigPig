@@ -227,6 +227,46 @@ async def test_an_injected_memory_carries_the_source_label_and_no_text_date() ->
     assert "UTC" not in text and "2025-12-27" not in text
 
 
+async def _injected(metadata: Dict[str, Any]) -> str:
+    known = {"LeaderboardCog": SimpleNamespace(store=SimpleNamespace(read_optouts=lambda guild_id: set()))}
+    bot = SimpleNamespace(get_cog=known.get, vector_manager=SimpleNamespace(store=_Store([_fragment(metadata)])))
+    message = SimpleNamespace(
+        content="what did we plan for the concert last week", channel=SimpleNamespace(id=7),
+        guild=SimpleNamespace(id=42), author=SimpleNamespace(id=10),
+    )
+    return await EpisodicMemoryProvider(bot).get(message)
+
+
+@pytest.mark.asyncio
+async def test_an_injected_memory_tells_when_the_conversation_started_and_ended() -> None:
+    """Codex review: the injected text kept only the start, so a follow-up about the end had nothing."""
+    text = await _injected(STORED_METADATA)
+
+    assert f"<t:{START}:F> - <t:{END}:t>" in text
+
+
+@pytest.mark.asyncio
+async def test_a_longer_conversation_is_injected_with_the_full_end_date() -> None:
+    text = await _injected({**STORED_METADATA, "end_timestamp": float(START + 3 * 86_400)})
+
+    assert f"<t:{START}:F> - <t:{START + 3 * 86_400}:F>" in text
+
+
+@pytest.mark.asyncio
+async def test_an_injected_single_moment_has_no_range() -> None:
+    text = await _injected({**STORED_METADATA, "end_timestamp": float(START)})
+
+    assert f"<t:{START}:F>" in text and " - <t:" not in text
+
+
+@pytest.mark.asyncio
+async def test_a_short_range_across_a_minute_or_date_boundary_keeps_both_ends() -> None:
+    """Codex review: 23:59:55 to 00:00:05 was collapsed into one moment because it is under 60 seconds."""
+    output = await _tool_output({**STORED_METADATA, "end_timestamp": float(START + 10)})
+
+    assert f"<t:{START}:F> - <t:{START + 10}:t>" in output
+
+
 def test_the_prompt_covers_every_place_a_memory_is_given_to_the_bot() -> None:
     prompt = yaml.safe_load((ROOT / "base_configs" / "prompt" / "message_agent.yaml").read_text(encoding="utf-8"))
     rules = prompt["memory_system"]["content"]

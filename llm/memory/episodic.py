@@ -15,7 +15,7 @@ import discord
 
 from addons.logging import get_logger
 from function import func
-from llm.memory.fragment_time import source_label
+from llm.memory.fragment_time import describe_fragment_window, source_label
 from llm.memory.privacy import fragment_user_ids, hidden_in_guild_async, without_hidden_participants
 from llm.memory.recent_recall import RecalledFragment, RecentRecall
 
@@ -54,8 +54,9 @@ def _format_entry(label: str, content: str, metadata: Any) -> str:
     Returns:
         The formatted line.
     """
+    window = describe_fragment_window(metadata)
     source = source_label(metadata)
-    return f"[{label}] {content}{' ' + source if source else ''}"
+    return f"[{label}] {content}{f' ({window})' if window else ''}{' ' + source if source else ''}"
 
 
 def _query_tokens(query: str) -> int:

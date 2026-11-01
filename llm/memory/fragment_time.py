@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 from typing import Any, Mapping, Optional, Tuple
 
 _UNKNOWN = "unknown"
-_SECONDS_PER_MINUTE = 60
 _SECONDS_PER_DAY = 86_400
 
 
@@ -61,6 +60,29 @@ def fragment_time_range(metadata: Mapping[str, Any]) -> Optional[Tuple[float, fl
     return start, end
 
 
+def describe_fragment_window(metadata: Mapping[str, Any]) -> Optional[str]:
+    """The start and end of a fragment's conversation as Discord timestamps.
+
+    Args:
+        metadata: The fragment's metadata.
+
+    Returns:
+        For example ``<t:1766795064:F> - <t:1766799202:t>``: the start, then the end as a clock time
+        when it is within a day of the start and in full otherwise. Only a conversation whose start and
+        end are the same second is given as one moment; a short range across a minute or date boundary
+        keeps both ends. None when the fragment has no usable time.
+    """
+    span = fragment_time_range(metadata)
+    if span is None:
+        return None
+    start, end = int(span[0]), int(span[1])
+    if end == start:
+        return f"<t:{start}:F>"
+    if end - start < _SECONDS_PER_DAY:
+        return f"<t:{start}:F> - <t:{end}:t>"
+    return f"<t:{start}:F> - <t:{end}:F>"
+
+
 def describe_fragment_time(metadata: Mapping[str, Any]) -> str:
     """Describe when a fragment happened as Discord timestamps, with the relative time.
 
@@ -68,22 +90,15 @@ def describe_fragment_time(metadata: Mapping[str, Any]) -> str:
         metadata: The fragment's metadata.
 
     Returns:
-        For example ``<t:1766795064:F> - <t:1766799202:t> (<t:1766795064:R>)``: the start, the end
-        (as a clock time when it is within a day of the start, in full otherwise, left out when it
-        is the same minute) and the relative time Discord keeps current ("308 days ago"). ``unknown``
-        when the fragment has no usable time; nothing is guessed.
+        For example ``<t:1766795064:F> - <t:1766799202:t> (<t:1766795064:R>)``: the window of
+        ``describe_fragment_window`` and the relative time Discord keeps current ("308 days ago").
+        ``unknown`` when the fragment has no usable time; nothing is guessed.
     """
-    span = fragment_time_range(metadata)
-    if span is None:
+    window = describe_fragment_window(metadata)
+    if window is None:
         return _UNKNOWN
-    start, end = int(span[0]), int(span[1])
-    if end - start < _SECONDS_PER_MINUTE:
-        window = f"<t:{start}:F>"
-    elif end - start < _SECONDS_PER_DAY:
-        window = f"<t:{start}:F> - <t:{end}:t>"
-    else:
-        window = f"<t:{start}:F> - <t:{end}:F>"
-    return f"{window} (<t:{start}:R>)"
+    span = fragment_time_range(metadata)
+    return f"{window} (<t:{int(span[0])}:R>)"
 
 
 def source_label(metadata: Mapping[str, Any]) -> str:
