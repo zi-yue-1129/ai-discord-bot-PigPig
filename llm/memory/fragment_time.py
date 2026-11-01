@@ -81,7 +81,9 @@ def describe_fragment_time(metadata: Mapping[str, Any], now: Optional[datetime] 
         window = f"{start:%Y-%m-%d %H:%M} - {end:%Y-%m-%d %H:%M}"
 
     days_ago = (current - start).days
-    if days_ago < 1:
+    if current < start:
+        age = "in the future"  # a clock that runs behind, or a wrong stored time: never "yesterday"
+    elif days_ago < 1:
         age = "today" if current.date() == start.date() else "yesterday"
     elif days_ago == 1:
         age = "1 day ago"

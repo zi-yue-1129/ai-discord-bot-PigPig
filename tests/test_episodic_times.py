@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import pytest
 
 from cogs.episodic_memory import EpisodicMemoryService
+from llm.memory.fragment_time import describe_fragment_time
 from llm.tools.episodic_memory import EpisodicMemoryTools
 
 # 2025-12-27 00:24:24 UTC to 01:33:22 UTC, copied from a stored fragment of the live collection.
@@ -135,3 +137,33 @@ def test_the_slash_command_survives_an_out_of_range_time() -> None:
     text = _slash_command_text({"fragment_id": "x", "start_timestamp": BEYOND_YEAR_9999})
 
     assert "Time:" not in text
+
+
+def _at(year: int, month: int, day: int, hour: int, minute: int) -> datetime:
+    return datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize(
+    "now, expected_age",
+    [
+        (_at(2026, 11, 1, 23, 59), "in the future"),  # Codex review: a minute ahead on the next date was "yesterday"
+        (_at(2026, 11, 2, 0, 0), "today"),
+        (_at(2026, 11, 2, 18, 0), "today"),
+        (_at(2026, 11, 3, 0, 30), "1 day ago"),  # 24.5 hours later
+        (_at(2026, 11, 4, 12, 0), "2 days ago"),
+    ],
+)
+def test_how_long_ago_is_told_around_midnight_and_for_a_clock_that_runs_behind(now: datetime, expected_age: str) -> None:
+    started = _at(2026, 11, 2, 0, 0).timestamp()
+
+    description = describe_fragment_time({"start_timestamp": started}, now=now)
+
+    assert description.endswith(f"({expected_age})")
+
+
+def test_a_conversation_from_late_yesterday_is_yesterday_though_less_than_a_day_ago() -> None:
+    started = _at(2026, 11, 2, 23, 0).timestamp()
+
+    description = describe_fragment_time({"start_timestamp": started}, now=_at(2026, 11, 3, 1, 0))
+
+    assert description.endswith("(yesterday)")
