@@ -1,26 +1,37 @@
-"""Episodic memory shows when an event happened and who took part, from the fields Qdrant really stores."""
+"""Episodic memory gives when an event happened as Discord timestamps and where it came from as a source label.
+
+The bot's prompt tells it to write every date and time as ``<t:UNIX:STYLE>`` and to copy a fragment's source
+label when it uses the fragment. A UTC date written out in the tool result was copied into replies instead,
+and the tool gave a bare ``Jump URL`` line the bot did not cite (live report).
+"""
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 import pytest
+import yaml
 
 from cogs.episodic_memory import EpisodicMemoryService
-from llm.memory.fragment_time import describe_fragment_time
+from llm.memory.episodic import EpisodicMemoryProvider
 from llm.tools.episodic_memory import EpisodicMemoryTools
 
+ROOT = Path(__file__).resolve().parents[1]
+
 # 2025-12-27 00:24:24 UTC to 01:33:22 UTC, copied from a stored fragment of the live collection.
-START = 1766795064.0
-END = 1766799202.0
+START = 1766795064
+END = 1766799202
+JUMP_URL = "https://discord.com/channels/1/2/3"
+SOURCE_LABEL = f"[[Source <t:{START}:R>]({JUMP_URL})]"
 STORED_METADATA: Dict[str, Any] = {
     "fragment_id": "1454253545854337076-1454270903960600778-1",
     "author_ids": ["646887224125685760", "474232209772118037"],
-    "jump_url": "https://discord.com/channels/1/2/3",
-    "start_timestamp": START,
-    "end_timestamp": END,
+    "jump_url": JUMP_URL,
+    "start_timestamp": float(START),
+    "end_timestamp": float(END),
 }
 
 
@@ -31,40 +42,66 @@ class _Store:
     async def search(self, **kwargs: Any) -> List[Any]:
         return self.fragments
 
+    async def search_memories_by_vector(self, **kwargs: Any) -> List[Any]:
+        return self.fragments
+
 
 def _fragment(metadata: Dict[str, Any]) -> SimpleNamespace:
     return SimpleNamespace(content="they talked about a concert", score=0.9, metadata=metadata)
 
 
-async def _tool_output(metadata: Dict[str, Any]) -> str:
-    bot = SimpleNamespace(vector_manager=SimpleNamespace(store=_Store([_fragment(metadata)])))
+def _tool(fragments: List[Any]) -> Any:
+    bot = SimpleNamespace(vector_manager=SimpleNamespace(store=_Store(fragments)))
     message = SimpleNamespace(channel=SimpleNamespace(id=5), guild=None)
     runtime = SimpleNamespace(bot=bot, message=message, logger=None)
     (tool,) = [t for t in EpisodicMemoryTools(runtime).get_tools() if t.name == "search_episodic_memory"]
-    return await tool.ainvoke({"vector_query": "concert"})
+    return tool
+
+
+async def _tool_output(metadata: Dict[str, Any]) -> str:
+    return await _tool([_fragment(metadata)]).ainvoke({"vector_query": "concert"})
+
+
+# ------------------------------------------------------------------ the time
 
 
 @pytest.mark.asyncio
-async def test_the_tool_tells_the_date_the_event_started() -> None:
+async def test_the_tool_gives_the_start_as_a_discord_timestamp() -> None:
     output = await _tool_output(STORED_METADATA)
 
-    assert "2025-12-27" in output
+    assert f"<t:{START}:F>" in output
     assert "Unknown Time" not in output
 
 
 @pytest.mark.asyncio
-async def test_the_tool_tells_the_start_and_the_end_in_utc() -> None:
+async def test_the_tool_gives_the_relative_time_as_a_discord_timestamp() -> None:
     output = await _tool_output(STORED_METADATA)
 
-    assert "00:24" in output and "01:33" in output
-    assert "UTC" in output
+    assert f"Time: <t:{START}:F>" in output and f"(<t:{START}:R>)" in output
 
 
 @pytest.mark.asyncio
-async def test_the_tool_tells_how_long_ago_it_was() -> None:
+async def test_the_tool_gives_the_end_of_a_short_conversation_as_a_clock_time() -> None:
     output = await _tool_output(STORED_METADATA)
 
-    assert " days ago" in output
+    assert f"<t:{END}:t>" in output
+
+
+@pytest.mark.asyncio
+async def test_the_tool_gives_the_end_of_a_long_conversation_as_a_full_date() -> None:
+    output = await _tool_output({**STORED_METADATA, "end_timestamp": float(START + 3 * 86_400)})
+
+    assert f"<t:{START + 3 * 86_400}:F>" in output
+
+
+@pytest.mark.asyncio
+async def test_the_tool_does_not_write_the_time_out_as_text_the_model_would_copy() -> None:
+    """Live report: the bot answered with '2025-12-27 00:24 UTC' instead of a Discord timestamp."""
+    output = await _tool_output(STORED_METADATA)
+
+    assert "UTC" not in output
+    assert "2025-12-27" not in output
+    assert "days ago" not in output
 
 
 @pytest.mark.asyncio
@@ -72,31 +109,6 @@ async def test_a_fragment_without_any_time_says_so_instead_of_inventing_one() ->
     output = await _tool_output({"fragment_id": "x", "author_ids": ["1"]})
 
     assert "Time: unknown" in output
-
-
-@pytest.mark.asyncio
-async def test_the_tool_lists_the_participants_it_stored() -> None:
-    output = await _tool_output(STORED_METADATA)
-
-    assert "646887224125685760" in output and "474232209772118037" in output
-    assert "Unknown" not in output
-
-
-def _slash_command_text(metadata: Dict[str, Any]) -> str:
-    cog = SimpleNamespace(_translate_text=lambda lang, guild, *keys, **kwargs: f"Time: {kwargs['time']}" if keys[-1] == "result_time" else keys[-1])
-    return EpisodicMemoryService._format_search_results(cog, None, "1", [_fragment(metadata)])
-
-
-def test_the_slash_command_shows_the_time_of_a_stored_fragment() -> None:
-    text = _slash_command_text(STORED_METADATA)
-
-    assert "Time: 2025-12-27" in text
-
-
-def test_the_slash_command_still_leaves_out_the_time_of_a_fragment_without_one() -> None:
-    text = _slash_command_text({"fragment_id": "x"})
-
-    assert "Time:" not in text
 
 
 @pytest.mark.parametrize("value", [None, "", "soon", float("nan"), -1.0])
@@ -113,24 +125,83 @@ BEYOND_YEAR_9999 = 253402300800
 
 @pytest.mark.asyncio
 async def test_one_out_of_range_time_does_not_discard_the_other_memories() -> None:
-    """Codex review: the conversion error aborted the whole search and the bot got only an error message."""
+    """Codex review: a conversion error aborted the whole search and the bot got only an error message."""
     bad = _fragment({"fragment_id": "bad", "start_timestamp": BEYOND_YEAR_9999})
-    good = _fragment(STORED_METADATA)
-    bot = SimpleNamespace(vector_manager=SimpleNamespace(store=_Store([bad, good])))
-    runtime = SimpleNamespace(bot=bot, message=SimpleNamespace(channel=SimpleNamespace(id=5), guild=None), logger=None)
-    (tool,) = [t for t in EpisodicMemoryTools(runtime).get_tools() if t.name == "search_episodic_memory"]
 
-    output = await tool.ainvoke({"vector_query": "concert"})
+    output = await _tool([bad, _fragment(STORED_METADATA)]).ainvoke({"vector_query": "concert"})
 
     assert "An error occurred" not in output
-    assert "Time: unknown" in output and "2025-12-27" in output
+    assert "Time: unknown" in output and f"<t:{START}:F>" in output
 
 
 @pytest.mark.asyncio
 async def test_an_out_of_range_end_time_falls_back_to_the_start() -> None:
     output = await _tool_output({**STORED_METADATA, "end_timestamp": BEYOND_YEAR_9999})
 
-    assert "2025-12-27 00:24 UTC" in output
+    assert f"<t:{START}:F>" in output
+    assert f"<t:{END}:t>" not in output
+
+
+@pytest.mark.asyncio
+async def test_a_single_moment_is_not_given_as_a_range() -> None:
+    output = await _tool_output({**STORED_METADATA, "end_timestamp": float(START)})
+
+    assert f"<t:{START}:F>" in output
+    assert " - <t:" not in output
+
+
+# ------------------------------------------------------- who and where from
+
+
+@pytest.mark.asyncio
+async def test_the_tool_lists_the_participants_it_stored() -> None:
+    output = await _tool_output(STORED_METADATA)
+
+    assert "646887224125685760" in output and "474232209772118037" in output
+    assert "Unknown" not in output
+
+
+@pytest.mark.asyncio
+async def test_the_tool_gives_a_source_label_ready_to_copy() -> None:
+    """Live report: the bot left out the source; a bare 'Jump URL' line was not something it cited."""
+    output = await _tool_output(STORED_METADATA)
+
+    assert f"Source: {SOURCE_LABEL}" in output
+
+
+@pytest.mark.asyncio
+async def test_a_fragment_without_a_link_has_no_source_line() -> None:
+    output = await _tool_output({k: v for k, v in STORED_METADATA.items() if k != "jump_url"})
+
+    assert "Source:" not in output
+
+
+@pytest.mark.asyncio
+async def test_the_tool_tells_the_model_to_copy_the_times_and_the_source() -> None:
+    description = _tool([]).description
+
+    assert "<t:" in description and "copy" in description and "Source" in description
+
+
+# ------------------------------------------------------------- slash command
+
+
+def _slash_command_text(metadata: Dict[str, Any]) -> str:
+    cog = SimpleNamespace(_translate_text=lambda lang, guild, *keys, **kwargs: f"Time: {kwargs['time']}" if keys[-1] == "result_time" else keys[-1])
+    return EpisodicMemoryService._format_search_results(cog, None, "1", [_fragment(metadata)])
+
+
+def test_the_slash_command_shows_the_time_of_a_stored_fragment_in_the_viewers_time() -> None:
+    text = _slash_command_text(STORED_METADATA)
+
+    assert f"Time: <t:{START}:F>" in text
+    assert "UTC" not in text
+
+
+def test_the_slash_command_still_leaves_out_the_time_of_a_fragment_without_one() -> None:
+    text = _slash_command_text({"fragment_id": "x"})
+
+    assert "Time:" not in text
 
 
 def test_the_slash_command_survives_an_out_of_range_time() -> None:
@@ -139,31 +210,83 @@ def test_the_slash_command_survives_an_out_of_range_time() -> None:
     assert "Time:" not in text
 
 
-def _at(year: int, month: int, day: int, hour: int, minute: int) -> datetime:
-    return datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
+# ------------------------------------------------- the automatic recall and the prompt
 
 
-@pytest.mark.parametrize(
-    "now, expected_age",
-    [
-        (_at(2026, 11, 1, 23, 59), "in the future"),  # Codex review: a minute ahead on the next date was "yesterday"
-        (_at(2026, 11, 2, 0, 0), "today"),
-        (_at(2026, 11, 2, 18, 0), "today"),
-        (_at(2026, 11, 3, 0, 30), "1 day ago"),  # 24.5 hours later
-        (_at(2026, 11, 4, 12, 0), "2 days ago"),
-    ],
-)
-def test_how_long_ago_is_told_around_midnight_and_for_a_clock_that_runs_behind(now: datetime, expected_age: str) -> None:
-    started = _at(2026, 11, 2, 0, 0).timestamp()
+@pytest.mark.asyncio
+async def test_an_injected_memory_carries_the_source_label_and_no_text_date() -> None:
+    known = {"LeaderboardCog": SimpleNamespace(store=SimpleNamespace(read_optouts=lambda guild_id: set()))}
+    bot = SimpleNamespace(get_cog=known.get, vector_manager=SimpleNamespace(store=_Store([_fragment(STORED_METADATA)])))
+    message = SimpleNamespace(
+        content="what did we plan for the concert last week", channel=SimpleNamespace(id=7),
+        guild=SimpleNamespace(id=42), author=SimpleNamespace(id=10),
+    )
 
-    description = describe_fragment_time({"start_timestamp": started}, now=now)
+    text = await EpisodicMemoryProvider(bot).get(message)
 
-    assert description.endswith(f"({expected_age})")
+    assert SOURCE_LABEL in text
+    assert "UTC" not in text and "2025-12-27" not in text
 
 
-def test_a_conversation_from_late_yesterday_is_yesterday_though_less_than_a_day_ago() -> None:
-    started = _at(2026, 11, 2, 23, 0).timestamp()
+async def _injected(metadata: Dict[str, Any]) -> str:
+    known = {"LeaderboardCog": SimpleNamespace(store=SimpleNamespace(read_optouts=lambda guild_id: set()))}
+    bot = SimpleNamespace(get_cog=known.get, vector_manager=SimpleNamespace(store=_Store([_fragment(metadata)])))
+    message = SimpleNamespace(
+        content="what did we plan for the concert last week", channel=SimpleNamespace(id=7),
+        guild=SimpleNamespace(id=42), author=SimpleNamespace(id=10),
+    )
+    return await EpisodicMemoryProvider(bot).get(message)
 
-    description = describe_fragment_time({"start_timestamp": started}, now=_at(2026, 11, 3, 1, 0))
 
-    assert description.endswith("(yesterday)")
+@pytest.mark.asyncio
+async def test_an_injected_memory_tells_when_the_conversation_started_and_ended() -> None:
+    """Codex review: the injected text kept only the start, so a follow-up about the end had nothing."""
+    text = await _injected(STORED_METADATA)
+
+    assert f"<t:{START}:F> - <t:{END}:t>" in text
+
+
+@pytest.mark.asyncio
+async def test_a_longer_conversation_is_injected_with_the_full_end_date() -> None:
+    text = await _injected({**STORED_METADATA, "end_timestamp": float(START + 3 * 86_400)})
+
+    assert f"<t:{START}:F> - <t:{START + 3 * 86_400}:F>" in text
+
+
+@pytest.mark.asyncio
+async def test_an_injected_single_moment_has_no_range() -> None:
+    text = await _injected({**STORED_METADATA, "end_timestamp": float(START)})
+
+    assert f"<t:{START}:F>" in text and " - <t:" not in text
+
+
+def _utc(year: int, month: int, day: int, hour: int, minute: int, second: int) -> int:
+    return int(datetime(year, month, day, hour, minute, second, tzinfo=timezone.utc).timestamp())
+
+
+# Ten seconds long each, across a minute boundary, across midnight, and across the end of a year.
+SHORT_RANGES = [
+    (_utc(2026, 10, 31, 12, 24, 55), _utc(2026, 10, 31, 12, 25, 5)),
+    (_utc(2026, 10, 31, 23, 59, 55), _utc(2026, 11, 1, 0, 0, 5)),
+    (_utc(2026, 12, 31, 23, 59, 55), _utc(2027, 1, 1, 0, 0, 5)),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("started, ended", SHORT_RANGES)
+async def test_a_short_range_across_a_minute_or_date_boundary_keeps_both_ends(started: int, ended: int) -> None:
+    """Codex review: 23:59:55 to 00:00:05 was collapsed into one moment because it is under 60 seconds."""
+    output = await _tool_output({**STORED_METADATA, "start_timestamp": float(started), "end_timestamp": float(ended)})
+    text = await _injected({**STORED_METADATA, "start_timestamp": float(started), "end_timestamp": float(ended)})
+
+    assert f"<t:{started}:F> - <t:{ended}:t>" in output
+    assert f"<t:{started}:F> - <t:{ended}:t>" in text
+
+
+def test_the_prompt_covers_every_place_a_memory_is_given_to_the_bot() -> None:
+    prompt = yaml.safe_load((ROOT / "base_configs" / "prompt" / "message_agent.yaml").read_text(encoding="utf-8"))
+    rules = prompt["memory_system"]["content"]
+
+    for place in ("--- Relevant Past Memories ---", "--- Recently Recalled Memories ---", "search_episodic_memory"):
+        assert place in rules, f"the source rule must name {place}"
+    assert "<t:" in rules and "UTC" in rules, "times are Discord timestamps, never written-out UTC"
