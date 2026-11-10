@@ -73,6 +73,26 @@ def _is_reply_model_token(metadata: Any) -> bool:
 _logger = get_logger(server_id="Bot", source="llm.send_message")
 
 
+class EmptyReplyError(Exception):
+    """The model's reply had no postable text and no tool call, and nothing was posted.
+
+    Raised instead of posting the empty-reply fallback when the caller will ask again.
+
+    Attributes:
+        finish_reason: Why the model stopped (``stop``, ``length``, ...), or None if not reported.
+        output_tokens: Tokens the model produced, or None if the server did not report usage.
+        raw_output: The model's raw text output.
+    """
+
+    def __init__(self, finish_reason: Optional[str], output_tokens: Optional[int], raw_output: str) -> None:
+        super().__init__(
+            f"Empty reply (finish_reason={finish_reason}, output_tokens={output_tokens})"
+        )
+        self.finish_reason = finish_reason
+        self.output_tokens = output_tokens
+        self.raw_output = raw_output
+
+
 # Language converters (compiled once)
 _CONVERTERS = {
     'zh_TW': opencc.OpenCC('s2twp'),  # Simplified to Traditional Chinese
@@ -270,7 +290,8 @@ async def _process_token_stream(
     lang_manager,
     update_interval: float = _UPDATE_INTERVAL,
     tools: Optional[List[Any]] = None,
-    inactivity_timeout: float = 15.0  # Default inactivity timeout
+    inactivity_timeout: float = 15.0,  # Default inactivity timeout
+    empty_fallback: bool = True,
 ) -> Tuple[str, discord.Message]:
     """Processes token stream and updates Discord messages based on time interval.
     
@@ -285,9 +306,14 @@ async def _process_token_stream(
         tools: The tools the model was given. The agent runs the ones it calls; their names
             are used to hide calls the model wrote as text instead.
         inactivity_timeout: Max seconds to wait between tokens before raising TimeoutError.
+        empty_fallback: When the reply has no postable text and no tool call, post the
+            fallback text (True) or raise ``EmptyReplyError`` without posting (False).
         
     Returns:
         Tuple of (full message result with markers, final Discord message).
+
+    Raises:
+        EmptyReplyError: The reply was empty and ``empty_fallback`` is False.
     """
     message_result = ''  # Full accumulated result (including ALL tokens and markers)
     display_content = ''  # Filtered content for Discord (only between markers)
@@ -301,6 +327,8 @@ async def _process_token_stream(
     # Tool calls the model asked for. The agent's own tool node runs them; they are only
     # tracked here to know that a reply without text was still a real answer.
     tool_call_chunks = []
+    finish_reason: Optional[str] = None  # As reported by the model server, for the empty-reply log
+    output_tokens: Optional[int] = None
     # Calls of these tools written as text ("[add_reaction: 👍]") are never shown.
     tool_names = tuple(name for name in (getattr(tool, 'name', '') for tool in tools or ()) if name)
     last_shown = ''  # What the current Discord message shows now
@@ -519,6 +547,12 @@ async def _process_token_stream(
             if not _is_reply_model_token(metadata):
                 continue
 
+            reported_finish = (token_obj.response_metadata or {}).get('finish_reason')
+            if reported_finish:
+                finish_reason = reported_finish
+            if token_obj.usage_metadata:
+                output_tokens = token_obj.usage_metadata.get('output_tokens', output_tokens)
+
             # Extract text token
             if hasattr(token_obj, "content") and token_obj.content:
                 # token_obj.content may be a plain string or a list of content
@@ -619,9 +653,18 @@ async def _process_token_stream(
         has_tool_calls = len(tool_call_chunks) > 0
         
         if not has_text_content and not has_tool_calls:
+            if not empty_fallback:
+                # Nothing was posted (all text was hidden); the caller asks the model again.
+                _logger.warning(
+                    f"Generated response is empty and no tools were called (finish_reason={finish_reason}, "
+                    f"output_tokens={output_tokens}). Raw output (first {_RAW_LOG_CHARS} chars): "
+                    f"{message_result[:_RAW_LOG_CHARS]!r}"
+                )
+                raise EmptyReplyError(finish_reason, output_tokens, message_result)
             # Instead of raising ValueError (which triggers crash loops), provide a silent fallback
             _logger.warning(
                 "Generated response is empty and no tools were called. Applying fallback. "
+                f"(finish_reason={finish_reason}, output_tokens={output_tokens}) "
                 f"Raw output (first {_RAW_LOG_CHARS} chars): {message_result[:_RAW_LOG_CHARS]!r}"
             )
             
@@ -656,6 +699,8 @@ async def _process_token_stream(
         
         return message_result, current_message
     
+    except EmptyReplyError:
+        raise
     except Exception as exc:
         _logger.error(f'Error in token stream processing: {exc}')
         # Try to send any accumulated content before raising
@@ -676,7 +721,8 @@ async def send_message(
     update_interval: float = _UPDATE_INTERVAL,
     raise_exception: bool = False,
     tools: Optional[List[Any]] = None,
-    inactivity_timeout: float = 15.0
+    inactivity_timeout: float = 15.0,
+    empty_fallback: bool = True,
 ) -> str:
     """Consumes a token stream and updates Discord messages with time-based updates.
     
@@ -691,9 +737,16 @@ async def send_message(
         streamer: Token stream iterator (async or sync).
         update_interval: Time interval (seconds) between message updates.
         raise_exception: If True, raise exception on failure instead of sending error message.
+        tools: The tools the model was given (their written-out calls are hidden).
+        inactivity_timeout: Max seconds to wait between tokens.
+        empty_fallback: False makes an empty reply raise ``EmptyReplyError`` without posting
+            anything, so the caller can ask again.
         
     Returns:
         Full message result string.
+
+    Raises:
+        EmptyReplyError: The reply was empty and ``empty_fallback`` is False.
     """
     channel = message.channel
     
@@ -731,11 +784,14 @@ async def send_message(
             lang_manager,
             update_interval,
             tools,
-            inactivity_timeout
+            inactivity_timeout,
+            empty_fallback,
         )
 
         return message_result
 
+    except EmptyReplyError:
+        raise
     except Exception as exc:
         if raise_exception:
             raise exc

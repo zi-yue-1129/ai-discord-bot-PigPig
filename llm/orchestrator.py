@@ -10,6 +10,7 @@ from llm.callbacks import ToolLogCallbackHandler
 from llm.utils.info_context import build_info_agent_request
 from llm.utils.phase_timer import PhaseTimer
 from llm.utils.tool_trace import collect_tool_calls, describe_info_agent_outcome
+from llm.utils.reply_retry import run_with_empty_retry
 
 import discord
 from discord import Message
@@ -20,7 +21,7 @@ from langchain.agents.middleware import ModelCallLimitMiddleware
 from llm.model_manager import ModelManager
 from llm.tools_factory import get_tools
 from llm.schema import OrchestratorResponse, OrchestratorRequest
-from llm.utils.send_message import send_message, safe_edit_message
+from llm.utils.send_message import EmptyReplyError, send_message, safe_edit_message
 from llm.utils.model_init import create_model_instance
 from llm.utils.tool_budget import ToolCallBudgetMiddleware
 from function import func
@@ -784,27 +785,41 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                         
                         sanitized_messages = await self._sanitize_messages_for_model(messages_for_message_agent, current_model, image_cache)
                         
-                        streamer = message_agent.astream(
-                            {"messages": sanitized_messages},
-                            stream_mode="messages",
-                        )
-                        
                         # Check if there are more available models to try
                         remaining_models = [m for m in model_priority_list[model_index + 1:] if circuit_breaker.is_available(m)]
                         is_last_available = len(remaining_models) == 0
-                        
-                        message_result = await asyncio.wait_for(
-                            send_message(
-                                bot,
-                                message_edit,
-                                message,
-                                streamer,
-                                raise_exception=not is_last_available,
-                                tools=all_tools,
-                                inactivity_timeout=_LLM_CALL_TIMEOUT_SECONDS  # Use config value for inactivity
-                            ),
-                            timeout=180.0,  # Much larger total safety timeout
-                        )
+
+                        async def stream_reply(reply_messages: List[BaseMessage], empty_fallback: bool) -> str:
+                            """Streams one reply of the message agent into the placeholder message."""
+                            streamer = message_agent.astream(
+                                {"messages": reply_messages},
+                                stream_mode="messages",
+                            )
+                            return await asyncio.wait_for(
+                                send_message(
+                                    bot,
+                                    message_edit,
+                                    message,
+                                    streamer,
+                                    raise_exception=not is_last_available,
+                                    tools=all_tools,
+                                    inactivity_timeout=_LLM_CALL_TIMEOUT_SECONDS,  # Use config value for inactivity
+                                    empty_fallback=empty_fallback,
+                                ),
+                                timeout=180.0,  # Much larger total safety timeout
+                            )
+
+                        def log_empty_reply(empty: EmptyReplyError) -> None:
+                            """Logs what is known about an empty reply, without any message content."""
+                            prompt_chars = len(model_specific_message_prompt) + sum(len(m.text) for m in sanitized_messages)
+                            logger.warning(
+                                f"Message agent: empty reply from {current_model} (finish_reason={empty.finish_reason}, "
+                                f"output_tokens={empty.output_tokens}, messages={len(sanitized_messages)}, "
+                                f"prompt_chars={prompt_chars}); asking once more"
+                            )
+
+                        # An empty reply (no text, no tool call) is asked once more before the fallback.
+                        message_result = await run_with_empty_retry(stream_reply, sanitized_messages, log_empty_reply)
                         
                         # Success!
                         if models_tried > 1:
