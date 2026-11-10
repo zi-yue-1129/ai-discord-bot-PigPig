@@ -35,6 +35,35 @@ _MAX_RETRIES = 3  # Maximum number of retry attempts
 _CUT_NOTICE = '…'  # Appended to a reply that was cut short
 _STREAM_CLOSE_TIMEOUT = 5.0  # Seconds to wait for a cut model stream to close
 
+# Tags around text that is never shown: True opens a hidden block, False closes it.
+# Besides reasoning, this covers tool calls a model writes as text when its server
+# does not parse them (Qwen/Hermes style and Gemma style), and the internal block of
+# tool results if the model copies it.
+_HIDDEN_TAGS = {
+    '<thinking>': True, '</thinking>': False,
+    '<think>': True, '</think>': False,
+    '<tool_call>': True, '</tool_call>': False,
+    '<|tool_call>': True, '<tool_call|>': False,
+    '<tool_response>': True, '</tool_response>': False,
+    '<|tool_response>': True, '<tool_response|>': False,
+    '<tool_results>': True, '</tool_results>': False,
+}
+_ALL_TAGS = (*_HIDDEN_TAGS, '<som>', '</som>', '<eom>', '</eom>')
+
+# The node of a LangChain agent that runs the reply model.
+_REPLY_MODEL_NODE = 'model'
+
+
+def _is_reply_model_token(metadata: Any) -> bool:
+    """Tells whether a streamed token comes from the reply model itself.
+
+    Tokens without LangGraph metadata (plain model streams) count as the reply.
+    """
+    if not isinstance(metadata, dict):
+        return True
+    node = metadata.get('langgraph_node')
+    return node is None or node == _REPLY_MODEL_NODE
+
 
 # Logger
 _logger = get_logger(server_id="Bot", source="llm.send_message")
@@ -249,7 +278,7 @@ async def _process_token_stream(
         message: Original Discord message for context.
         lang_manager: Language manager for translations.
         update_interval: Time interval (seconds) between message updates.
-        tools: Optional tools list.
+        tools: Unused. The agent runs the tools the model calls; kept for callers.
         inactivity_timeout: Max seconds to wait between tokens before raising TimeoutError.
         
     Returns:
@@ -262,103 +291,12 @@ async def _process_token_stream(
     pending_content = ''  # Content waiting to be sent to Discord
     is_capturing = False  # Only capture content between <som> and <eom> markers
     intermediate_content = '' # Buffer for content between <eom> and next <som> or <eom>
-    is_in_thinking = False  # True while inside <think>...</think> or <thinking>...</thinking> blocks
+    is_in_thinking = False  # True inside a hidden block: reasoning or tool-call text (_HIDDEN_TAGS)
     
-    # Tool execution tracking
+    # Tool calls the model asked for. The agent's own tool node runs them; they are only
+    # tracked here to know that a reply without text was still a real answer.
     tool_call_chunks = []
-    
-    async def _execute_tool_calls(chunks: List[Any]):
-        """Reconstructs and executes tool calls from chunks."""
-        if not chunks or not tools:
-            return
-            
-        # Simple reconstruction of tool calls from chunks
-        # This depends on the structure of AIMessageChunk
-        # We assume standard LangChain chunk structure
-        
-        # Group chunks by index to handle multiple tool calls
-        tool_calls_by_index = {}
-        
-        for chunk in chunks:
-            if hasattr(chunk, "index"):
-                idx = chunk.index
-                if idx not in tool_calls_by_index:
-                    tool_calls_by_index[idx] = {"name": "", "args": ""}
-                
-                if hasattr(chunk, "name") and chunk.name:
-                    tool_calls_by_index[idx]["name"] += chunk.name
-                if hasattr(chunk, "args") and chunk.args:
-                    tool_calls_by_index[idx]["args"] += chunk.args
-        
-        for idx, call_data in tool_calls_by_index.items():
-            name = call_data["name"]
-            args_str = call_data["args"]
-            
-            # Find matching tool
-            tool = next((t for t in tools if t.name == name), None)
-            if tool:
-                try:
-                    # Update status to "Executing tool..."
-                    if current_message:
-                        tool_msg = ""
-                        if lang_manager:
-                            # Try to get specific message for this tool
-                            tool_key = name
-                            # Handle some common variations or mapping if needed, but for now direct mapping
-                            
-                            msg = lang_manager.translate(
-                                str(message.guild.id) if message.guild else "0",
-                                "system", "chat_bot", "responses", "tools", tool_key
-                            )
-                            
-                            # Check if translation was found (LanguageManager returns error string if not)
-                            if "Translation not found" in msg or "TRANSLATION_ERROR" in msg:
-                                # Fallback to default tool message
-                                tool_msg = lang_manager.translate(
-                                    str(message.guild.id) if message.guild else "0",
-                                    "system", "chat_bot", "responses", "tools", "default",
-                                    tool_name=name
-                                )
-                            else:
-                                tool_msg = msg
-                        else:
-                            tool_msg = f"🛠️ 正在執行工具: {name}..."
-                        
-                        await safe_edit_message(current_message, tool_msg)
 
-                    # Parse args if needed, but most tools accept string or dict
-                    # If args_str is JSON, we might need to parse it, but LangChain tools often handle it
-                    # For simplicity, we try to parse as JSON if it looks like it
-                    import json
-                    try:
-                        args = json.loads(args_str)
-                    except:
-                        args = args_str
-                        
-                    _logger.info(f"Executing tool {name} with args: {args}")
-                    
-                    # Execute tool with timeout
-                    try:
-                        # Use ainvoke if available (standard in modern LangChain)
-                        if hasattr(tool, "ainvoke"):
-                            await asyncio.wait_for(tool.ainvoke(args), timeout=10.0)
-                        elif asyncio.iscoroutinefunction(tool.invoke) or asyncio.iscoroutinefunction(tool._run):
-                             await asyncio.wait_for(tool.invoke(args), timeout=10.0)
-                        else:
-                             # Run sync tool in thread to avoid blocking loop and allow timeout
-                             await asyncio.wait_for(asyncio.to_thread(tool.invoke, args), timeout=10.0)
-                    except asyncio.TimeoutError:
-                        _logger.warning(f"Tool {name} timed out after 10 seconds")
-                        if current_message:
-                             # Optional: Update message to show timeout
-                             pass
-                    except Exception as e:
-                        raise e # Re-raise to be caught by outer except
-                except Exception as e:
-                    _logger.error(f"Failed to execute tool {name}: {e}")
-            else:
-                _logger.warning(f"Tool {name} not found in provided tools list")
-    
     async def should_update() -> bool:
         """Check if enough time has passed since last update."""
         return time.time() - last_update_time >= update_interval
@@ -442,24 +380,13 @@ async def _process_token_stream(
             if current_str[i] == '<':
                 # Check if it's a complete tag
                 remaining = current_str[i:]
-                # Thinking block tags — always suppress content inside them
-                if remaining.startswith('<thinking>'):
-                    is_in_thinking = True
-                    i += 10
+                # Reasoning and tool-call blocks are never shown, wherever they appear.
+                hidden_tag = next((tag for tag in _HIDDEN_TAGS if remaining.startswith(tag)), None)
+                if hidden_tag is not None:
+                    is_in_thinking = _HIDDEN_TAGS[hidden_tag]
+                    i += len(hidden_tag)
                     continue
-                elif remaining.startswith('</thinking>'):
-                    is_in_thinking = False
-                    i += 11
-                    continue
-                elif remaining.startswith('<think>'):
-                    is_in_thinking = True
-                    i += 7
-                    continue
-                elif remaining.startswith('</think>'):
-                    is_in_thinking = False
-                    i += 8
-                    continue
-                elif remaining.startswith('<som>'):
+                if remaining.startswith('<som>'):
                     markers_detected = True
                     # Reset thinking state — <som> always starts the displayable response
                     is_in_thinking = False
@@ -487,8 +414,7 @@ async def _process_token_stream(
                     continue
 
                 # Check if it could be a partial tag (e.g., "<s" as prefix of "<som>")
-                potential_tags = ['<thinking>', '</thinking>', '<think>', '</think>', '<som>', '</som>', '<eom>', '</eom>']
-                if any(tag.startswith(remaining) for tag in potential_tags):
+                if any(tag.startswith(remaining) for tag in _ALL_TAGS):
                     # If the start of a tag is detected but not yet complete, buffer it
                     tag_buffer = remaining
                     break
@@ -568,6 +494,11 @@ async def _process_token_stream(
             from langchain_core.messages import AIMessageChunk as _AIMessageChunk
             if not isinstance(token_obj, _AIMessageChunk):
                 continue
+            # A tool that calls a model itself (a writer, a judge) streams its tokens
+            # through the same "messages" stream, tagged with the tool node. Only the
+            # reply model's own node is the reply.
+            if not _is_reply_model_token(metadata):
+                continue
 
             # Extract text token
             if hasattr(token_obj, "content") and token_obj.content:
@@ -633,10 +564,6 @@ async def _process_token_stream(
             if '<som>' in message_result and '<eom>' not in message_result:
                 message_result += '<eom>'
 
-        # Execute any captured tool calls
-        if tool_call_chunks:
-            await _execute_tool_calls(tool_call_chunks)
-        
         # Send any remaining content
         if pending_content:
             await update_message()

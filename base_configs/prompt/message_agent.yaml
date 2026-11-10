@@ -173,7 +173,7 @@ output_format:
 
     ### Internal Formats — Never Reproduce
     Channel history is shown with metadata (`[name | UserID:… | MessageID:…]`, `[reply_to … | timestamp …]`)
-    and tool results arrive in a message starting "Internal background information". These exist only so
+    and tool results arrive in a message starting "Internal background information", inside `<tool_results>` tags. These exist only so
     you understand the conversation. Never write them in a reply:
     - no `[name | UserID | MessageID]` prefix and no `[Replying to …]`, `reply_to`, `reactions` or `timestamp:` blocks
     - no `[Assistant: …]` or `[System: …]` lines, no tool names, no "Calling tool"

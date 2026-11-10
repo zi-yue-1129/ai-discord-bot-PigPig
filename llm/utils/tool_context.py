@@ -56,5 +56,8 @@ def build_message_agent_history(messages: Sequence[BaseMessage], history_length:
             results.append(f"## {name}\n{_content_text(message.content).strip()}")
 
     if results:
-        kept.append(HumanMessage(content="\n\n".join([_BLOCK_INTRO, *results])))
+        # The results sit inside <tool_results> tags, which the reply sender never shows,
+        # so a model that copies the block still cannot post the tool output.
+        body = "\n\n".join(results)
+        kept.append(HumanMessage(content=f"{_BLOCK_INTRO}\n\n<tool_results>\n{body}\n</tool_results>"))
     return kept
