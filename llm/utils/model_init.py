@@ -152,7 +152,7 @@ def _endpoint_name(model_name: str) -> str | None:
 
 
 def create_model_instance(
-    model_name: str, *, guild_id: str = "0", limit_output: bool = False, **kwargs: Any,
+    model_name: str, *, guild_id: str = "0", limit_output: bool = False, role: str = "other", **kwargs: Any,
 ) -> BaseChatModel:
     """Create a chat model with statistics attached to its invocation lifecycle.
 
@@ -169,6 +169,8 @@ def create_model_instance(
         limit_output: Cap the tokens one call may generate at the configured
             ``max_output_tokens``, so a model stuck in a loop is stopped by the server.
             An explicit cap in ``kwargs`` takes precedence.
+        role: What the model is for: ``info`` (tool agent), ``message`` (reply agent) or
+            ``other``. Picks the ``vllm_enable_thinking`` setting for vLLM models.
         **kwargs: Options forwarded to the provider constructor.
 
     Returns:
@@ -184,6 +186,14 @@ def create_model_instance(
             "api_key": tokens.vllm_api_key,
         }
         provider_options.update(kwargs)
+        # vLLM serves Qwen with thinking off by default; the setting is sent on every request
+        # so llm.yaml decides. The reasoning parser keeps reasoning out of the reply text.
+        extra_body = dict(provider_options.get("extra_body") or {})
+        extra_body["chat_template_kwargs"] = {
+            **(extra_body.get("chat_template_kwargs") or {}),
+            "enable_thinking": llm_config.vllm_enable_thinking.get(role, False),
+        }
+        provider_options["extra_body"] = extra_body
         model = init_chat_model(
             f"openai:{model_name[len('vllm:'):]}", **provider_options,
         )

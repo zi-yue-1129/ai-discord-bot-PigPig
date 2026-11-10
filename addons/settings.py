@@ -198,6 +198,36 @@ def _is_dialable_http_url(url: str) -> bool:
     return parts.scheme in ("http", "https") and bool(parts.hostname)
 
 
+VLLM_THINKING_ROLES = ("info", "message", "other")
+
+
+def parse_vllm_thinking(raw: Any) -> dict[str, bool]:
+    """Validates ``vllm_enable_thinking`` in llm.yaml.
+
+    Args:
+        raw: ``true``/``false`` for every role, or a mapping of roles (``info``: the tool
+            agent, ``message``: the reply agent, ``other``: every other model call) to
+            ``true``/``false``. Roles left out stay off. Missing means off.
+
+    Returns:
+        Whether thinking is on, per role. An invalid value is reported and leaves thinking off.
+    """
+    off = {role: False for role in VLLM_THINKING_ROLES}
+    if raw is None:
+        return off
+    if isinstance(raw, bool):
+        return {role: raw for role in VLLM_THINKING_ROLES}
+    if isinstance(raw, dict) and all(
+        role in VLLM_THINKING_ROLES and isinstance(value, bool) for role, value in raw.items()
+    ):
+        return {**off, **raw}
+    logger.warning(
+        f"llm.yaml vllm_enable_thinking must be true/false or a mapping of {list(VLLM_THINKING_ROLES)} "
+        f"to true/false, not {raw!r}; thinking stays off"
+    )
+    return off
+
+
 def parse_openai_endpoints(raw: Any) -> dict[str, dict[str, str]]:
     """Validates the ``openai_endpoints`` section of llm.yaml.
 
@@ -263,6 +293,8 @@ class LLMConfig:
         self.info_agent_max_identical_calls: int = int(self.data.get("info_agent_max_identical_calls", 2))
         # Most tokens one chat model call may generate (reasoning included); 0 means no cap.
         self.max_output_tokens: int = int(self.data.get("max_output_tokens", 8192))
+        # Qwen thinking for vLLM models, per role (info / message / other); off unless set.
+        self.vllm_enable_thinking: dict[str, bool] = parse_vllm_thinking(self.data.get("vllm_enable_thinking"))
         # Optional tool groups and the channels they are limited to (see llm/tools_factory.py).
         tool_groups = self.data.get("tool_groups") or {}
         if not isinstance(tool_groups, dict):
