@@ -34,6 +34,7 @@ _HARD_LIMIT = 2000  # Hard limit for Discord message length
 _MAX_RETRIES = 3  # Maximum number of retry attempts
 _CUT_NOTICE = '…'  # Appended to a reply that was cut short
 _STREAM_CLOSE_TIMEOUT = 5.0  # Seconds to wait for a cut model stream to close
+_RAW_LOG_CHARS = 500  # How much of an unpostable model output is logged
 
 # Tags around text that is never shown: True opens a hidden block, False closes it.
 # Besides reasoning, this covers tool calls a model writes as text when its server
@@ -580,7 +581,10 @@ async def _process_token_stream(
 
             fallback_text = sanitize_reply(message_result)
             if not fallback_text:
-                _logger.warning("Model output had nothing postable after sanitising; nothing is sent from it.")
+                _logger.warning(
+                    "Model output had nothing postable after sanitising; nothing is sent from it. "
+                    f"Raw output (first {_RAW_LOG_CHARS} chars): {message_result[:_RAW_LOG_CHARS]!r}"
+                )
             else:
                 # Truncate to the hard limit in the fallback path.
                 # The fallback only fires when the model ignores the <som>/<eom> format.
@@ -598,7 +602,10 @@ async def _process_token_stream(
         
         if not has_text_content and not has_tool_calls:
             # Instead of raising ValueError (which triggers crash loops), provide a silent fallback
-            _logger.warning("Generated response is empty and no tools were called. Applying fallback.")
+            _logger.warning(
+                "Generated response is empty and no tools were called. Applying fallback. "
+                f"Raw output (first {_RAW_LOG_CHARS} chars): {message_result[:_RAW_LOG_CHARS]!r}"
+            )
             
             # Fallback message content (localized if possible, otherwise simple)
             fallback = "..."
