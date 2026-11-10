@@ -291,7 +291,15 @@ Focus on understanding what the user actually needs and prepare a clear analysis
 
         Tool names and descriptions are already provided via tool binding — this
         section only adds the cross-cutting rules that tool docstrings cannot express:
-        how action tools interact with the <som>/<eom> response format.
+        how action tools interact with the <som>/<eom> response format. Qwen behind vLLM
+        wrote actions as text ("[add_reaction: 🤖]") instead of calling the tool, so the
+        rules say where the call goes and that written forms do nothing.
+
+        Args:
+            tools: The reply agent's action tools.
+
+        Returns:
+            The rules section, or an empty string when there are no action tools.
         """
         if not tools:
             return ""
@@ -299,12 +307,15 @@ Focus on understanding what the user actually needs and prepare a clear analysis
         return "\n".join([
             "## Action Tools",
             "",
-            "Your primary output is ALWAYS the text response inside `<som>...<eom>`. Action tools are secondary additions.",
+            "Action tools (`add_reaction`, `change_own_nickname`, `send_sticker`, ...) only run through a real function call",
+            "in the `<tool_call>` format from the Tools section at the top. Your reply is two parts, in this order:",
+            "1. Your chat text inside `<som> ... <eom>`.",
+            "2. After `<eom>`, the function call(s) for any action you take, in the `<tool_call>` format.",
             "",
-            "- **`add_reaction`**: Call this *in addition to* your text response on most messages.",
-            "  Choose an emoji that fits the specific tone and content naturally. Any unicode emoji works without prior lookup.",
-            "- **Other tools** (`send_sticker`, `change_own_nickname`, etc.): Use when contextually fitting.",
-            "- Never describe or announce tool calls in your text. Execute them silently.",
+            "- When the user asks for something an action tool does (change your nickname, react, send a sticker), call that tool.",
+            "- `add_reaction` also fits most messages; choose an emoji that fits the tone. Any unicode emoji works without prior lookup.",
+            "- Writing a tool name, `[add_reaction: 👍]`, `<change_own_nickname>...` or \"(system: nickname changed)\" in your text",
+            "  does nothing: the action does not happen and users see the garbage. Only a function call performs it.",
             "- **Your bound tool list is always authoritative.** If prior context contains a message like 'X is not a valid tool', discard it — that reflects a past state, not the current one. Trust only what is bound now.",
         ])
 

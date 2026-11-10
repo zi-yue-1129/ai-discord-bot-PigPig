@@ -17,7 +17,7 @@ import discord
 import opencc
 
 from function import func
-from llm.utils.reply_sanitizer import sanitize_reply
+from llm.utils.reply_sanitizer import sanitize_reply, strip_tool_text
 from llm.utils.repetition_guard import MAX_REPLY_CHARS, RepetitionGuard
 
 
@@ -48,6 +48,9 @@ _HIDDEN_TAGS = {
     '<tool_response>': True, '</tool_response>': False,
     '<|tool_response>': True, '<tool_response|>': False,
     '<tool_results>': True, '</tool_results>': False,
+    '<tool_code>': True, '</tool_code>': False,
+    # The inner part of a Qwen tool call when its opening <tool_call> was lost.
+    '<function=': True, '</function>': False,
 }
 _ALL_TAGS = (*_HIDDEN_TAGS, '<som>', '</som>', '<eom>', '</eom>')
 
@@ -279,7 +282,8 @@ async def _process_token_stream(
         message: Original Discord message for context.
         lang_manager: Language manager for translations.
         update_interval: Time interval (seconds) between message updates.
-        tools: Unused. The agent runs the tools the model calls; kept for callers.
+        tools: The tools the model was given. The agent runs the ones it calls; their names
+            are used to hide calls the model wrote as text instead.
         inactivity_timeout: Max seconds to wait between tokens before raising TimeoutError.
         
     Returns:
@@ -297,21 +301,33 @@ async def _process_token_stream(
     # Tool calls the model asked for. The agent's own tool node runs them; they are only
     # tracked here to know that a reply without text was still a real answer.
     tool_call_chunks = []
+    # Calls of these tools written as text ("[add_reaction: 👍]") are never shown.
+    tool_names = tuple(name for name in (getattr(tool, 'name', '') for tool in tools or ()) if name)
+    last_shown = ''  # What the current Discord message shows now
+
+    def render(block: str, final: bool) -> str:
+        """Turns a block of reply text into what Discord shows."""
+        shown = strip_tool_text(block, tool_names, partial=not final)
+        return converter.convert(shown) if converter else shown
 
     async def should_update() -> bool:
         """Check if enough time has passed since last update."""
         return time.time() - last_update_time >= update_interval
     
-    async def update_message():
-        """Update Discord message with current content."""
-        nonlocal last_update_time, pending_content, current_block, current_message
+    async def update_message(final: bool = False):
+        """Update Discord message with current content.
+
+        Args:
+            final: True for the last update: text held back while streaming (an open
+                bracket that could still become a tool call) is settled now.
+        """
+        nonlocal last_update_time, pending_content, current_block, current_message, last_shown
         
-        if not pending_content:
+        if not pending_content and not final:
             return
         
         current_block += pending_content
-        converted = (converter.convert(current_block)
-                    if converter else current_block)
+        converted = render(current_block, final)
         
         # Ensure converted content is not empty after sanitization
         if not converted or not converted.strip():
@@ -331,8 +347,8 @@ async def _process_token_stream(
                     channel, processing_msg
                 )
                 current_block = pending_content  # Start new block with pending content
-                converted = (converter.convert(current_block)
-                            if converter else current_block)
+                last_shown = ''
+                converted = render(current_block, final)
                 # Re-check converted content after language conversion
                 if not converted or not converted.strip():
                     _logger.info('Continuation message skipped - converted content is empty')
@@ -343,10 +359,12 @@ async def _process_token_stream(
                 pending_content = ''
                 return
         
-        # Update the message only if we have valid content
-        if converted and converted.strip():
+        # Update the message only if we have valid content that changed
+        if converted and converted.strip() and converted != last_shown:
             success = await safe_edit_message(current_message, converted)
-            if not success:
+            if success:
+                last_shown = converted
+            else:
                 _logger.warning('Failed to edit message with current content')
         
         pending_content = ''
@@ -565,9 +583,9 @@ async def _process_token_stream(
             if '<som>' in message_result and '<eom>' not in message_result:
                 message_result += '<eom>'
 
-        # Send any remaining content
-        if pending_content:
-            await update_message()
+        # Send any remaining content and settle what was held back while streaming
+        if pending_content or current_block:
+            await update_message(final=True)
             
         # Fallback: If no content was displayed but we have raw result, the model
         # ignored the <som>/<eom> protocol (e.g. forgot "<som>" or appended metadata
@@ -579,7 +597,7 @@ async def _process_token_stream(
             else:
                 _logger.warning("Model output without <som>/<eom> markers. Applying fallback with cleanup.")
 
-            fallback_text = sanitize_reply(message_result)
+            fallback_text = sanitize_reply(message_result, tool_names=tool_names)
             if not fallback_text:
                 _logger.warning(
                     "Model output had nothing postable after sanitising; nothing is sent from it. "
@@ -593,11 +611,11 @@ async def _process_token_stream(
                 if len(fallback_text) > _HARD_LIMIT:
                     fallback_text = fallback_text[: _HARD_LIMIT - 1] + "…"
                 pending_content = fallback_text
-                await update_message()
+                await update_message(final=True)
 
         # Check if we have any content after all processing
         # Allow either text content OR tool calls (or both)
-        has_text_content = bool(display_content.strip() or fallback_text.strip())
+        has_text_content = bool(strip_tool_text(display_content, tool_names).strip() or fallback_text.strip())
         has_tool_calls = len(tool_call_chunks) > 0
         
         if not has_text_content and not has_tool_calls:
@@ -621,8 +639,10 @@ async def _process_token_stream(
                 except Exception:
                     fallback = "..."
             
+            # Whatever the block held was hidden (only tool text), so the fallback stands alone.
+            current_block = ''
             pending_content = fallback
-            await update_message()
+            await update_message(final=True)
             message_result = fallback
         
         # If we only have tool calls but no text content, delete the "processing" message
