@@ -17,6 +17,16 @@ _CHANNEL_BLOCK = re.compile(r"<\|channel>.*?<channel\|>", re.DOTALL)
 _CHANNEL_TOKEN = re.compile(r"</?\|?channel\|?>")
 _THINK_BLOCK = re.compile(r"<(think|thinking)>.*?</\1>\s*", re.DOTALL)
 _UNCLOSED_THINK = re.compile(r"<(?:think|thinking)>.*\Z", re.DOTALL)
+# Tool calls a model writes as text (when its server does not parse them) and copies of
+# the internal tool-result block. A block that is never closed hides the rest.
+_TOOL_BLOCK = re.compile(
+    r"<tool_call>.*?(?:</tool_call>|\Z)"
+    r"|<\|tool_call>.*?(?:<tool_call\|>|\Z)"
+    r"|<tool_response>.*?(?:</tool_response>|\Z)"
+    r"|<\|tool_response>.*?(?:<tool_response\|>|\Z)"
+    r"|<tool_results>.*?(?:</tool_results>|\Z)",
+    re.DOTALL,
+)
 _SOM_SEGMENT = re.compile(r"<som>(.*?)(?:<eom>|\Z)", re.DOTALL)
 
 # "[name | UserID:123 | MessageID:456]" in front of a message, with an optional ":".
@@ -75,6 +85,7 @@ def sanitize_reply(raw: str) -> str:
     """
     text = _CHANNEL_TOKEN.sub("", _CHANNEL_BLOCK.sub("", raw))
     text = _drop_thinking(text)
+    text = _TOOL_BLOCK.sub("", text)
     text = _marked_body(text)
     text = _IDENTITY_PREFIX.sub("", text)
     for pattern in (_TIMESTAMP_GROUP, _REPLYING_GROUP, _FIELD_GROUP, _ASSISTANT_PLACEHOLDER, _SYSTEM_HEADER):
