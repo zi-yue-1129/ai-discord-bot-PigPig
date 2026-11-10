@@ -50,6 +50,10 @@ class MessageTracker:
         self.settings = settings
         self._pending_message_count = 0
         self._processing_tasks = {}
+        # Channels whose summarization has left the debounce wait and is running.
+        # A new message must not cancel such a pass: the state is only written at
+        # its end, so every cancel throws the whole LLM call away.
+        self._running_channels = set()
         # Global semaphore to limit concurrent background memory processing
         concurrency = getattr(self.settings, "processing_concurrency", 1)
         self._processing_semaphore = asyncio.Semaphore(concurrency)
@@ -113,13 +117,28 @@ class MessageTracker:
         Schedules channel memory processing with a debounce delay.
         This prevents the background LLM task from competing with 
         the immediate reply generation triggered just after this.
+
+        A pass that is already running is left alone. The thresholds stay true
+        until that pass writes its state, so in an active channel every message
+        would otherwise cancel the pass and restart it 30 seconds later, and the
+        summary would never finish.
         """
         channel_id = channel.id
-        
-        # Cancel any existing pending task for this channel
+
+        if channel_id in self._running_channels:
+            logger.debug(f"Memory processing already running for channel {channel_id}, not rescheduling")
+            return
+
+        # Cancel any existing pending (still debouncing) task for this channel
         if channel_id in self._processing_tasks and not self._processing_tasks[channel_id].done():
             self._processing_tasks[channel_id].cancel()
-            
+
+        self._start_delayed_processing(channel)
+
+    def _start_delayed_processing(self, channel: Union[discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.Thread]):
+        """Creates the debounced background task for a channel without cancelling anything."""
+        channel_id = channel.id
+
         async def delayed_process():
             try:
                 # Wait for inactivity before starting background LLM
@@ -128,7 +147,11 @@ class MessageTracker:
                 
                 # Limit global concurrent memory processing tasks across all channels
                 async with self._processing_semaphore:
-                    await self._process_channel_memory(channel)
+                    self._running_channels.add(channel_id)
+                    try:
+                        await self._process_channel_memory(channel)
+                    finally:
+                        self._running_channels.discard(channel_id)
             except asyncio.CancelledError:
                 # Task was cancelled because a new message arrived, expected behavior
                 pass
@@ -269,7 +292,7 @@ class MessageTracker:
                     f"Retrieved maximum batch size ({fetch_limit}) for channel {channel.id}. "
                     "More historical messages may remain. Scheduling next draining batch."
                 )
-                self._schedule_processing(channel)
+                self._start_delayed_processing(channel)
             
         except asyncio.CancelledError:
             logger.info(f"Memory processing for channel {channel.id} was interrupted to prioritize user conversation.")
