@@ -65,6 +65,7 @@ def stats_modules(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> types.Simp
         "addons.settings",
         llm_config=types.SimpleNamespace(
             vllm_url="http://vllm.invalid", llm_call_timeout=1.0, openai_endpoints={},
+            vllm_enable_thinking={"info": False, "message": False, "other": False},
         ),
         prompt_config=types.SimpleNamespace(),
         MemoryConfig=object,

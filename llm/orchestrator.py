@@ -610,7 +610,7 @@ Focus on understanding what the user actually needs and prepare a clear analysis
 
                         # Instantiate model with zero retries to ensure immediate fallback on quota exhaustion
                         info_model_instance = create_model_instance(
-                            current_info_model, guild_id=guild_id, max_retries=0, limit_output=True,
+                            current_info_model, guild_id=guild_id, max_retries=0, limit_output=True, role="info",
                         )
                         
                         info_agent = create_agent(
@@ -773,7 +773,7 @@ Focus on understanding what the user actually needs and prepare a clear analysis
 
                         # Create agent with current model configured for zero retries
                         message_model_instance = create_model_instance(
-                            current_model, guild_id=guild_id, max_retries=0, limit_output=True,
+                            current_model, guild_id=guild_id, max_retries=0, limit_output=True, role="message",
                         )
                         
                         message_agent = create_agent(

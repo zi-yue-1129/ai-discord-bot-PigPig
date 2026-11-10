@@ -147,6 +147,11 @@ info_agent_max_identical_calls: 2
 # Most tokens one chat reply call may generate, reasoning included. A model stuck in a loop is
 # stopped by the server at this size. 0 removes the cap.
 max_output_tokens: 8192
+# Qwen thinking for vllm: models (vLLM serves them with thinking off). true/false for every call, or
+# per role: info (tool agent), message (reply agent), other (summaries, relevance, ...). Roles left
+# out stay off. Reasoning is kept out of replies by vLLM's reasoning parser and counts toward
+# max_output_tokens. Example: {info: true, message: false}
+vllm_enable_thinking: false
 reasoning_optimization_prompt: "\n\n[CRITICAL SYSTEM RULE]: Think efficiently and use minimal reasoning. Strict limit: keep any internal reasoning or <think> process extremely brief (under 3 sentences). Output final results and call tools immediately without extensive reflection."
 # Optional AI tool groups: music, community, events, fun, games, playing. Each group is used in
 # every channel unless limited here (the core tools are always there). Per group:
