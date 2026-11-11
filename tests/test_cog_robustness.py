@@ -185,7 +185,7 @@ async def test_a_hanging_gemini_search_falls_back_to_the_legacy_search(monkeypat
     monkeypatch.setattr(internet_search.genai, "Client", _Client)
     monkeypatch.setattr(internet_search, "GEMINI_TIMEOUT_SECONDS", 0.05)
     monkeypatch.setattr(internet_search.func, "report_error", no_report)
-    cog = SimpleNamespace(lang_manager=None, _legacy_google_search=legacy)
+    cog = SimpleNamespace(lang_manager=None, _fallback_search=legacy)
 
     answer = await asyncio.wait_for(
         internet_search.InternetSearchCog.google_search(cog, SimpleNamespace(guild=None), "query"), timeout=3
