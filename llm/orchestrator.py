@@ -9,7 +9,7 @@ from llm.self_knowledge import build_self_description
 from llm.callbacks import ToolLogCallbackHandler
 from llm.utils.info_context import build_info_agent_request
 from llm.utils.phase_timer import PhaseTimer
-from llm.utils.tool_trace import collect_tool_calls, describe_info_agent_outcome
+from llm.utils.tool_trace import collect_tool_calls, describe_info_agent_outcome, describe_info_agent_request
 from llm.utils.reply_retry import run_with_empty_retry
 
 import discord
@@ -673,6 +673,13 @@ Focus on understanding what the user actually needs and prepare a clear analysis
 
             timer.mark("info_agent")
             logger.info(f"Info agent: {describe_info_agent_outcome(info_message, len(messages_for_info_agent))}")
+            if isinstance(info_result, dict) and "messages" in info_result:
+                # Shape only (roles, sizes, finish reason, tool-call count), never content: lets a live
+                # failure be compared with a replay of the same request.
+                logger.info("Info agent request: " + describe_info_agent_request(
+                    sanitized_messages, model_specific_prompt, info_agent_tools,
+                    info_message[len(sanitized_messages):],
+                ))
             try:
                 # --- Message agent setup with streaming fallback ---
                 # Note: ModelFallbackMiddleware doesn't support streaming mode,
