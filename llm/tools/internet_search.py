@@ -146,6 +146,10 @@ class InternetSearchTools:
                 used_provider = preferred_provider  # best-effort; cog makes final decision
                 logger.info("Internet search finished", extra={"query": query, "search_type": search_type, "duration_s": duration, "used_provider": used_provider})
     
+                if isinstance(result, str) and not result.strip():
+                    logger.warning("Internet search returned nothing", extra={"query": query, "search_type": search_type})
+                    return "Error: the search returned no results. Tell the user the search failed; do not guess the answer."
+
                 if isinstance(result, str):
                     # Attach metadata about provider to the returned string for observability
                     return f"[provider={used_provider} duration={duration:.2f}s] {result}"
