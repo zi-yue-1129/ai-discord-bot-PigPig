@@ -120,3 +120,67 @@ def describe_info_agent_outcome(messages: Sequence[BaseMessage], history_length:
     if written:
         return f"no tool calls; the agent wrote text instead: {_clip(written, _TEXT_LIMIT)!r}"
     return "no tool calls"
+
+
+_ROLE_NAMES = {"human": "human", "ai": "ai", "system": "system", "tool": "tool"}
+
+
+def _role_runs(messages: Sequence[BaseMessage]) -> str:
+    """Compresses the message roles into runs, e.g. ``human x2,ai,human``."""
+    runs: List[List[Any]] = []
+    for message in messages:
+        role = _ROLE_NAMES.get(message.type, message.type)
+        if runs and runs[-1][0] == role:
+            runs[-1][1] += 1
+        else:
+            runs.append([role, 1])
+    return ",".join(role if count == 1 else f"{role} x{count}" for role, count in runs)
+
+
+def _text_chars(message: BaseMessage) -> int:
+    """Counts the characters of a message's text parts (images and other blocks count 0)."""
+    if isinstance(message.content, str):
+        return len(message.content)
+    return sum(
+        len(part) if isinstance(part, str) else len(str(part.get("text", "")))
+        for part in message.content
+        if isinstance(part, (str, dict))
+    )
+
+
+def _image_count(messages: Sequence[BaseMessage]) -> int:
+    """Counts image parts in the messages' content."""
+    count = 0
+    for message in messages:
+        if isinstance(message.content, list):
+            count += sum(
+                1 for part in message.content
+                if isinstance(part, dict) and part.get("type") in ("image_url", "image")
+            )
+    return count
+
+
+def describe_info_agent_request(
+    sent: Sequence[BaseMessage], system_prompt: str, tools: Sequence[Any], answer: Sequence[BaseMessage],
+) -> str:
+    """Describes an info agent run by its shape only, never its content.
+
+    Args:
+        sent: The messages the agent was given.
+        system_prompt: The agent's system prompt.
+        tools: The tools bound to the agent.
+        answer: What the agent added after ``sent``.
+
+    Returns:
+        ``roles=... last=... tools=N prompt_chars=N images=N finish_reason=... tool_calls=N``, where
+        finish_reason and tool_calls describe the model's first answer.
+    """
+    first = next((message for message in answer if isinstance(message, AIMessage)), None)
+    finish_reason = (first.response_metadata or {}).get("finish_reason") if first is not None else None
+    tool_calls = len(first.tool_calls or []) if first is not None else 0
+    prompt_chars = len(system_prompt) + sum(_text_chars(message) for message in sent)
+    last = _ROLE_NAMES.get(sent[-1].type, sent[-1].type) if sent else None
+    return (
+        f"roles={_role_runs(sent)} last={last} tools={len(tools)} prompt_chars={prompt_chars} "
+        f"images={_image_count(sent)} finish_reason={finish_reason} tool_calls={tool_calls}"
+    )

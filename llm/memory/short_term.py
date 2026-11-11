@@ -28,6 +28,11 @@ def _speaker_label(author: Any, is_own_message: bool) -> str:
     return f"BOT {label}" if author.bot else label
 
 
+# Messages that may arrive after the one being answered before the history is read: the
+# bot's own placeholder and whatever others write meanwhile. Fetched on top of the limit.
+_NEWER_MESSAGE_SLACK = 5
+
+
 class ShortTermMemoryProvider:
     """
     Provides short-term memory as a list of LangChain messages.
@@ -64,9 +69,17 @@ class ShortTermMemoryProvider:
             from llm.utils.embed_processor import process_embed
             from addons.settings import attachment_config as _att_cfg
 
-            history = [
-                msg async for msg in message.channel.history(limit=self.limit)
+            # The bot posts its "..." placeholder before reading the history, and others may
+            # write in the meantime. Only messages up to the one being answered are history,
+            # so that message is always the newest entry; a few extra are fetched to keep
+            # the configured length.
+            answered_id = getattr(message, "id", None)
+            fetched = [
+                msg async for msg in message.channel.history(limit=self.limit + _NEWER_MESSAGE_SLACK)
             ]
+            if answered_id is not None:
+                fetched = [msg for msg in fetched if msg.id <= answered_id]
+            history = fetched[: self.limit]
             history.reverse()
 
             # Pre-fetch all attachments concurrently
