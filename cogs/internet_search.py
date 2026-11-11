@@ -44,6 +44,8 @@ from cogs.eat.recommender import WeightedRecommender
 from cogs.eat.views import EatBrowseView
 import concurrent.futures
 import asyncio
+import aiohttp
+from urllib.parse import parse_qs, unquote, urlparse
 
 from typing import Optional
 from .language_manager import LanguageManager
@@ -54,6 +56,7 @@ from addons.logging import get_logger
 # Network calls that have no timeout of their own are bounded here.
 YOUTUBE_SEARCH_TIMEOUT_SECONDS = 15
 GEMINI_TIMEOUT_SECONDS = 60
+DUCKDUCKGO_TIMEOUT_SECONDS = 15
 
 def install_driver():
     """Install Chrome driver using ChromeDriverManager."""
@@ -299,7 +302,52 @@ class InternetSearchCog(commands.Cog):
 
         except Exception as e:
             await func.report_error(e, f"google_search gemini grounding: {e}")
-            return await self._legacy_google_search(ctx, query, message_to_edit)
+            return await self._fallback_search(ctx, query, message_to_edit)
+
+    async def _fallback_search(self, ctx, query, message_to_edit=None):
+        """Searches without Gemini (quota used up, API error): DuckDuckGo first, then Google scraping.
+
+        Raises:
+            RuntimeError: When no source returned any result.
+        """
+        try:
+            text = await self._duckduckgo_search(query)
+            if text:
+                return text
+        except Exception as e:
+            self.logger.warning(f"DuckDuckGo fallback failed: {type(e).__name__}: {e}")
+        text = await self._legacy_google_search(ctx, query, message_to_edit)
+        if not text or not text.strip():
+            raise RuntimeError("No search source returned any result")
+        return text
+
+    @staticmethod
+    def _parse_duckduckgo_html(html: str, limit: int = 8) -> str:
+        """Turns DuckDuckGo's HTML result page into ``title / snippet / link`` blocks ("" when none)."""
+        soup = BeautifulSoup(html, "html.parser")
+        blocks = []
+        for result in soup.select(".result"):
+            anchor = result.select_one("a.result__a")
+            if not anchor:
+                continue
+            link = anchor.get("href", "")
+            if "uddg=" in link:
+                link = unquote(parse_qs(urlparse(link).query).get("uddg", [link])[0])
+            snippet = result.select_one(".result__snippet")
+            blocks.append(f"{anchor.get_text(strip=True)}\n{snippet.get_text(strip=True) if snippet else ''}\n{link}")
+            if len(blocks) >= limit:
+                break
+        return "\n\n".join(blocks)
+
+    async def _duckduckgo_search(self, query: str) -> str:
+        """Fetches DuckDuckGo's keyless HTML results; returns "" when there are none."""
+        timeout = aiohttp.ClientTimeout(total=DUCKDUCKGO_TIMEOUT_SECONDS)
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"}
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.post("https://html.duckduckgo.com/html/", data={"q": query}) as resp:
+                resp.raise_for_status()
+                html = await resp.text()
+        return self._parse_duckduckgo_html(html)
 
     def _extract_sources_from_grounding(self, response):
         """Extract source URLs and titles from Gemini grounding metadata."""
