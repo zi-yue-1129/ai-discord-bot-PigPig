@@ -96,6 +96,8 @@ class ToolLogCallbackHandler(AsyncCallbackHandler):
         self._logger = logger
         self._clock = clock
         self._running: Dict[UUID, Tuple[str, float]] = {}
+        # Names of the tools that started, in order; the reply log lists them.
+        self.started_tools: List[str] = []
 
     def _finish(self, run_id: UUID) -> Tuple[str, str]:
         """Forgets a running tool and returns (name, how long it ran as text)."""
@@ -114,6 +116,7 @@ class ToolLogCallbackHandler(AsyncCallbackHandler):
         """Logs that a tool started, with its (shortened) input."""
         name = str(serialized.get("name", "unknown_tool"))
         self._running[run_id] = (name, self._clock())
+        self.started_tools.append(name)
         shortened = input_str if len(input_str) <= 200 else input_str[:199] + "…"
         self._logger.info(f"Tool started: {name} input={shortened}")
 

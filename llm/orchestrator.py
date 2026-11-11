@@ -1,6 +1,6 @@
 from __future__ import annotations
 import asyncio
-from typing import Any, List, MutableMapping, Optional
+from typing import Any, AsyncIterator, List, MutableMapping, Optional
 import re
 
 from addons.logging import get_logger
@@ -9,7 +9,12 @@ from llm.self_knowledge import build_self_description
 from llm.callbacks import ToolLogCallbackHandler
 from llm.utils.info_context import build_info_agent_request
 from llm.utils.phase_timer import PhaseTimer
-from llm.utils.tool_trace import collect_tool_calls, describe_info_agent_outcome, describe_info_agent_request
+from llm.utils.tool_trace import (
+    collect_tool_calls,
+    describe_info_agent_outcome,
+    describe_info_agent_request,
+    describe_reply_tools,
+)
 from llm.utils.reply_retry import run_with_empty_retry
 
 import discord
@@ -49,6 +54,23 @@ logger = get_logger(server_id="Bot", source="llm.orchestrator")
 
 _LLM_CALL_TIMEOUT_SECONDS: float = llm_config.llm_call_timeout
 _IMAGE_FETCH_TIMEOUT_SECONDS: float = 15.0
+
+
+def stream_message_agent(agent: Any, messages: List[BaseMessage], callbacks: List[Any]) -> AsyncIterator[Any]:
+    """Streams the message agent's reply token by token, with the given callbacks attached.
+
+    The callbacks reach the tools the agent runs, so a log handler here records the action tools
+    (nickname, reactions, stickers...) that the message agent calls.
+
+    Args:
+        agent: The message agent built by ``create_agent``.
+        messages: The conversation to answer.
+        callbacks: LangChain callback handlers for this run.
+
+    Returns:
+        The agent's ``stream_mode="messages"`` stream.
+    """
+    return agent.astream({"messages": messages}, stream_mode="messages", config={"callbacks": callbacks})
 
 
 class Orchestrator:
@@ -761,6 +783,8 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                 # Use circuit breaker to skip models that recently failed
                 last_exception = None
                 message_result = None
+                # Logs the action tools (nickname, reactions, stickers...) the message agent runs.
+                action_tool_log = ToolLogCallbackHandler(logger)
                 models_tried = 0
                 
                 for model_index, current_model in enumerate(model_priority_list):
@@ -798,10 +822,7 @@ Focus on understanding what the user actually needs and prepare a clear analysis
 
                         async def stream_reply(reply_messages: List[BaseMessage], empty_fallback: bool) -> str:
                             """Streams one reply of the message agent into the placeholder message."""
-                            streamer = message_agent.astream(
-                                {"messages": reply_messages},
-                                stream_mode="messages",
-                            )
+                            streamer = stream_message_agent(message_agent, reply_messages, [action_tool_log])
                             return await asyncio.wait_for(
                                 send_message(
                                     bot,
@@ -877,7 +898,8 @@ Focus on understanding what the user actually needs and prepare a clear analysis
             ]
 
             logger.info(
-                f"{bot.user.name}:{resp.reply}, tools_called: {[call.name for call in called]}, available_tools: {tool_names}"
+                f"{bot.user.name}:{resp.reply}, {describe_reply_tools(called, action_tool_log.started_tools)}, "
+                f"available_tools: {tool_names}"
             )
             return resp
 

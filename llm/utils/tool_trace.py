@@ -184,3 +184,16 @@ def describe_info_agent_request(
         f"roles={_role_runs(sent)} last={last} tools={len(tools)} prompt_chars={prompt_chars} "
         f"images={_image_count(sent)} finish_reason={finish_reason} tool_calls={tool_calls}"
     )
+
+
+def describe_reply_tools(info_calls: Sequence[ToolCallRecord], action_tools: Sequence[str]) -> str:
+    """Names the tools both agents ran for one reply, for the reply log line.
+
+    Args:
+        info_calls: The info agent's tool calls.
+        action_tools: Names of the action tools the message agent ran (nickname, reactions...).
+
+    Returns:
+        ``tools_called: [...], actions_called: [...]``.
+    """
+    return f"tools_called: {[call.name for call in info_calls]}, actions_called: {list(action_tools)}"
