@@ -796,11 +796,15 @@ Focus on understanding what the user actually needs and prepare a clear analysis
                         remaining_models = [m for m in model_priority_list[model_index + 1:] if circuit_breaker.is_available(m)]
                         is_last_available = len(remaining_models) == 0
 
+                        # Action tools (nickname, reaction, sticker) run here, so they get logged too.
+                        action_tool_log = ToolLogCallbackHandler(logger)
+
                         async def stream_reply(reply_messages: List[BaseMessage], empty_fallback: bool) -> str:
                             """Streams one reply of the message agent into the placeholder message."""
                             streamer = message_agent.astream(
                                 {"messages": reply_messages},
                                 stream_mode="messages",
+                                config={"callbacks": [action_tool_log]},
                             )
                             return await asyncio.wait_for(
                                 send_message(
@@ -877,7 +881,7 @@ Focus on understanding what the user actually needs and prepare a clear analysis
             ]
 
             logger.info(
-                f"{bot.user.name}:{resp.reply}, tools_called: {[call.name for call in called]}, available_tools: {tool_names}"
+                f"{bot.user.name}:{resp.reply}, tools_called: {[call.name for call in called]}, action_tools_called: {action_tool_log.started}, available_tools: {tool_names}"
             )
             return resp
 
